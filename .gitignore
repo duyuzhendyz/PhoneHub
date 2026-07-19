@@ -1,0 +1,35 @@
+# 构建产物
+app/build/
+.gradle/
+*.apk
+
+# 内置工具链（体积很大，可重新下载）
+jdk17/
+android-sdk/
+gradle-dist/
+
+# 反编译产物（可从 APK 重新生成）
+apk_decoded/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE 文件
+.idea/
+*.iml
+.vscode/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 签名密钥（敏感信息）
+*.keystore
+
+# 临时文件
+*.tmp
+*.log
