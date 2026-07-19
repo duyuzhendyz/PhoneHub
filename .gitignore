@@ -7,6 +7,7 @@ app/build/
 jdk17/
 android-sdk/
 gradle-dist/
+jadx-*.zip
 
 # 反编译产物（可从 APK 重新生成）
 apk_decoded/
