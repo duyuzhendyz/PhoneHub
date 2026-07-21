@@ -11,6 +11,7 @@ jadx-*.zip
 
 # 反编译产物（可从 APK 重新生成）
 apk_decoded/
+jadx-1.5.0/
 
 # Python 缓存
 __pycache__/
