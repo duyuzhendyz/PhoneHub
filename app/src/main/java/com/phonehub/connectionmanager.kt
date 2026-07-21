@@ -76,24 +76,25 @@ object ConnectionManager {
 
     private const val PREF_NAME = "phonehub_prefs"
     private const val KEY_CACHED_IP = "cached_pc_ip"
-    // private const val KEY_PAW_URL = "paw_url"  // 【禁止删除】PAW URL 配置键
-    // private const val KEY_PAW_TOKEN = "paw_token"  // 【禁止删除】PAW Token 配置键
+    private const val KEY_PAW_URL = "paw_url"
+    private const val KEY_PAW_TOKEN = "paw_token"
+    private var pawDeviceId: String? = null
 
     private var secretToken: String = DEFAULT_SECRET_TOKEN
-    // private var pawUrl: String = DEFAULT_PAW_URL  // 【禁止删除】PAW 服务地址
+    private var pawUrl: String = DEFAULT_PAW_URL
 
-    // fun getPawUrl(): String = pawUrl  // 【禁止删除】获取 PAW URL
+    fun getPawUrl(): String = pawUrl
     fun getSecretToken(): String = secretToken
 
-    // fun setPawConfig(url: String, token: String) {  // 【禁止删除】设置 PAW 配置
-    //     pawUrl = url
-    //     secretToken = token
-    //     val ctx = context ?: return
-    //     ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
-    //         .putString(KEY_PAW_URL, url)
-    //         .putString(KEY_PAW_TOKEN, token)
-    //         .apply()
-    // }
+    fun setPawConfig(url: String, token: String) {
+        pawUrl = url
+        secretToken = token
+        val ctx = context ?: return
+        ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+            .putString(KEY_PAW_URL, url)
+            .putString(KEY_PAW_TOKEN, token)
+            .apply()
+    }
 
     private fun loadPawConfig() {
         // 不再从 SharedPreferences 读取旧的 paw_token，避免残留的自定义值与 PC 端默认 token 不匹配导致认证失败
@@ -353,14 +354,14 @@ object ConnectionManager {
     }
 
     enum class ChannelType(val priority: Int) {
-        NONE(0), ADB(30), WIFI(20); // PAW(10)  // 【禁止删除】PAW 通道类型
+        NONE(0), ADB(30), WIFI(20), PAW(10)
 
         companion object {
             fun fromName(s: String?): ChannelType =
                 when (s?.lowercase()) {
                     "adb" -> ADB
                     "wifi" -> WIFI
-                    // "paw" -> PAW  // 【禁止删除】PAW 通道解析
+                    "paw" -> PAW
                     else -> NONE
                 }
         }
@@ -511,7 +512,15 @@ object ConnectionManager {
                 } else {
                     val reason = lastConnectFailReason ?: "未知错误"
                     _connectionMessage.value = "WiFi 连接失败: $reason"
-                    _connectionState.value = ConnectionState.DISCONNECTED
+                    // 尝试 PAW 中转
+                    _connectionMessage.value = "直连失败，尝试 PAW 中转..."
+                    val pawSuccess = testPawConnection()
+                    if (pawSuccess) {
+                        _connectionMessage.value = "PAW 中转连接成功"
+                        startChannel(ChannelType.PAW)
+                    } else {
+                        _connectionState.value = ConnectionState.DISCONNECTED
+                    }
                 }
             }
         }
@@ -603,9 +612,12 @@ object ConnectionManager {
                 _connectionMessage.value = "已连接 - WiFi 直连"
                 startStatusPolling(ChannelType.WIFI)
             }
-            // ChannelType.PAW -> {  // 【禁止删除】PAW 通道启动
-            //     startPawPolling()
-            // }
+            ChannelType.PAW -> {
+                _currentChannel.value = ChannelType.PAW
+                _connectionState.value = ConnectionState.CONNECTED
+                _connectionMessage.value = "已连接 - PAW 中转"
+                startPawPolling()
+            }
             else -> {}
         }
         // 连接成功后发送剪贴板历史
@@ -715,8 +727,8 @@ object ConnectionManager {
             when (channel) {
                 ChannelType.ADB -> downgradeFromAdb()
                 ChannelType.WIFI -> {
-                    _connectionMessage.value = "WiFi 重连失败，请检查网络"
-                    // startPawPolling()  // 【禁止删除】PAW 降级
+                    _connectionMessage.value = "WiFi 重连失败，尝试 PAW 中转..."
+                    startPawPolling()
                 }
                 else -> {}
             }
@@ -1036,183 +1048,104 @@ object ConnectionManager {
         }
     }
 
-    // private fun startPawPolling() {  // 【禁止删除】PAW 轮询启动
-    //     pawPollingJob?.cancel()
-    //     statusJob?.cancel()
-    //     _currentChannel.value = ChannelType.PAW
-    //     pawPollingJob = scope.launch {
-    //         while (isActive) {
-    //             try {
-    //                 val url = "$pawUrl/api/get_cmd"
-    //                 val conn = URL(url).openConnection() as HttpURLConnection
-    //                 conn.requestMethod = "GET"
-    //                 conn.setRequestProperty("Authorization", "Bearer $secretToken")
-    //                 conn.readTimeout = 35000
-    //                 conn.connectTimeout = 10000
-    //
-    //                 val reader = BufferedReader(InputStreamReader(conn.inputStream))
-    //                 var line: String?
-    //                 while (reader.readLine().also { line = it } != null) {
-    //                     val lineStr = line ?: continue
-    //                     if (lineStr.startsWith("data: ")) {
-    //                         try {
-    //                             val jsonStr = lineStr.substring(6)
-    //                             if (jsonStr.contains("\"activate\":\"ping\"")) continue
-    //                             val msg = Json.parseToJsonElement(jsonStr).jsonObject
-    //                             handlePawMessage(msg)
-    //                         } catch (e: Exception) {
-    //                             Log.e(TAG, "Parse PAW message failed", e)
-    //                         }
-    //                     }
-    //                 }
-    //                 reader.close()
-    //                 conn.disconnect()
-    //                 _connectionState.value = ConnectionState.CONNECTED
-    //                 _connectionMessage.value = "已连接 - PAW 中转"
-    //                 userVerifiedConnection = true
-    //                 lastPcCpuAt = System.currentTimeMillis()
-    //                 reconnectFailCount = 0
-    //             } catch (e: Exception) {
-    //                 delay(2000)
-    //             }
-    //         }
-    //     }
-    // }
+    private fun startPawPolling() {
+        pawPollingJob?.cancel()
+        statusJob?.cancel()
+        _currentChannel.value = ChannelType.PAW
+        // 注册 PAW 设备
+        scope.launch {
+            if (pawDeviceId == null) {
+                try {
+                    val phoneId = android.provider.Settings.Secure.getString(context?.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone_${System.currentTimeMillis()}"
+                    val conn = URL("$pawUrl/api/register").openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Authorization", "Bearer $secretToken")
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    conn.outputStream.use { os ->
+                        os.write("""{"device_id":"$phoneId","type":"phone","paired_id":""}""".toByteArray(Charsets.UTF_8))
+                    }
+                    if (conn.responseCode == 200) {
+                        val resp = BufferedReader(InputStreamReader(conn.inputStream)).readText()
+                        val json = Json.parseToJsonElement(resp).jsonObject
+                        pawDeviceId = json["device_id"]?.jsonPrimitive?.contentOrNull ?: phoneId
+                        Log.i(TAG, "PAW registered: ${pawDeviceId}")
+                    }
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.e(TAG, "PAW register failed: ${e.message}", e)
+                    pawDeviceId = "phone_${System.currentTimeMillis()}"
+                }
+            }
+        }
+        pawPollingJob = scope.launch {
+            while (isActive) {
+                try {
+                    val url = "$pawUrl/api/get_msg?device_id=${pawDeviceId}"
+                    val conn = URL(url).openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.setRequestProperty("Authorization", "Bearer $secretToken")
+                    conn.readTimeout = 35000
+                    conn.connectTimeout = 10000
+
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val lineStr = line ?: continue
+                        if (lineStr.startsWith("data: ")) {
+                            try {
+                                val jsonStr = lineStr.substring(6)
+                                if (jsonStr.contains("\"activate\":\"ping\"")) continue
+                                val msg = Json.parseToJsonElement(jsonStr).jsonObject
+                                handlePawMessage(msg)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Parse PAW message failed", e)
+                            }
+                        } else if (lineStr.startsWith(": ")) {
+                            continue  // SSE 心跳
+                        }
+                    }
+                    reader.close()
+                    conn.disconnect()
+                    _connectionState.value = ConnectionState.CONNECTED
+                    _connectionMessage.value = "已连接 - PAW 中转"
+                    userVerifiedConnection = true
+                    lastPcCpuAt = System.currentTimeMillis()
+                    reconnectFailCount = 0
+                } catch (e: Exception) {
+                    delay(2000)
+                }
+            }
+        }
+    }
+
+    private fun handlePawMessage(msg: JsonObject) {
+        // PAW 通道消息通过 handlePcMessage 处理
+        handlePcMessage(msg)
+    }
+
+    private suspend fun testPawConnection(): Boolean {
+        return try {
+            val conn = URL("$pawUrl/api/status").openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Authorization", "Bearer $secretToken")
+            conn.readTimeout = 5000
+            conn.connectTimeout = 5000
+            val ok = conn.responseCode == 200
+            conn.disconnect()
+            ok
+        } catch (e: Exception) {
+            Log.e(TAG, "PAW connection test failed: ${e.message}", e)
+            false
+        }
+    }
 
     private fun channelName(c: ChannelType): String = when (c) {
         ChannelType.WIFI -> "WiFi 直连"
-        // ChannelType.PAW -> "PAW 中转"  // 【禁止删除】PAW 通道名称
+        ChannelType.PAW -> "PAW 中转"
         ChannelType.ADB -> "USB 数据线"
         ChannelType.NONE -> "无"
     }
-
-    // ============================== 消息处理 ==============================
-
-    // private fun handlePawMessage(msg: JsonObject) {  // 【禁止删除】PAW 消息处理
-    //     val data = msg["data"]?.jsonObject ?: return
-    //     val action = data["action"]?.jsonPrimitive?.contentOrNull ?: return
-    //     val source = msg["source"]?.jsonPrimitive?.contentOrNull ?: ""
-    //
-    //     when (action) {
-    //         "cmd" -> {
-    //             val cmd = data["cmd"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             handleCommand(cmd, data)
-    //         }
-    //         "clipboard" -> {
-    //             // 防回环：本机发出的剪贴板回到本机则忽略
-    //             if (source == "phone") {
-    //                 Log.i(TAG, "忽略本机回环剪贴板")
-    //                 return
-    //             }
-    //             val txt = data["txt"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             if (txt.isNotEmpty()) {
-    //                 setClipboardContent(txt)
-    //                 _receivedClipboard.value = txt
-    //                 addClipboardHistory(txt, "pc")
-    //             }
-    //         }
-    //         "txt" -> {
-    //             val txt = data["txt"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             val filename = data["filename"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             if (txt.isNotEmpty()) {
-    //                 scope.launch { _receivedText.emit(Pair(filename, txt)) }
-    //             }
-    //         }
-    //         "cpu" -> {
-    //             val cpu = data["cpu"]?.jsonPrimitive?.floatOrNull ?: 0f
-    //             _pcCpuUsage.value = cpu
-    //             lastPcCpuAt = System.currentTimeMillis()
-    //             _connectionState.value = ConnectionState.CONNECTED
-    //         }
-    //         "send_file_head" -> {
-    //             val fileName = data["file_name"]?.jsonPrimitive?.contentOrNull ?: "unknown"
-    //             val fileSize = data["file_size"]?.jsonPrimitive?.longOrNull ?: 0L
-    //             val fileId = data["file_id"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             startReceiveFile(fileId, fileName, fileSize)
-    //         }
-    //         "file_complete" -> {
-    //             val fileId = data["file_id"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             ackTracker.remove(fileId)
-    //             completeFileReceive(fileId)
-    //         }
-    //         "location_request" -> {
-    //             // 电脑请求当前位置
-    //             LocationService.requestSingleUpdate()
-    //         }
-    //         "process_list_request" -> {
-    //             // 电脑请求手机进程/应用列表
-    //             handleProcessListRequest()
-    //         }
-    //         "process_list" -> {
-    //             // 电脑返回的进程列表（手机查看电脑进程）
-    //             val arr = data["processes"]?.jsonArray
-    //             if (source == "pc" && arr != null) {
-    //                 val list = arr.mapNotNull { el ->
-    //                     val o = el.jsonObject
-    //                     PcProcessItem(
-    //                         pid = o["pid"]?.jsonPrimitive?.intOrNull ?: 0,
-    //                         name = o["name"]?.jsonPrimitive?.contentOrNull ?: "",
-    //                         cpu = o["cpu"]?.jsonPrimitive?.floatOrNull ?: 0f,
-    //                         mem = o["mem"]?.jsonPrimitive?.floatOrNull ?: 0f,
-    //                         user = o["user"]?.jsonPrimitive?.contentOrNull ?: ""
-    //                     )
-    //                 }
-    //                 _pcProcessList.value = list
-    //             }
-    //         }
-    //         "kill_process" -> {
-    //             // 电脑要求手机结束某个进程（保留扩展）
-    //             val pid = data["pid"]?.jsonPrimitive?.intOrNull ?: -1
-    //             Log.i(TAG, "Received kill_process pid=$pid from PC")
-    //         }
-    //         "kill_process_result" -> {
-    //             // 电脑结束进程的结果回执
-    //             val pid = data["pid"]?.jsonPrimitive?.intOrNull ?: -1
-    //             val result = data["result"]?.jsonPrimitive?.contentOrNull ?: "unknown"
-    //             Log.i(TAG, "Kill process result pid=$pid result=$result")
-    //         }
-    //         "power" -> {
-    //             // 电脑电源管理指令转发
-    //             val cmd = data["cmd"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             forwardPowerCommand(cmd, data)
-    //         }
-    //         "app_list_request" -> {
-    //             handleAppListRequest()
-    //         }
-    //         "file_list_request" -> {
-    //             val path = data["path"]?.jsonPrimitive?.contentOrNull ?: "/"
-    //             handleFileListRequest(path)
-    //         }
-    //         "file_delete" -> {
-    //             val path = data["path"]?.jsonPrimitive?.contentOrNull ?: return
-    //             val isDir = data["is_dir"]?.jsonPrimitive?.booleanOrNull ?: false
-    //             handleFileDelete(path, isDir)
-    //         }
-    //         "file_rename" -> {
-    //             val oldPath = data["old_path"]?.jsonPrimitive?.contentOrNull ?: return
-    //             val newPath = data["new_path"]?.jsonPrimitive?.contentOrNull ?: return
-    //             handleFileRename(oldPath, newPath)
-    //         }
-    //         "file_mkdir" -> {
-    //             val path = data["path"]?.jsonPrimitive?.contentOrNull ?: return
-    //             handleFileMkdir(path)
-    //         }
-    //         "send_file_request" -> {
-    //             val path = data["path"]?.jsonPrimitive?.contentOrNull ?: return
-    //             handleSendFileRequest(path)
-    //         }
-    //         "screenshot_request" -> {
-    //             triggerScreenshot()
-    //         }
-    //         "open_url" -> {
-    //             val url = data["url"]?.jsonPrimitive?.contentOrNull ?: ""
-    //             openUrlOnDevice(url)
-    //         }
-    //         "clipboard_history_request" -> {
-    //             sendClipboardHistoryToPc()
-    //         }
-    //     }
-    // }
 
     private fun handleCommand(cmd: String, data: JsonObject) {
         when (cmd) {
