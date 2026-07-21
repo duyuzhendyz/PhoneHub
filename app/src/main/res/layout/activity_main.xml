@@ -1,26 +1,176 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout android:background="#ff1e1e1e" android:layout_width="fill_parent" android:layout_height="fill_parent"
-  xmlns:android="http://schemas.android.com/apk/res/android">
-    <LinearLayout android:orientation="vertical" android:id="@id/mainContainer" android:visibility="gone" android:layout_width="fill_parent" android:layout_height="fill_parent">
-        <LinearLayout android:gravity="center_vertical" android:orientation="horizontal" android:background="#ff2d2d2d" android:layout_width="fill_parent" android:layout_height="56.0dip" android:paddingHorizontal="16.0dip">
-            <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:id="@id/titleText" android:layout_width="0.0dip" android:layout_height="wrap_content" android:text="PhoneHub" android:layout_weight="1.0" />
-            <TextView android:textSize="12.0sp" android:textColor="#ffd13438" android:id="@id/statusText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="未连接" />
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1e1e1e">
+
+    <LinearLayout
+        android:id="@+id/mainContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <!-- 顶部标题栏 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:background="#2d2d2d"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp">
+
+            <TextView
+                android:id="@+id/titleText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="PhoneHub"
+                android:textColor="#ffffff"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="未连接"
+                android:textColor="#d13438"
+                android:textSize="12sp" />
         </LinearLayout>
-        <FrameLayout android:id="@id/pageContainer" android:layout_width="fill_parent" android:layout_height="0.0dip" android:layout_weight="1.0" />
+
+        <!-- Tab 栏已移除，改为首页导航 -->
+
+        <FrameLayout
+            android:id="@+id/pageContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
     </LinearLayout>
-    <LinearLayout android:gravity="center" android:orientation="vertical" android:id="@id/setupScreen" android:padding="32.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent">
-        <TextView android:textSize="32.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="PhoneHub" />
-        <TextView android:textSize="14.0sp" android:textColor="#ffb0b0b0" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="48.0dip" android:text="连接电脑开始使用" />
-        <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:layout_gravity="start" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="电脑IP地址" />
-        <EditText android:textSize="14.0sp" android:textColor="#ffffffff" android:textColorHint="#ff666666" android:id="@id/ipInput" android:background="#ff2d2d2d" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="12.0dip" android:hint="192.168.3.9" android:inputType="textUri" android:paddingHorizontal="16.0dip" />
-        <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:layout_gravity="start" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="端口" />
-        <EditText android:textSize="14.0sp" android:textColor="#ffffffff" android:textColorHint="#ff666666" android:id="@id/portInput" android:background="#ff2d2d2d" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="12.0dip" android:hint="58627" android:inputType="number" android:paddingHorizontal="16.0dip" />
-        <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:layout_gravity="start" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="Token" />
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="16.0dip">
-            <EditText android:textSize="14.0sp" android:textColor="#ffffffff" android:textColorHint="#ff666666" android:id="@id/tokenInput" android:background="#ff2d2d2d" android:layout_width="0.0dip" android:layout_height="fill_parent" android:hint="\ 541881452418845" android:layout_weight="1.0" android:inputType="textPassword" android:paddingHorizontal="16.0dip" />
-            <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:gravity="center" android:id="@id/toggleTokenVisibility" android:background="#ff2d2d2d" android:layout_width="48.0dip" android:layout_height="fill_parent" android:text="显示" android:layout_marginStart="4.0dip" />
+
+    <!-- 设置 / 连接页 -->
+    <LinearLayout
+        android:id="@+id/setupScreen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PhoneHub"
+            android:textColor="#ffffff"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="连接电脑开始使用"
+            android:textColor="#b0b0b0"
+            android:textSize="14sp"
+            android:layout_marginBottom="48dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="电脑IP地址"
+            android:textColor="#b0b0b0"
+            android:textSize="13sp"
+            android:layout_gravity="start"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/ipInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="#2d2d2d"
+            android:hint="192.168.3.9"
+            android:textColorHint="#666666"
+            android:textColor="#ffffff"
+            android:textSize="14sp"
+            android:paddingHorizontal="16dp"
+            android:inputType="textUri"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="端口"
+            android:textColor="#b0b0b0"
+            android:textSize="13sp"
+            android:layout_gravity="start"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/portInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="#2d2d2d"
+            android:hint="58627"
+            android:textColorHint="#666666"
+            android:textColor="#ffffff"
+            android:textSize="14sp"
+            android:paddingHorizontal="16dp"
+            android:inputType="number"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Token"
+            android:textColor="#b0b0b0"
+            android:textSize="13sp"
+            android:layout_gravity="start"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <EditText
+                android:id="@+id/tokenInput"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="#2d2d2d"
+                android:hint="541881452418845"
+                android:textColorHint="#666666"
+                android:textColor="#ffffff"
+                android:textSize="14sp"
+                android:paddingHorizontal="16dp"
+                android:inputType="textPassword" />
+
+            <TextView
+                android:id="@+id/toggleTokenVisibility"
+                android:layout_width="48dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="显示"
+                android:textColor="#b0b0b0"
+                android:textSize="12sp"
+                android:background="#2d2d2d"
+                android:layout_marginStart="4dp" />
         </LinearLayout>
-        <Button android:id="@id/connectBtn" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="16.0dip" android:text="连接" />
-        <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:id="@id/connectStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="" />
+
+        <Button
+            android:id="@+id/connectBtn"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="连接"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:id="@+id/connectStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#b0b0b0"
+            android:textSize="12sp" />
     </LinearLayout>
 </FrameLayout>

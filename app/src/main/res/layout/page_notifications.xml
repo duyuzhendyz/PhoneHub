@@ -1,21 +1,136 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
-  xmlns:android="http://schemas.android.com/apk/res/android">
-    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="通知列表" />
-    <LinearLayout android:gravity="center_vertical" android:orientation="horizontal" android:id="@id/notifPermissionBar" android:background="#ff3d2d1d" android:padding="10.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
-        <TextView android:textSize="13.0sp" android:textColor="#ffffaa00" android:id="@id/notifPermissionText" android:layout_width="0.0dip" android:layout_height="wrap_content" android:text="通知监听权限未开启，无法获取通知" android:layout_weight="1.0" />
-        <Button android:id="@id/btnNotifPermission" android:layout_width="wrap_content" android:layout_height="36.0dip" android:text="去开启" android:layout_marginStart="8.0dip" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1e1e1e"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="通知列表"
+        android:textColor="#ffffff"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <LinearLayout
+        android:id="@+id/notifPermissionBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#3d2d1d"
+        android:orientation="horizontal"
+        android:padding="10dp"
+        android:layout_marginBottom="8dp"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/notifPermissionText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="通知监听权限未开启，无法获取通知"
+            android:textColor="#ffaa00"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btnNotifPermission"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="去开启"
+            android:layout_marginStart="8dp" />
     </LinearLayout>
-    <LinearLayout android:orientation="horizontal" android:background="#ff2d2d2d" android:padding="8.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
-        <EditText android:textSize="12.0sp" android:textColor="#ffffffff" android:textColorHint="#ff666666" android:id="@id/notifFilter" android:background="#ff1e1e1e" android:layout_width="0.0dip" android:layout_height="40.0dip" android:hint="按应用包名筛选..." android:layout_weight="1.0" android:paddingHorizontal="8.0dip" />
-        <Button android:id="@id/btnNotifWhitelist" android:layout_width="wrap_content" android:layout_height="40.0dip" android:text="黑名单" android:layout_marginStart="8.0dip" />
-        <Button android:id="@id/btnNotifRefresh" android:layout_width="wrap_content" android:layout_height="40.0dip" android:text="刷新" android:layout_marginStart="8.0dip" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#2d2d2d"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:layout_marginBottom="8dp">
+
+        <EditText
+            android:id="@+id/notifFilter"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="#1e1e1e"
+            android:hint="按应用包名筛选..."
+            android:textColorHint="#666666"
+            android:textColor="#ffffff"
+            android:paddingHorizontal="8dp"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnNotifWhitelist"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="黑名单"
+            android:layout_marginStart="8dp" />
+
+        <Button
+            android:id="@+id/btnNotifRefresh"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="刷新"
+            android:layout_marginStart="8dp" />
     </LinearLayout>
-    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
-        <Button android:textSize="14.0sp" android:id="@id/btnNotifActiveTab" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="当前通知" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
-        <Button android:textSize="14.0sp" android:id="@id/btnNotifHistoryTab" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="历史记录" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+
+    <!-- Tab 切换按钮 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
+        <Button
+            android:id="@+id/btnNotifActiveTab"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="当前通知"
+            android:textSize="14sp"
+            android:layout_marginEnd="4dp" />
+
+        <Button
+            android:id="@+id/btnNotifHistoryTab"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="历史记录"
+            android:textSize="14sp"
+            android:layout_marginStart="4dp" />
     </LinearLayout>
-    <ListView android:id="@id/notifActiveList" android:scrollbars="vertical" android:layout_width="fill_parent" android:layout_height="0.0dip" android:divider="#ff404040" android:dividerHeight="1.0dip" android:layout_weight="1.0" />
-    <ListView android:id="@id/notifHistoryList" android:visibility="gone" android:scrollbars="vertical" android:layout_width="fill_parent" android:layout_height="0.0dip" android:divider="#ff404040" android:dividerHeight="1.0dip" android:layout_weight="1.0" />
-    <TextView android:textSize="13.0sp" android:textColor="#ff666666" android:layout_gravity="center" android:id="@id/notifEmpty" android:visibility="gone" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无通知" />
+
+    <!-- 当前通知列表 -->
+    <ListView
+        android:id="@+id/notifActiveList"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scrollbars="vertical"
+        android:divider="#404040"
+        android:dividerHeight="1dp" />
+
+    <!-- 历史记录列表 -->
+    <ListView
+        android:id="@+id/notifHistoryList"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scrollbars="vertical"
+        android:divider="#404040"
+        android:dividerHeight="1dp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/notifEmpty"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="暂无通知"
+        android:textColor="#666666"
+        android:textSize="13sp"
+        android:layout_gravity="center"
+        android:visibility="gone" />
 </LinearLayout>

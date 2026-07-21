@@ -1,118 +1,211 @@
-<?xml version="1.0" encoding="utf-8" standalone="no"?><manifest xmlns:android="http://schemas.android.com/apk/res/android" android:compileSdkVersion="36" android:compileSdkVersionCodename="16" package="com.phonehub" platformBuildVersionCode="36" platformBuildVersionName="16">
-    <uses-permission android:name="android.permission.INTERNET"/>
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
-    <uses-permission android:maxSdkVersion="32" android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-    <uses-permission android:maxSdkVersion="29" android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-    <uses-permission android:name="android.permission.CAMERA"/>
-    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"/>
-    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE"/>
-    <uses-permission android:name="android.permission.WAKE_LOCK"/>
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
-    <permission android:name="com.phonehub.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" android:protectionLevel="signature"/>
-    <uses-permission android:name="com.phonehub.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>
-    <supports-screens android:anyDensity="true" android:largeScreens="true" android:normalScreens="true"/>
-    <uses-feature android:name="android.hardware.location.network" android:required="false"/>
-    <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
-    <uses-feature android:name="android.hardware.telephony" android:required="false"/>
-    <uses-feature android:name="android.hardware.wifi" android:required="false"/>
-    <application android:allowAudioPlaybackCapture="true" android:allowBackup="true" android:appComponentFactory="androidx.core.app.CoreComponentFactory" android:debuggable="true" android:extractNativeLibs="true" android:icon="@mipmap/ic_main" android:label="PhoneHub" android:name="com.phonehub.App" android:networkSecurityConfig="@xml/network_security_config" android:persistent="true" android:supportsRtl="true" android:theme="@style/AppTheme" android:usesCleartextTraffic="true">
-        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:excludeFromRecents="true" android:exported="true" android:name="com.phonehub.MainActivity">
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 网络 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- 存储：targetSdk 33+ 下此权限无效，仅对 Android 10-12 有效 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <!-- Android 13+ 细粒度媒体访问（替代 READ_EXTERNAL_STORAGE） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- 文件管理器需要：Android 11+ 访问全部文件 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <!-- 前台服务 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- 悬浮窗 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- GPS 定位 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- 摄像头 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- 声音 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 通知读取 -->
+    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+
+    <!-- 无障碍 -->
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
+
+    <!-- 唤醒锁 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 电池白名单 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- 开机自启 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 应用列表 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- 精确闹钟（Android 12+ 用于被杀后重启服务） -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <application
+        android:name=".App"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_main"
+        android:label="PhoneHub"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:allowAudioPlaybackCapture="true"
+        android:persistent="true"
+        tools:targetApi="36">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:configChanges="keyboardHidden|orientation|screenSize" android:exported="false" android:name="com.phonehub.ScreenshotActivity" android:theme="@style/AppTheme"/>
-        <activity android:exported="true" android:label="同步复制" android:name="com.phonehub.ProcessTextActivity">
+
+        <activity
+            android:name=".ScreenshotActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/AppTheme" />
+
+        <!-- 文本选择菜单中的「同步复制」选项 -->
+        <activity
+            android:name=".ProcessTextActivity"
+            android:exported="true"
+            android:label="同步复制">
             <intent-filter>
-                <action android:name="android.intent.action.PROCESS_TEXT"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="text/plain"/>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
-        <service android:exported="false" android:foregroundServiceType="dataSync" android:name="com.phonehub.PhoneHubService" android:stopWithTask="false"/>
-        <service android:exported="false" android:name="com.phonehub.RestartJobService" android:permission="android.permission.BIND_JOB_SERVICE"/>
-        <service android:exported="false" android:foregroundServiceType="mediaProjection" android:name="com.phonehub.ScreenCaptureService"/>
-        <service android:exported="false" android:foregroundServiceType="location" android:name="com.phonehub.LocationService"/>
-        <service android:exported="true" android:name="com.phonehub.NotificationListener" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+
+        <!-- 前台服务 + 保活（使用 dataSync，因为它是数据同步/保活服务） -->
+        <service
+            android:name=".PhoneHubService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- JobScheduler 重启服务（AlarmManager 被限制时的备用通道） -->
+        <service
+            android:name=".RestartJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- 屏幕截图/投屏前台服务（Android 14+ 要求 MediaProjection 必须在前台服务中运行） -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- GPS 定位 -->
+        <service
+            android:name=".LocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- 通知监听 -->
+        <service
+            android:name=".NotificationListener"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService"/>
+                <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
-            <meta-data android:name="android.service.notification.bind_listener" android:resource="@xml/notification_listener_config"/>
+            <meta-data
+                android:name="android.service.notification.bind_listener"
+                android:resource="@xml/notification_listener_config" />
         </service>
-        <service android:exported="true" android:name="com.phonehub.PhoneHubAccessibilityService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+
+        <!-- 无障碍服务 -->
+        <service
+            android:name=".PhoneHubAccessibilityService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService"/>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
-            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config"/>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
         </service>
-        <provider android:authorities="com.phonehub.fileprovider" android:exported="false" android:grantUriPermissions="true" android:name="androidx.core.content.FileProvider">
-            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths"/>
+
+        <!-- FileProvider 用于 APK 安装 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
         </provider>
-        <receiver android:exported="false" android:name="com.phonehub.FileTransferReceiver">
+
+        <!-- 文件接收通知按钮点击接收器（开始下载 / 取消） -->
+        <receiver
+            android:name=".FileTransferReceiver"
+            android:exported="false">
             <intent-filter>
-                <action android:name="com.phonehub.action.START_FILE_DOWNLOAD"/>
-                <action android:name="com.phonehub.action.CANCEL_FILE_DOWNLOAD"/>
+                <action android:name="com.phonehub.action.START_FILE_DOWNLOAD" />
+                <action android:name="com.phonehub.action.CANCEL_FILE_DOWNLOAD" />
             </intent-filter>
         </receiver>
-        <receiver android:exported="false" android:name="com.phonehub.TextNotificationReceiver">
+
+        <!-- 文字消息通知按钮点击接收器（复制 / 保存） -->
+        <receiver
+            android:name=".TextNotificationReceiver"
+            android:exported="false">
             <intent-filter>
-                <action android:name="com.phonehub.action.COPY_TEXT"/>
-                <action android:name="com.phonehub.action.SAVE_TEXT"/>
+                <action android:name="com.phonehub.action.COPY_TEXT" />
+                <action android:name="com.phonehub.action.SAVE_TEXT" />
             </intent-filter>
         </receiver>
-        <receiver android:exported="false" android:name="com.phonehub.RestartServiceReceiver">
+
+        <!-- AlarmManager 重启接收器：进程被杀后通过 AlarmManager 拉起 -->
+        <receiver
+            android:name=".RestartServiceReceiver"
+            android:exported="false">
             <intent-filter>
-                <action android:name="com.phonehub.action.RESTART_SERVICE"/>
+                <action android:name="com.phonehub.action.RESTART_SERVICE" />
             </intent-filter>
         </receiver>
-        <receiver android:exported="true" android:name="com.phonehub.BootReceiver">
+
+        <!-- 开机自启接收器 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
             <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
-        <service android:enabled="false" android:exported="false" android:name="androidx.camera.core.impl.MetadataHolderService">
-            <meta-data android:name="androidx.camera.core.impl.MetadataHolderService.DEFAULT_CONFIG_PROVIDER" android:value="androidx.camera.camera2.Camera2Config$DefaultProvider"/>
-        </service>
-        <provider android:authorities="com.phonehub.androidx-startup" android:exported="false" android:name="androidx.startup.InitializationProvider">
-            <meta-data android:name="androidx.emoji2.text.EmojiCompatInitializer" android:value="androidx.startup"/>
-            <meta-data android:name="androidx.lifecycle.ProcessLifecycleInitializer" android:value="androidx.startup"/>
-            <meta-data android:name="androidx.profileinstaller.ProfileInstallerInitializer" android:value="androidx.startup"/>
-        </provider>
-        <uses-library android:name="androidx.window.extensions" android:required="false"/>
-        <uses-library android:name="androidx.window.sidecar" android:required="false"/>
-        <receiver android:directBootAware="false" android:enabled="true" android:exported="true" android:name="androidx.profileinstaller.ProfileInstallReceiver" android:permission="android.permission.DUMP">
-            <intent-filter>
-                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE"/>
-            </intent-filter>
-            <intent-filter>
-                <action android:name="androidx.profileinstaller.action.SKIP_FILE"/>
-            </intent-filter>
-            <intent-filter>
-                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE"/>
-            </intent-filter>
-            <intent-filter>
-                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION"/>
-            </intent-filter>
-        </receiver>
+
     </application>
+
 </manifest>

@@ -102,7 +102,6 @@ class ConnectionManager(QObject):
     file_transfer_paused = pyqtSignal(bool)  # 对端暂停/继续传输
     notification_received = pyqtSignal(dict)
     location_received = pyqtSignal(list)
-    process_list_received = pyqtSignal(list)
     power_action_received = pyqtSignal(str)
     file_sent = pyqtSignal(str)
     clipboard_sent = pyqtSignal()
@@ -113,6 +112,7 @@ class ConnectionManager(QObject):
     phone_frame_received = pyqtSignal(bytes)  # 手机投屏画面帧 (JPEG bytes)
     camera_frame_received = pyqtSignal(bytes)  # 手机摄像头画面帧 (JPEG bytes)
     phone_audio_received = pyqtSignal(bytes)  # 手机端音频数据
+    clipboard_history_received = pyqtSignal(list)  # 手机端剪贴板历史同步（list of {content, source, timestamp, favorite}）
 
     def __init__(self):
         super().__init__()
@@ -285,10 +285,8 @@ class ConnectionManager(QObject):
                     self._save_cached_ip(remote_ip)
             if not self.phone_connected:
                 if remote_ip == '127.0.0.1' and self.adb_device_id:
-                    log(f"[连接] 检测到 ADB 通道: remote={remote_ip}")
                     self._set_channel(CHANNEL_ADB)
                 else:
-                    log(f"[连接] 检测到 WiFi 通道: remote={remote_ip}")
                     self._set_channel(CHANNEL_WIFI)
 
         def _get_system_status():
@@ -442,17 +440,8 @@ class ConnectionManager(QObject):
             elif action == 'location_batch':
                 locations = body.get('points', body.get('locations', []))
                 self.location_received.emit(locations)
-            elif action == 'process_list':
-                processes = body.get('processes', [])
-                self.process_list_received.emit(processes)
-            elif action == 'process_list_request':
-                self._send_process_list()
             elif action in ('screenshot_request', 'pc_screenshot_request'):
                 self._take_screenshot_and_send()
-            elif action == 'kill_process':
-                pid = body.get('pid')
-                if pid:
-                    self._kill_process(pid)
             elif action == 'run_as_admin':
                 program = body.get('program', '')
                 if program:
@@ -505,6 +494,11 @@ class ConnectionManager(QObject):
                 history = body.get('history', [])
                 if history:
                     self.url_history_sync_received.emit(history)
+            elif action == 'clipboard_history':
+                # 手机端发来剪贴板历史记录
+                items = body.get('items', [])
+                if items:
+                    self.clipboard_history_received.emit(items)
 
             return jsonify({'status': 'ok', 'cpu': self._cached_cpu})
 
@@ -808,12 +802,10 @@ class ConnectionManager(QObject):
 
     def _set_channel(self, channel):
         old = self.current_channel
-        log(f"[通道] _set_channel: {old} -> {channel}")
         # 从未连接变为已连接，直接设置，无需累积确认
         if old == CHANNEL_NONE and channel != CHANNEL_NONE:
             self.current_channel = channel
             self.phone_connected = True
-            log(f"[通道] 首次连接! emitting connection_status_changed(True, '{channel}')")
             self.connection_status_changed.emit(True, channel)
             self.upgrade_confirm.clear()
             self.downgrade_fail.clear()
@@ -1568,44 +1560,6 @@ class ConnectionManager(QObject):
     def check_adb(self):
         """检查ADB连接"""
         return self._check_adb()
-
-    def _send_process_list(self):
-        """发送电脑进程列表到手机"""
-        processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'username']):
-            try:
-                info = proc.info
-                mem = info.get('memory_info')
-                mem_mb = mem.rss / (1024 * 1024) if mem else 0
-                processes.append({
-                    'pid': info.get('pid'),
-                    'name': info.get('name', ''),
-                    'cpu': info.get('cpu_percent', 0),
-                    'mem': round(mem_mb, 1),
-                    'user': info.get('username', '') or ''
-                })
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
-               "data": {"action": "process_list", "source": "pc", "processes": processes}}
-        self._send_to_phone(msg)
-
-    def _kill_process(self, pid):
-        """结束电脑进程"""
-        try:
-            proc = psutil.Process(pid)
-            proc.terminate()
-            proc.wait(timeout=3)
-            result = "ok"
-        except psutil.AccessDenied:
-            result = "access_denied"
-        except psutil.NoSuchProcess:
-            result = "not_found"
-        except Exception as e:
-            result = f"error: {e}"
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
-               "data": {"action": "kill_process_result", "pid": pid, "result": result}}
-        self._send_to_phone(msg)
 
     def _run_as_admin(self, program):
         """以管理员权限启动程序（Windows）"""

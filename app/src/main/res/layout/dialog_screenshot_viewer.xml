@@ -1,25 +1,144 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="16.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content"
-  xmlns:android="http://schemas.android.com/apk/res/android">
-    <TextView android:textSize="18.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip" android:text="截图查看" />
-    <FrameLayout android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip">
-        <ImageView android:id="@id/screenshotImage" android:background="#ff000000" android:layout_width="fill_parent" android:layout_height="wrap_content" android:adjustViewBounds="true" android:maxHeight="400.0dip" />
-        <View android:id="@id/annotationOverlay" android:visibility="gone" android:layout_width="fill_parent" android:layout_height="fill_parent" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#1e1e1e">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="截图查看"
+        android:textColor="#ffffff"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp">
+
+        <ImageView
+            android:id="@+id/screenshotImage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:adjustViewBounds="true"
+            android:maxHeight="400dp"
+            android:background="#000000" />
+
+        <View
+            android:id="@+id/annotationOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
     </FrameLayout>
-    <LinearLayout android:orientation="horizontal" android:id="@id/annotationToolbar" android:visibility="gone" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
-        <Button android:textSize="12.0sp" android:id="@id/toolBrush" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="画笔" android:layout_weight="1.0" android:layout_marginEnd="3.0dip" />
-        <Button android:textSize="12.0sp" android:id="@id/toolText" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="文字" android:layout_weight="1.0" android:layout_marginHorizontal="3.0dip" />
-        <Button android:textSize="12.0sp" android:id="@id/toolArrow" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="箭头" android:layout_weight="1.0" android:layout_marginHorizontal="3.0dip" />
-        <Button android:textSize="12.0sp" android:id="@id/toolRect" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="矩形" android:layout_weight="1.0" android:layout_marginHorizontal="3.0dip" />
-        <Button android:textSize="12.0sp" android:id="@id/toolMosaic" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="马赛克" android:layout_weight="1.0" android:layout_marginStart="3.0dip" />
+
+    <LinearLayout
+        android:id="@+id/annotationToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/toolBrush"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="画笔"
+            android:textSize="12sp"
+            android:layout_marginEnd="3dp" />
+
+        <Button
+            android:id="@+id/toolText"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="文字"
+            android:textSize="12sp"
+            android:layout_marginHorizontal="3dp" />
+
+        <Button
+            android:id="@+id/toolArrow"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="箭头"
+            android:textSize="12sp"
+            android:layout_marginHorizontal="3dp" />
+
+        <Button
+            android:id="@+id/toolRect"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="矩形"
+            android:textSize="12sp"
+            android:layout_marginHorizontal="3dp" />
+
+        <Button
+            android:id="@+id/toolMosaic"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="马赛克"
+            android:textSize="12sp"
+            android:layout_marginStart="3dp" />
     </LinearLayout>
-    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
-        <Button android:id="@id/btnAnnotate" android:layout_width="0.0dip" android:layout_height="44.0dip" android:text="批注" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
-        <Button android:id="@id/btnUndo" android:layout_width="0.0dip" android:layout_height="44.0dip" android:text="撤销" android:layout_weight="1.0" android:layout_marginHorizontal="4.0dip" />
-        <Button android:id="@id/btnSavePng" android:layout_width="0.0dip" android:layout_height="44.0dip" android:text="保存 PNG" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
+        <Button
+            android:id="@+id/btnAnnotate"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="批注"
+            android:layout_marginEnd="4dp" />
+
+        <Button
+            android:id="@+id/btnUndo"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="撤销"
+            android:layout_marginHorizontal="4dp" />
+
+        <Button
+            android:id="@+id/btnSavePng"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="保存 PNG"
+            android:layout_marginStart="4dp" />
     </LinearLayout>
-    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
-        <Button android:id="@id/btnSendToPc" android:layout_width="0.0dip" android:layout_height="44.0dip" android:text="回传电脑" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
-        <Button android:id="@id/btnClose" android:layout_width="0.0dip" android:layout_height="44.0dip" android:text="关闭" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnSendToPc"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="回传电脑"
+            android:layout_marginEnd="4dp" />
+
+        <Button
+            android:id="@+id/btnClose"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="关闭"
+            android:layout_marginStart="4dp" />
     </LinearLayout>
 </LinearLayout>

@@ -142,6 +142,11 @@ class ClipboardSyncPage(QWidget):
             self.manager.clipboard_favorite_received.connect(self._on_favorite_synced)
         except Exception:
             pass
+        # 接收手机端剪贴板历史同步
+        try:
+            self.manager.clipboard_history_received.connect(self._on_clipboard_history_received)
+        except Exception:
+            pass
         self.history_list.itemClicked.connect(self._on_history_clicked)
         self.history_list.itemDoubleClicked.connect(self._on_history_double_clicked)
         self.history_list.customContextMenuRequested.connect(self._on_history_menu)
@@ -231,6 +236,34 @@ class ClipboardSyncPage(QWidget):
             self._add_favorite(text, "手机")
         else:
             self._remove_favorite(text)
+
+    def _on_clipboard_history_received(self, items):
+        """接收手机端同步过来的剪贴板历史"""
+        if not items:
+            return
+        for item in items:
+            content = item.get('content', '')
+            source = item.get('source', '手机')
+            timestamp = item.get('timestamp', 0)
+            favorite = item.get('favorite', False)
+            if not content:
+                continue
+            # 避免重复添加
+            existing_texts = {e.get('text') for e in self.clipboard_history}
+            if content in existing_texts:
+                continue
+            entry = {
+                'text': content,
+                'source': source,
+                'time': timestamp / 1000.0 if timestamp > 1e10 else timestamp,
+                'fav': favorite
+            }
+            self.clipboard_history.insert(0, entry)
+        # 限制总数
+        if len(self.clipboard_history) > HISTORY_LIMIT:
+            self.clipboard_history = self.clipboard_history[:HISTORY_LIMIT]
+        self._save_history()
+        self._refresh_history_view()
 
     def _add_history(self, text, source):
         entry = {'text': text, 'source': source, 'time': time.time(), 'fav': False}

@@ -1,87 +1,165 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView android:background="#ff1e1e1e" android:layout_width="fill_parent" android:layout_height="fill_parent" android:fillViewport="true"
-  xmlns:android="http://schemas.android.com/apk/res/android">
-    <LinearLayout android:orientation="vertical" android:padding="6.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content">
-        <TextView android:textSize="12.0sp" android:textColor="#ff808080" android:id="@id/modifierStatus" android:background="#ff252525" android:padding="10.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="6.0dip" android:text="修饰键: 无" />
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f1" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F1" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f2" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F2" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f3" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F3" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f4" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F4" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f5" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F5" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f6" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F6" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1e1e1e"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="6dp">
+
+        <!-- 修饰键状态 -->
+        <TextView
+            android:id="@+id/modifierStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#252525"
+            android:padding="10dp"
+            android:text="修饰键: 无"
+            android:textColor="#808080"
+            android:textSize="12sp"
+            android:layout_marginBottom="6dp" />
+
+        <!-- F1-F6 行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/k_f1" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F1" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f2" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F2" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f3" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F3" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f4" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F4" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f5" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F5" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f6" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F6" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
         </LinearLayout>
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f7" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F7" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f8" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F8" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f9" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F9" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f10" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F10" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f11" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F11" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f12" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F12" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
+
+        <!-- F7-F12 行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/k_f7" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F7" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f8" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F8" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f9" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F9" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f10" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F10" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f11" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F11" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_f12" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F12" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
         </LinearLayout>
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_1" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="1" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_2" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="2" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_3" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="3" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_4" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="4" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_5" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="5" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_6" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="6" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_7" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="7" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_8" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="8" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_9" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="9" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_0" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="0" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
+
+        <!-- 数字行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/k_1" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="1" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_2" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="2" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_3" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="3" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_4" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="4" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_5" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="5" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_6" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="6" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_7" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="7" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_8" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="8" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_9" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="9" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_0" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="0" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
         </LinearLayout>
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_q" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Q" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_w" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="W" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_e" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="E" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_r" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="R" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_t" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="T" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_y" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Y" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_u" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="U" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_i" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="I" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_o" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="O" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_p" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="P" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
+
+        <!-- Q 行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/k_q" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="Q" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_w" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="W" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_e" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="E" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_r" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="R" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_t" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="T" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_y" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="Y" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_u" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="U" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_i" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="I" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_o" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="O" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_p" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="P" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
         </LinearLayout>
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:paddingStart="14.0dip" android:paddingEnd="14.0dip">
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_a" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="A" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_s" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="S" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_d" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="D" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_f" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="F" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_g" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="G" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_h" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="H" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_j" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="J" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_k" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="K" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_l" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="L" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
+
+        <!-- A 行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp">
+            <Button android:id="@+id/k_a" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="A" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_s" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="S" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_d" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="D" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_f" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="F" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_g" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="G" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_h" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="H" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_j" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="J" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_k" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="K" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_l" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="L" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
         </LinearLayout>
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:paddingStart="28.0dip" android:paddingEnd="28.0dip">
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_z" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Z" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_x" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="X" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_c" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="C" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_v" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="V" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_b" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="B" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_n" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="N" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_m" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="M" android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_comma" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="," android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_dot" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="." android:layout_weight="1.0" style="?android:borderlessButtonStyle" />
+
+        <!-- Z 行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp">
+            <Button android:id="@+id/k_z" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="Z" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_x" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="X" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_c" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="C" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_v" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="V" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_b" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="B" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_n" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="N" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_m" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="M" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_comma" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="," android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_dot" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1" android:text="." android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
         </LinearLayout>
-        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginTop="6.0dip">
-            <Button android:textSize="12.0sp" android:textColor="#ffa0a0a0" android:id="@id/k_shift" android:background="@drawable/kb_modifier_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Shift" android:layout_weight="1.3" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="12.0sp" android:textColor="#ffa0a0a0" android:id="@id/k_ctrl" android:background="@drawable/kb_modifier_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Ctrl" android:layout_weight="1.3" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="12.0sp" android:textColor="#ffa0a0a0" android:id="@id/k_alt" android:background="@drawable/kb_modifier_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Alt" android:layout_weight="1.3" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="12.0sp" android:textColor="#ffa0a0a0" android:id="@id/k_win" android:background="@drawable/kb_modifier_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Win" android:layout_weight="1.3" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="13.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_space" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Space" android:layout_weight="3.0" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="12.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_enter" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="Enter" android:layout_weight="1.3" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_bksp" android:background="@drawable/kb_key_bg" android:layout_width="0.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="⌫" android:layout_weight="1.3" style="?android:borderlessButtonStyle" />
+
+        <!-- 修饰键行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp">
+            <Button android:id="@+id/k_shift" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1.3" android:text="Shift" android:textColor="#a0a0a0" android:background="@drawable/kb_modifier_bg" android:layout_margin="1.5dp" android:textSize="12sp"/>
+            <Button android:id="@+id/k_ctrl" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1.3" android:text="Ctrl" android:textColor="#a0a0a0" android:background="@drawable/kb_modifier_bg" android:layout_margin="1.5dp" android:textSize="12sp"/>
+            <Button android:id="@+id/k_alt" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1.3" android:text="Alt" android:textColor="#a0a0a0" android:background="@drawable/kb_modifier_bg" android:layout_margin="1.5dp" android:textSize="12sp"/>
+            <Button android:id="@+id/k_win" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1.3" android:text="Win" android:textColor="#a0a0a0" android:background="@drawable/kb_modifier_bg" android:layout_margin="1.5dp" android:textSize="12sp"/>
+            <Button android:id="@+id/k_space" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="3" android:text="Space" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="13sp"/>
+            <Button android:id="@+id/k_enter" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1.3" android:text="Enter" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="12sp"/>
+            <Button android:id="@+id/k_bksp" style="?android:attr/borderlessButtonStyle" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1.3" android:text="⌫" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
         </LinearLayout>
-        <TextView android:textSize="11.0sp" android:textColor="#ff505050" android:layout_gravity="center" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8.0dip" android:text="点击修饰键可锁定组合" />
-        <LinearLayout android:gravity="center" android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginTop="6.0dip">
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_up" android:background="@drawable/kb_key_bg" android:layout_width="56.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="▲" style="?android:borderlessButtonStyle" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="点击修饰键可锁定组合"
+            android:textColor="#505050"
+            android:textSize="11sp"
+            android:layout_marginTop="8dp"
+            android:layout_gravity="center" />
+
+        <!-- 方向键行 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="6dp"
+            android:gravity="center">
+            <Button android:id="@+id/k_up" style="?android:attr/borderlessButtonStyle" android:layout_width="56dp" android:layout_height="42dp" android:text="▲" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
         </LinearLayout>
-        <LinearLayout android:gravity="center" android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_left" android:background="@drawable/kb_key_bg" android:layout_width="56.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="◀" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_down" android:background="@drawable/kb_key_bg" android:layout_width="56.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="▼" style="?android:borderlessButtonStyle" />
-            <Button android:textSize="14.0sp" android:textColor="#ffe0e0e0" android:id="@id/k_right" android:background="@drawable/kb_key_bg" android:layout_width="56.0dip" android:layout_height="42.0dip" android:layout_margin="1.5dip" android:text="▶" style="?android:borderlessButtonStyle" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center">
+            <Button android:id="@+id/k_left" style="?android:attr/borderlessButtonStyle" android:layout_width="56dp" android:layout_height="42dp" android:text="◀" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_down" style="?android:attr/borderlessButtonStyle" android:layout_width="56dp" android:layout_height="42dp" android:text="▼" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
+            <Button android:id="@+id/k_right" style="?android:attr/borderlessButtonStyle" android:layout_width="56dp" android:layout_height="42dp" android:text="▶" android:textColor="#e0e0e0" android:background="@drawable/kb_key_bg" android:layout_margin="1.5dp" android:textSize="14sp"/>
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

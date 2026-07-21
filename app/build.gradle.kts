@@ -17,7 +17,7 @@ android {
 
     defaultConfig {
         applicationId = "com.phonehub"
-        minSdk = 29
+        minSdk = 24
         targetSdk = 36
         versionCode = 2
         versionName = "2.0"
@@ -50,7 +50,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            kotlin.srcDirs("src/main/kotlin")
+            kotlin.srcDirs("src/main/java")
             res.srcDirs("src/main/res")
             jniLibs.srcDirs("src/main/jniLibs")
         }
