@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="推送网页" />
+    <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:background="#ff2d2d2d" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip" android:text="输入 URL 推送到电脑打开。历史记录标注传输方向。" />
+    <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="4.0dip" android:text="URL" />
+    <EditText android:textSize="13.0sp" android:textColor="#ffffffff" android:textColorHint="#ff666666" android:id="@id/urlInput" android:background="#ff2d2d2d" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="12.0dip" android:hint="https://..." android:inputType="textUri" android:paddingHorizontal="12.0dip" />
+    <Button android:id="@id/btnPushUrlPc" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="8.0dip" android:text="发送到电脑打开" />
+    <TextView android:textSize="14.0sp" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="16.0dip" android:layout_marginBottom="8.0dip" android:text="历史" />
+    <ListView android:id="@id/urlHistoryList" android:scrollbars="vertical" android:layout_width="fill_parent" android:layout_height="0.0dip" android:divider="#ff404040" android:dividerHeight="1.0dip" android:layout_weight="1.0" />
+</LinearLayout>

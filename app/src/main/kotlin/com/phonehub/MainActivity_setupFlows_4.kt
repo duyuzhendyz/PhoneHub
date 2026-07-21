@@ -1,69 +1,53 @@
 package com.phonehub
 
-import androidx.constraintlayout.widget.ConstraintLayout
 import kotlin.KotlinNothingValueException
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.SharedFlow
 
-class MainActivity {
-    var label: Int? = null
-    final  MainActivity this$0
+class MainActivity_setupFlows_4(
+    private val `this$0`: MainActivity,
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public MainActivity$setupFlows$4(MainActivity mainActivity, Continuation<? super MainActivity$setupFlows$4> continuation) {
-        super(2, continuation)
-        this.this$0 = mainActivity
-        }
+    var label: Int = 0
 
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new MainActivity$setupFlows$4(this.this$0, continuation)
-        }
-
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((MainActivity$setupFlows$4) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
-
-    override
-    fun invokeSuspend(/* Object $result */): Any {
-        val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
-        switch (this.label) {
-            case 0:
-            ResultKt.throwOnFailure($result)
-            val cameraSwitchRequest: SharedFlow<Unit> = ConnectionManager.INSTANCE.getCameraSwitchRequest()
-            val mainActivity: MainActivity = this.this$0
-            this.label = 1
-            if (cameraSwitchRequest.collect(FlowCollector() { // from class: com.phonehub.MainActivity$setupFlows$4.1
-                override
-                public   Object emit(Object value, Continuation $completion) {
-                    return emit((Unit) value, (Continuation<? super Unit>) $completion)
-                    }
-
-                fun emit(it: Unit, continuation: Continuation<? super Unit>): Any {
-                    var z: Boolean? = null
-                    val mainActivity2: MainActivity = MainActivity.this
-                    z = MainActivity.this.cameraPreviewRunning
-                    mainActivity2.performCameraSwitch(z)
-                    return Unit.INSTANCE
-                    }
-                }, this) == coroutine_suspended) {
-                var coroutine_suspended: return? = null
-                }
-            break
-            case 1:
-            ResultKt.throwOnFailure($result)
-            break
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
-            }
-        throw KotlinNothingValueException()
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return MainActivity_setupFlows_4(this.`this$0`, continuation)
     }
+
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as MainActivity_setupFlows_4).invokeSuspend(Unit)
+    }
+
+    override fun invokeSuspend(result: Any): Any {
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        when (label) {
+            0 -> {
+                ResultKt.throwOnFailure(result)
+                val cameraSwitchRequest: SharedFlow<Unit> = ConnectionManager.INSTANCE.cameraSwitchRequest
+                val mainActivity: MainActivity = this.`this$0`
+                label = 1
+                val collectResult = cameraSwitchRequest.collect(object : FlowCollector<Unit> {
+                    override suspend fun emit(value: Unit) {
+                        val z = mainActivity.cameraPreviewRunning
+                        mainActivity.performCameraSwitch(z)
+                    }
+                })
+                if (collectResult == coroutine_suspended) {
+                    return coroutine_suspended
+                }
+            }
+            1 -> {
+                ResultKt.throwOnFailure(result)
+            }
+            else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+        }
+        return Unit
+    }
+}

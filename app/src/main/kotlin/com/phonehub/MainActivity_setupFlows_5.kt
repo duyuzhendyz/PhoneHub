@@ -2,113 +2,73 @@ package com.phonehub
 
 import android.view.View
 import android.widget.TextView
-import androidx.constraintlayout.widget.ConstraintLayout
-import com.phonehub.ConnectionManager
-import java.util.HashMap
 import kotlin.KotlinNothingValueException
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.Boxing
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.StateFlow
 
-class MainActivity {
-    var label: Int? = null
-    final  MainActivity this$0
+class MainActivity_setupFlows_5(
+    private val `this$0`: MainActivity,
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public MainActivity$setupFlows$5(MainActivity mainActivity, Continuation<? super MainActivity$setupFlows$5> continuation) {
-        super(2, continuation)
-        this.this$0 = mainActivity
-        }
+    var label: Int = 0
 
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new MainActivity$setupFlows$5(this.this$0, continuation)
-        }
-
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((MainActivity$setupFlows$5) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
-
-    override
-    fun invokeSuspend(/* Object $result */): Any {
-        val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
-        switch (this.label) {
-            case 0:
-            ResultKt.throwOnFailure($result)
-            StateFlow<ConnectionManager.ChannelType> currentChannel = ConnectionManager.INSTANCE.getCurrentChannel()
-            val mainActivity: MainActivity = this.this$0
-            this.label = 1
-            if (currentChannel.collect(FlowCollector() { // from class: com.phonehub.MainActivity$setupFlows$5.1
-
-                public  class WhenMappings {
-                    public static final  int[] $EnumSwitchMapping$0
-
-                    static {
-                        val iArr: Array<Int> = new int[ConnectionManager.ChannelType.values().length]
-                        try {
-                            iArr[ConnectionManager.ChannelType.WIFI.ordinal()] = 1
-                            } catch (NoSuchFieldError e) {
-                            }
-                        try {
-                            iArr[ConnectionManager.ChannelType.ADB.ordinal()] = 2
-                            } catch (NoSuchFieldError e2) {
-                            }
-                        $EnumSwitchMapping$0 = iArr
-                        }
-                    }
-
-                override
-                public   Object emit(Object value, Continuation $completion) {
-                    return emit((ConnectionManager.ChannelType) value, (Continuation<? super Unit>) $completion)
-                    }
-
-                fun emit(/* ConnectionManager.ChannelType channel */, continuation: Continuation<? super Unit>): Any {
-                    var channelName: String? = null
-                    var hashMap: HashMap? = null
-                    var hashMap2: HashMap? = null
-                    var textView: TextView? = null
-                    var textView2: TextView? = null
-                    switch (WhenMappings.$EnumSwitchMapping$0[channel.ordinal()]) {
-                        case 1:
-                        channelName = "WiFi 直连"
-                        break
-                        case 2:
-                        channelName = "USB 数据线"
-                        break
-                        default:
-                        channelName = "无"
-                        break
-                        }
-                    hashMap = MainActivity.this.pageCache
-                    val view: View = (View) hashMap.get(Boxing.boxInt(0))
-                    if (view != null && (textView2 = (TextView) view.findViewById(R.id.channelHome)) != null) {
-                        textView2.setText("通道: " + channelName)
-                        }
-                    hashMap2 = MainActivity.this.pageCache
-                    val view2: View = (View) hashMap2.get(Boxing.boxInt(16))
-                    if (view2 != null && (textView = (TextView) view2.findViewById(R.id.infoChannel)) != null) {
-                        textView.setText("通道: " + channelName)
-                        }
-                    return Unit.INSTANCE
-                    }
-                }, this) == coroutine_suspended) {
-                var coroutine_suspended: return? = null
-                }
-            break
-            case 1:
-            ResultKt.throwOnFailure($result)
-            break
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
-            }
-        throw KotlinNothingValueException()
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return MainActivity_setupFlows_5(this.`this$0`, continuation)
     }
+
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as MainActivity_setupFlows_5).invokeSuspend(Unit)
+    }
+
+    override fun invokeSuspend(result: Any): Any {
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        when (label) {
+            0 -> {
+                ResultKt.throwOnFailure(result)
+                val currentChannel: StateFlow<ConnectionManager.ChannelType> = ConnectionManager.INSTANCE.currentChannel
+                val mainActivity: MainActivity = this.`this$0`
+                label = 1
+                val collectResult = currentChannel.collect(object : FlowCollector<ConnectionManager.ChannelType> {
+                    override suspend fun emit(channel: ConnectionManager.ChannelType) {
+                        val channelName: String = when (channel) {
+                            ConnectionManager.ChannelType.WIFI -> "WiFi 直连"
+                            ConnectionManager.ChannelType.ADB -> "USB 数据线"
+                            else -> "无"
+                        }
+                        val hashMap = mainActivity.pageCache
+                        val view = hashMap.get(0) as View?
+                        if (view != null) {
+                            val textView2 = view.findViewById<TextView>(R.id.channelHome)
+                            if (textView2 != null) {
+                                textView2.setText("通道: " + channelName)
+                            }
+                        }
+                        val hashMap2 = mainActivity.pageCache
+                        val view2 = hashMap2.get(16) as View?
+                        if (view2 != null) {
+                            val textView = view2.findViewById<TextView>(R.id.infoChannel)
+                            if (textView != null) {
+                                textView.setText("通道: " + channelName)
+                            }
+                        }
+                    }
+                })
+                if (collectResult == coroutine_suspended) {
+                    return coroutine_suspended
+                }
+            }
+            1 -> {
+                ResultKt.throwOnFailure(result)
+            }
+            else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+        }
+        throw KotlinNothingValueException()
+    }
+}

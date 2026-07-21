@@ -1,29 +1,24 @@
 package com.phonehub
 
-import androidx.constraintlayout.widget.ConstraintLayout
 import kotlin.coroutines.Continuation
-import kotlin.coroutines.jvm.internal.ContinuationImpl
-import kotlin.coroutines.jvm.internal.DebugMetadata
+import kotlin.coroutines.intrinsics.IntrinsicsKt
+import kotlin.coroutines.jvm.internal.SuspendLambda
 
-class ConnectionManager {
-    Object L$0
-    Object L$1
-    Object L$2
-    var label: Int? = null
-    /* synthetic */ Object result;
-    final  ConnectionManager this$0
+class ConnectionManager_handlePollFailure_1(
+    private val outer: ConnectionManager,
+    continuation: Continuation<*>
+) : SuspendLambda(2, continuation) {
 
-    public ConnectionManager$handlePollFailure$1(ConnectionManager connectionManager, Continuation<? super ConnectionManager$handlePollFailure$1> continuation) {
-        super(continuation)
-        this.this$0 = connectionManager
-        }
+    var label: Int = 0
 
-    override
-    fun invokeSuspend(obj: Any): Any {
-        var handlePollFailure: Any? = null
-        this.result = obj
-        this.label |= Integer.MIN_VALUE
-        handlePollFailure = this.this$0.handlePollFailure(null, null, this)
-        var handlePollFailure: return? = null
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return ConnectionManager_handlePollFailure_1(this.outer, continuation)
     }
+
+    override fun invokeSuspend(result: Any): Any {
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        this.label |= Int.MIN_VALUE
+        val handlePollFailure = outer.handlePollFailure(null, null, this)
+        return if (handlePollFailure == coroutine_suspended) coroutine_suspended else Unit
+    }
+}

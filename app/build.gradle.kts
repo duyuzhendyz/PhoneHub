@@ -1,5 +1,5 @@
 // ============================================================
-// PhoneHub - Gradle build using apktool for smali-based packaging
+// PhoneHub - Standard Kotlin + AGP build
 // ============================================================
 // Usage: gradlew.bat assembleDebug
 // Output: app/build/outputs/apk/debug/app-debug.apk
@@ -7,6 +7,8 @@
 
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 android {
@@ -37,188 +39,67 @@ android {
         viewBinding = false
         buildConfig = false
     }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    sourceSets {
+        getByName("main") {
+            kotlin.srcDirs("src/main/kotlin")
+            res.srcDirs("src/main/res")
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+
+    
 }
+
+
 
 dependencies {
-    // All libraries inlined into smali
-}
+    // Kotlin
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.23")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 
-// ============================================================
-// Custom build: apktool assembles smali + resources -> APK
-// ============================================================
+    // Ktor client
+    implementation("io.ktor:ktor-client-android:2.3.7")
+    implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
 
-val rootDirPath = rootProject.projectDir
-val apktoolJar = file("$rootDirPath/apktool.jar")
-val apkDecodedDir = file("$rootDirPath/apk_decoded")
-val keystoreFile = file("$rootDirPath/phonehub.keystore")
+    // OkHttp
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-// Task: build APK using apktool
-val apktoolAssembleDebug by tasks.registering {
-    description = "Build debug APK using apktool (assembles smali + resources)"
-    group = "build"
+    // Coil
+    implementation("io.coil-kt:coil:2.5.0")
 
-    val outputApk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk")
-    val unsignedApk = layout.buildDirectory.file("intermediates/apktool/PhoneHub-unsigned.apk")
+    // AndroidX
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.activity:activity-ktx:1.8.2")
+    implementation("androidx.fragment:fragment-ktx:1.6.2")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("androidx.startup:startup-runtime:1.1.1")
+    implementation("androidx.profileinstaller:profileinstaller:1.3.1")
 
-    inputs.dir(apkDecodedDir)
-    inputs.file(apktoolJar)
-    outputs.file(unsignedApk)
+    // CameraX
+    implementation("androidx.camera:camera-core:1.3.1")
+    implementation("androidx.camera:camera-lifecycle:1.3.1")
+    implementation("androidx.camera:camera-view:1.3.1")
+    implementation("androidx.camera:camera-camera2:1.3.1")
 
-    doLast {
-        val unsigned = unsignedApk.get().asFile
-        unsigned.parentFile.mkdirs()
+    // Material
+    implementation("com.google.android.material:material:1.12.0")
 
-        logger.lifecycle("== apktool b ${apkDecodedDir.name} -> ${unsigned.name} ==")
-        val pb = ProcessBuilder(
-            System.getProperty("java.home") + "/bin/java",
-            "-jar", apktoolJar.absolutePath,
-            "b", apkDecodedDir.absolutePath,
-            "-o", unsigned.absolutePath,
-            "--use-aapt2"
-        )
-        pb.redirectErrorStream(true)
-        val proc = pb.start()
-        val output = proc.inputStream.bufferedReader().readText()
-        val exitCode = proc.waitFor()
-        if (output.isNotBlank()) logger.lifecycle(output)
-        if (exitCode != 0) {
-            throw GradleException("apktool build failed (exit $exitCode)")
-        }
-        logger.lifecycle("Built unsigned: ${unsigned.name} (${unsigned.length()} bytes)")
-    }
-}
-
-// Task: sign the APK
-val signDebugApk by tasks.registering {
-    description = "Sign debug APK with jarsigner"
-    group = "build"
-
-    dependsOn(apktoolAssembleDebug)
-
-    val unsignedApk = layout.buildDirectory.file("intermediates/apktool/PhoneHub-unsigned.apk")
-    val signedApk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk")
-
-    inputs.file(unsignedApk)
-    outputs.file(signedApk)
-
-    doLast {
-        val unsigned = unsignedApk.get().asFile
-        val signed = signedApk.get().asFile
-        signed.parentFile.mkdirs()
-
-        // Generate keystore if not exists
-        if (!keystoreFile.exists()) {
-            logger.lifecycle("Generating debug keystore...")
-            val kspb = ProcessBuilder(
-                System.getProperty("java.home") + "/bin/keytool",
-                "-genkeypair", "-v",
-                "-keystore", keystoreFile.absolutePath,
-                "-alias", "phonehub",
-                "-keyalg", "RSA", "-keysize", "2048",
-                "-validity", "36500",
-                "-storepass", "phonehub123",
-                "-keypass", "phonehub123",
-                "-dname", "CN=PhoneHub, OU=Dev, O=PhoneHub, L=Beijing, S=Beijing, C=CN"
-            )
-            kspb.redirectErrorStream(true)
-            val ksProc = kspb.start()
-            ksProc.inputStream.bufferedReader().readText()
-            ksProc.waitFor()
-        }
-
-        // Copy unsigned APK to output, then sign in-place
-        unsigned.copyTo(signed, overwrite = true)
-
-        logger.lifecycle("Signing APK with jarsigner...")
-        val signPb = ProcessBuilder(
-            System.getProperty("java.home") + "/bin/jarsigner",
-            "-sigalg", "SHA256withRSA",
-            "-digestalg", "SHA-256",
-            "-keystore", keystoreFile.absolutePath,
-            "-storepass", "phonehub123",
-            "-keypass", "phonehub123",
-            signed.absolutePath,
-            "phonehub"
-        )
-        signPb.redirectErrorStream(true)
-        val signProc = signPb.start()
-        signProc.inputStream.bufferedReader().readText()
-        val signExit = signProc.waitFor()
-        if (signExit != 0) {
-            throw GradleException("jarsigner failed (exit $signExit)")
-        }
-
-        // Zipalign
-        val buildToolsDir = File("$rootDirPath/android-sdk/build-tools")
-        val btDir = buildToolsDir.listFiles()?.maxByOrNull { it.name } ?: File(buildToolsDir, "34.0.0")
-        val zipalign = File(btDir, "zipalign.exe")
-        if (zipalign.exists()) {
-            logger.lifecycle("Zipaligning...")
-            val aligned = File(signed.parentFile, "app-debug-aligned.apk")
-            val zpb = ProcessBuilder(
-                zipalign.absolutePath, "-f", "4",
-                signed.absolutePath, aligned.absolutePath
-            )
-            zpb.redirectErrorStream(true)
-            val zProc = zpb.start()
-            zProc.inputStream.bufferedReader().readText()
-            zProc.waitFor()
-            aligned.copyTo(signed, overwrite = true)
-            aligned.delete()
-        }
-
-        logger.lifecycle("== Output: ${signed.absolutePath} ==")
-        logger.lifecycle("== Size: ${signed.length()} bytes ==")
-    }
-}
-
-// Disable AGP tasks that would fail without Java sources (do this first, before AGP creates assembleDebug)
-tasks.matching {
-    it.name.startsWith("compile") ||
-    it.name.startsWith("merge") ||
-    it.name.startsWith("package") ||
-    it.name.startsWith("process") ||
-    it.name.startsWith("dataBinding") ||
-    it.name.startsWith("generate") ||
-    it.name.startsWith("check") ||
-    it.name.startsWith("validate") ||
-    it.name.startsWith("javaPreCompile") ||
-    it.name.startsWith("kotlin")
-}.configureEach {
-    enabled = false
-}
-
-// Wire up assembleDebug/assemble to call our apktool-based build (after AGP evaluation)
-afterEvaluate {
-    // assembleDebug: register or wire up
-    val existingAssembleDebug = tasks.findByName("assembleDebug")
-    if (existingAssembleDebug != null) {
-        // Clear existing dependencies to avoid circular deps, then depend on our signing task
-        existingAssembleDebug.dependsOn.clear()
-        existingAssembleDebug.dependsOn(signDebugApk)
-    } else {
-        tasks.register("assembleDebug") {
-            group = "build"
-            description = "Builds the debug APK using apktool"
-            dependsOn(signDebugApk)
-        }
-    }
-
-    // assemble: register or wire up
-    val existingAssemble = tasks.findByName("assemble")
-    if (existingAssemble != null) {
-        existingAssemble.dependsOn(signDebugApk)
-    } else {
-        tasks.register("assemble") {
-            group = "build"
-            description = "Assembles all outputs"
-            dependsOn(signDebugApk)
-        }
-    }
-
-    // Also expose build lifecycle
-    val existingBuild = tasks.findByName("build")
-    if (existingBuild != null) {
-        existingBuild.dependsOn(signDebugApk)
-    }
+    // AndroidX Preference (styles.xml 引用了相关属性)
+    implementation("androidx.preference:preference-ktx:1.2.1")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }

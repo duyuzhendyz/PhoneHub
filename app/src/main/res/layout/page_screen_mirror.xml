@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:id="@id/mirrorTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="投屏 + 反向控制" />
+    <LinearLayout android:orientation="horizontal" android:id="@id/topButtons" android:background="#ff2d2d2d" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
+        <Button android:id="@id/btnMirrorToggle" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="启动推流" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
+        <Button android:id="@id/btnAudio" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="声音传输" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+    </LinearLayout>
+    <FrameLayout android:id="@id/mirrorFrame" android:background="#ff000000" android:visibility="gone" android:layout_width="fill_parent" android:layout_height="0.0dip" android:layout_marginBottom="8.0dip" android:layout_weight="1.0">
+        <SurfaceView android:id="@id/mirrorPreview" android:layout_width="fill_parent" android:layout_height="fill_parent" />
+        <TextView android:textSize="14.0sp" android:textColor="#ffb0b0b0" android:layout_gravity="center" android:id="@id/mirrorStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="未启动" />
+        <Button android:textSize="18.0sp" android:textColor="#ffffffff" android:layout_gravity="end|center|top" android:id="@id/btnMirrorFullscreenExit" android:background="#80000000" android:visibility="gone" android:layout_width="44.0dip" android:layout_height="44.0dip" android:layout_margin="8.0dip" android:text="✕" />
+    </FrameLayout>
+    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginTop="8.0dip">
+        <Button android:id="@id/btnFullscreen" android:layout_width="0.0dip" android:layout_height="44.0dip" android:text="全屏" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
+        <Button android:id="@id/btnStopPcStream" android:layout_width="0.0dip" android:layout_height="44.0dip" android:text="停止电脑投屏" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+    </LinearLayout>
+</LinearLayout>

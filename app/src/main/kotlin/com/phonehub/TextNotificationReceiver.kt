@@ -6,49 +6,40 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import androidx.constraintlayout.widget.ConstraintLayout
 import java.io.File
-import kotlin.io.FilesKt
 
-class TextNotificationReceiver : BroadcastReceiver {
-    val ACTION_COPY: public static final String = "com.phonehub.action.COPY_TEXT"
-    val ACTION_SAVE: public static final String = "com.phonehub.action.SAVE_TEXT"
-    val EXTRA_TEXT: public static final String = "text"
+class TextNotificationReceiver : BroadcastReceiver() {
+    companion object {
+        const val ACTION_COPY = "com.phonehub.action.COPY_TEXT"
+        const val ACTION_SAVE = "com.phonehub.action.SAVE_TEXT"
+        const val EXTRA_TEXT = "text"
+    }
 
-    override
-    fun onReceive(context: Context, intent: Intent): Unit {
-        var action: String? = null
-        Intrinsics.checkNotNullParameter(context, "context")
-        if (intent == null || (action = intent.getAction()) == null) {
-            return
-            }
-        val txt: String = intent.getStringExtra(EXTRA_TEXT)
-        if (txt == null) {
-            txt = ""
-            }
-        Log.i("PhoneHub", "TextNotificationReceiver: action=" + action + ", length=" + txt.length())
-        if (Intrinsics.areEqual(action, ACTION_COPY)) {
-            val systemService: Any = context.getSystemService("clipboard")
-            val cm: ClipboardManager = systemService instanceof ClipboardManager ? (ClipboardManager) systemService : null
+    override fun onReceive(context: Context, intent: Intent) {
+        val action = intent.action ?: return
+        var txt = intent.getStringExtra(EXTRA_TEXT) ?: ""
+        Log.i("PhoneHub", "TextNotificationReceiver: action=" + action + ", length=" + txt.length)
+        if (action == ACTION_COPY) {
+            val systemService = context.getSystemService("clipboard")
+            val cm = systemService as? ClipboardManager
             if (cm != null) {
                 cm.setPrimaryClip(ClipData.newPlainText("PhoneHub", txt))
-                return
-                }
-            return
             }
-        if (Intrinsics.areEqual(action, ACTION_SAVE)) {
+            return
+        }
+        if (action == ACTION_SAVE) {
             try {
-                val dir: File = ConnectionManager.INSTANCE.getReceiveDir()
+                var dir = ConnectionManager.receiveDir
                 if (dir == null) {
-                    dir = context.getFilesDir()
-                    }
-                dir.mkdirs()
-                val file: File = new File(dir, "text_" + System.currentTimeMillis() + ".txt")
-                FilesKt.writeText$default(file, txt, null, 2, null)
-                Log.i("PhoneHub", "文字已保存: " + file.getAbsolutePath())
-                } catch (Exception e) {
-                Log.e("PhoneHub", "保存文字失败", e)
+                    dir = context.filesDir
                 }
+                dir.mkdirs()
+                val file = File(dir, "text_" + System.currentTimeMillis() + ".txt")
+                file.writeText(txt)
+                Log.i("PhoneHub", "文字已保存: " + file.absolutePath)
+            } catch (e: Exception) {
+                Log.e("PhoneHub", "保存文字失败", e)
             }
         }
     }
+}

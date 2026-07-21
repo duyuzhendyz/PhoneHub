@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="24.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="18.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="16.0dip" android:text="发送文字" />
+    <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="文件名(可选)" />
+    <EditText android:textColor="#ffffffff" android:textColorHint="#ff666666" android:id="@id/filenameInput" android:background="#ff2d2d2d" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="16.0dip" android:hint="留空则用时间戳命名" android:paddingHorizontal="16.0dip" />
+    <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="文字内容" />
+    <EditText android:textColor="#ffffffff" android:textColorHint="#ff666666" android:gravity="start|center|top" android:id="@id/textContentInput" android:background="#ff2d2d2d" android:padding="16.0dip" android:layout_width="fill_parent" android:layout_height="120.0dip" android:layout_marginBottom="16.0dip" android:hint="在此输入要发送的文字..." android:inputType="textMultiLine" />
+    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
+        <Button android:id="@id/cancelTextBtn" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="取消" android:layout_weight="1.0" android:layout_marginEnd="8.0dip" />
+        <Button android:id="@id/sendTextBtn" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="发送" android:layout_weight="1.0" android:layout_marginStart="8.0dip" />
+    </LinearLayout>
+</LinearLayout>

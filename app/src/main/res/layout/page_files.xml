@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="16.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip" android:text="文件传输" />
+    <Button android:id="@id/selectFileBtn" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="8.0dip" android:text="选择文件发送" />
+    <LinearLayout android:orientation="vertical" android:id="@id/fileProgressContainer" android:background="#ff2d2d2d" android:padding="16.0dip" android:visibility="gone" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
+        <TextView android:textSize="14.0sp" android:textColor="#ffffffff" android:id="@id/fileNameText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="等待传输..." />
+        <ProgressBar android:id="@id/fileProgress" android:layout_width="fill_parent" android:layout_height="8.0dip" android:max="100" android:progress="0" android:progressTint="#ff0078d4" android:progressBackgroundTint="#ff404040" style="?android:progressBarStyleHorizontal" />
+        <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginTop="4.0dip">
+            <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:id="@id/fileProgressText" android:layout_width="0.0dip" android:layout_height="wrap_content" android:text="" android:layout_weight="1.0" />
+            <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:id="@id/fileSpeedText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="" />
+        </LinearLayout>
+    </LinearLayout>
+    <LinearLayout android:orientation="horizontal" android:id="@id/fileTransferBtnContainer" android:visibility="gone" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
+        <Button android:enabled="false" android:id="@id/pauseFileBtn" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="暂停" android:layout_weight="1.0" android:layout_marginEnd="6.0dip" />
+        <Button android:enabled="false" android:id="@id/cancelFileBtn" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="取消传输" android:layout_weight="1.0" android:layout_marginEnd="6.0dip" />
+        <Button android:enabled="false" android:id="@id/doneFileBtn" android:visibility="gone" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="完成" android:layout_weight="1.0" android:layout_marginStart="6.0dip" />
+    </LinearLayout>
+    <TextView android:textSize="14.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="6.0dip" android:text="传输历史" />
+    <ListView android:textColor="#ffffffff" android:id="@id/fileHistoryList" android:background="#ff2d2d2d" android:layout_width="fill_parent" android:layout_height="0.0dip" android:divider="#ff404040" android:dividerHeight="1.0dip" android:layout_weight="1.0" />
+</LinearLayout>

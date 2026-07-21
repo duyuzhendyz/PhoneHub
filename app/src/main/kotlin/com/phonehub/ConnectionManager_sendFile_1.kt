@@ -1,288 +1,122 @@
 package com.phonehub
 
 import android.util.Log
-import androidx.constraintlayout.widget.ConstraintLayout
-import com.phonehub.ConnectionManager
 import java.io.File
 import java.util.UUID
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.Boxing
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function1
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CompletableDeferredKt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutKt
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.serialization.json.JsonElementBuildersKt
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
-class ConnectionManager {
-    final  File $file
-    long J$0
-    Object L$0
-    var label: Int? = null
+class ConnectionManager_sendFile_1(
+    private val file: File,
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public  class WhenMappings {
-        public static final  int[] $EnumSwitchMapping$0
+    var label: Int = 0
 
-        static {
-            val iArr: Array<Int> = new int[ConnectionManager.ChannelType.values().length]
-            try {
-                iArr[ConnectionManager.ChannelType.ADB.ordinal()] = 1
-                } catch (NoSuchFieldError e) {
-                }
-            try {
-                iArr[ConnectionManager.ChannelType.WIFI.ordinal()] = 2
-                } catch (NoSuchFieldError e2) {
-                }
-            $EnumSwitchMapping$0 = iArr
-            }
-        }
+    private var L$0: Any? = null
+    private var J$0: Long = 0L
 
-    public ConnectionManager$sendFile$1(File file, Continuation<? super ConnectionManager$sendFile$1> continuation) {
-        super(2, continuation)
-        this.$file = file
-        }
-
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new ConnectionManager$sendFile$1(this.$file, continuation)
-        }
-
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((ConnectionManager$sendFile$1) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
-
-    override
-    /*
-    Code decompiled incorrectly, please refer to instructions dump.
-    */
-    fun invokeSuspend(obj: Any): Any {
-        Object $result
-        var headMsg: JsonObject? = null
-        var sendRaw: Any? = null
-        var fileId: String? = null
-        var fileSize: Long? = null
-        var withTimeoutOrNull: Any? = null
-        var fileId2: String? = null
-        var fileSize2: Long? = null
-        Object $result2
-        Object $result3
-        var accepted: Boolean? = null
-        var mutableStateFlow: MutableStateFlow? = null
-        var sendFileWifi: Any? = null
-        Object $result4
-        var sendFileWifi2: Any? = null
-        Object $result5
-        val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
-        val r2: ?? = this.label
-        try {
-            try {
-                } catch (Throwable th) {
-                th = th
-                }
-            } catch (Exception e) {
-            e = e
-            }
-        switch (r2) {
-            case 0:
-            ResultKt.throwOnFailure(obj)
-            $result = obj
-            val fileId3: String = UUID.randomUUID().toString()
-            Intrinsics.checkNotNullExpressionValue(fileId3, "toString(...)")
-            val fileSize3: Long = this.$file.length()
-            val connectionManager: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.fileTransferCancel = false
-            val connectionManager2: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.transferPaused = false
-            val connectionManager3: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.transferInProgress = true
-            val connectionManager4: ConnectionManager = ConnectionManager.INSTANCE
-            val file: File = this.$file
-            headMsg = connectionManager4.buildJsonMessage(Function1() { // from class: com.phonehub.ConnectionManager$sendFile$1$$ExternalSyntheticLambda0
-                override
-                fun invoke(obj2: Any): Any {
-                    Unit invokeSuspend$lambda$1
-                    invokeSuspend$lambda$1 = ConnectionManager$sendFile$1.invokeSuspend$lambda$1(file, fileSize3, fileId3, (JsonObjectBuilder) obj2)
-                    return invokeSuspend$lambda$1
-                    }
-                })
-            this.L$0 = fileId3
-            this.J$0 = fileSize3
-            this.label = 1
-            sendRaw = ConnectionManager.INSTANCE.sendRaw(headMsg.toString(), this)
-            if (sendRaw == coroutine_suspended) {
-                var coroutine_suspended: return? = null
-                }
-            fileId = fileId3
-            fileSize = fileSize3
-            val deferred: CompletableDeferred = CompletableDeferredKt.CompletableDeferred$default(null, 1, null)
-            val connectionManager5: ConnectionManager = ConnectionManager.INSTANCE
-            val name: String = this.$file.getName()
-            Intrinsics.checkNotNullExpressionValue(name, "getName(...)")
-            val fileId4: String = fileId
-            val fileSize4: Long = fileSize
-            ConnectionManager.pendingSend = new ConnectionManager.PendingSendInfo(fileId, name, fileSize, this.$file, null, null, deferred, 48, null)
-            Log.i("PhoneHub", "sendFile: 已发送 head, 等待 PC 确认 fileId=" + fileId4)
-            this.L$0 = fileId4
-            this.J$0 = fileSize4
-            this.label = 2
-            withTimeoutOrNull = TimeoutKt.withTimeoutOrNull(120000L, new ConnectionManager$sendFile$1$accepted$1(deferred, null), this)
-            if (withTimeoutOrNull != coroutine_suspended) {
-                var coroutine_suspended: return? = null
-                }
-            fileId2 = fileId4
-            fileSize2 = fileSize4
-            $result2 = $result
-            $result3 = withTimeoutOrNull
-            try {
-                accepted = (Boolean) $result3
-                val connectionManager6: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.pendingSend = null
-                } catch (Exception e2) {
-                e = e2
-                r2 = $result2
-                Log.e("PhoneHub", "Send file failed", e)
-                val connectionManager7: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.transferInProgress = false
-                val connectionManager8: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.pendingSend = null
-                return Unit.INSTANCE
-                } catch (Throwable th2) {
-                th = th2
-                val connectionManager9: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.transferInProgress = false
-                val connectionManager10: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.pendingSend = null
-                var th: throw? = null
-                }
-            if (Intrinsics.areEqual(accepted, Boxing.boxBoolean(true))) {
-                Log.w("PhoneHub", "sendFile: PC 未确认或拒绝，取消发送 fileId=" + fileId2)
-                val unit: Unit = Unit.INSTANCE
-                val connectionManager11: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.transferInProgress = false
-                val connectionManager12: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.pendingSend = null
-                var unit: return? = null
-                }
-            mutableStateFlow = ConnectionManager._currentChannel
-            switch (WhenMappings.$EnumSwitchMapping$0[((ConnectionManager.ChannelType) mutableStateFlow.getValue()).ordinal()]) {
-                case 1:
-                this.L$0 = null
-                this.label = 3
-                sendFileWifi = ConnectionManager.INSTANCE.sendFileWifi(fileId2, this.$file, fileSize2, this)
-                if (sendFileWifi == coroutine_suspended) {
-                    var coroutine_suspended: return? = null
-                    }
-                $result4 = $result2
-                val connectionManager13: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.transferInProgress = false
-                val connectionManager14: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.pendingSend = null
-                return Unit.INSTANCE
-                case 2:
-                this.L$0 = null
-                this.label = 4
-                sendFileWifi2 = ConnectionManager.INSTANCE.sendFileWifi(fileId2, this.$file, fileSize2, this)
-                if (sendFileWifi2 == coroutine_suspended) {
-                    var coroutine_suspended: return? = null
-                    }
-                $result5 = $result2
-                val connectionManager132: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.transferInProgress = false
-                val connectionManager142: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.pendingSend = null
-                return Unit.INSTANCE
-                default:
-                val connectionManager1322: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.transferInProgress = false
-                val connectionManager1422: ConnectionManager = ConnectionManager.INSTANCE
-                ConnectionManager.pendingSend = null
-                return Unit.INSTANCE
-                }
-            case 1:
-            $result = obj
-            val fileSize5: Long = this.J$0
-            val fileId5: String = (String) this.L$0
-            ResultKt.throwOnFailure($result)
-            fileSize = fileSize5
-            fileId = fileId5
-            val deferred2: CompletableDeferred = CompletableDeferredKt.CompletableDeferred$default(null, 1, null)
-            val connectionManager52: ConnectionManager = ConnectionManager.INSTANCE
-            val name2: String = this.$file.getName()
-            Intrinsics.checkNotNullExpressionValue(name2, "getName(...)")
-            val fileId42: String = fileId
-            val fileSize42: Long = fileSize
-            ConnectionManager.pendingSend = new ConnectionManager.PendingSendInfo(fileId, name2, fileSize, this.$file, null, null, deferred2, 48, null)
-            Log.i("PhoneHub", "sendFile: 已发送 head, 等待 PC 确认 fileId=" + fileId42)
-            this.L$0 = fileId42
-            this.J$0 = fileSize42
-            this.label = 2
-            withTimeoutOrNull = TimeoutKt.withTimeoutOrNull(120000L, new ConnectionManager$sendFile$1$accepted$1(deferred2, null), this)
-            if (withTimeoutOrNull != coroutine_suspended) {
-                }
-            break
-            case 2:
-            $result3 = obj
-            val fileSize6: Long = this.J$0
-            val fileId6: String = (String) this.L$0
-            ResultKt.throwOnFailure($result3)
-            $result2 = $result3
-            fileSize2 = fileSize6
-            fileId2 = fileId6
-            accepted = (Boolean) $result3
-            val connectionManager62: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.pendingSend = null
-            if (Intrinsics.areEqual(accepted, Boxing.boxBoolean(true))) {
-                }
-            break
-            case 3:
-            $result4 = obj
-            ResultKt.throwOnFailure($result4)
-            val connectionManager13222: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.transferInProgress = false
-            val connectionManager14222: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.pendingSend = null
-            return Unit.INSTANCE
-            case 4:
-            $result5 = obj
-            ResultKt.throwOnFailure($result5)
-            val connectionManager132222: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.transferInProgress = false
-            val connectionManager142222: ConnectionManager = ConnectionManager.INSTANCE
-            ConnectionManager.pendingSend = null
-            return Unit.INSTANCE
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
-            }
-        }
-
-    public static final Unit invokeSuspend$lambda$1(final File $file, final long $fileSize, final String $fileId, JsonObjectBuilder $this$buildJsonMessage) {
-        JsonElementBuildersKt.put($this$buildJsonMessage, "source", "phone")
-        JsonElementBuildersKt.putJsonObject($this$buildJsonMessage, "data", Function1() { // from class: com.phonehub.ConnectionManager$sendFile$1$$ExternalSyntheticLambda1
-            override
-            fun invoke(obj: Any): Any {
-                Unit invokeSuspend$lambda$1$lambda$0
-                invokeSuspend$lambda$1$lambda$0 = ConnectionManager$sendFile$1.invokeSuspend$lambda$1$lambda$0($file, $fileSize, $fileId, (JsonObjectBuilder) obj)
-                return invokeSuspend$lambda$1$lambda$0
-                }
-            })
-        return Unit.INSTANCE
-        }
-
-    public static final Unit invokeSuspend$lambda$1$lambda$0(File $file, long $fileSize, String $fileId, JsonObjectBuilder $this$putJsonObject) {
-        JsonElementBuildersKt.put($this$putJsonObject, "action", "send_file_head")
-        JsonElementBuildersKt.put($this$putJsonObject, FileTransferReceiver.EXTRA_FILE_NAME, $file.getName())
-        JsonElementBuildersKt.put($this$putJsonObject, FileTransferReceiver.EXTRA_FILE_SIZE, Long.valueOf($fileSize))
-        JsonElementBuildersKt.put($this$putJsonObject, "file_id", $fileId)
-        return Unit.INSTANCE
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return ConnectionManager_sendFile_1(this.file, continuation)
     }
+
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as ConnectionManager_sendFile_1).invokeSuspend(Unit)
+    }
+
+    override fun invokeSuspend(result: Any): Any {
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        when (label) {
+            0 -> {
+                ResultKt.throwOnFailure(result)
+                val fileId = UUID.randomUUID().toString()
+                val fileSize = this.file.length()
+                ConnectionManager.fileTransferCancel = false
+                ConnectionManager.transferPaused = false
+                ConnectionManager.transferInProgress = true
+                val headMsg: JsonObject = ConnectionManager.INSTANCE.buildJsonMessage {
+                    put("source", "phone")
+                    putJsonObject("data") {
+                        put("action", "send_file_head")
+                        put(FileTransferReceiver.EXTRA_FILE_NAME, file.name)
+                        put(FileTransferReceiver.EXTRA_FILE_SIZE, fileSize)
+                        put("file_id", fileId)
+                    }
+                }
+                this.L$0 = fileId
+                this.J$0 = fileSize
+                this.label = 1
+                val sendRaw = ConnectionManager.INSTANCE.sendRaw(headMsg.toString(), this)
+                if (sendRaw == coroutine_suspended) {
+                    return coroutine_suspended
+                }
+            }
+            1 -> {
+                ResultKt.throwOnFailure(result)
+                val fileId = this.L$0 as String
+                val fileSize = this.J$0
+                val deferred = CompletableDeferred<Boolean>()
+                ConnectionManager.pendingSend = ConnectionManager.PendingSendInfo(
+                    fileId, file.name, fileSize, file, null, null, deferred, 48, null
+                )
+                Log.i("PhoneHub", "sendFile: 已发送 head, 等待 PC 确认 fileId=$fileId")
+                this.L$0 = fileId
+                this.J$0 = fileSize
+                this.label = 2
+                val withTimeoutOrNull = TimeoutKt.withTimeoutOrNull(120000L, ConnectionManager_sendFile_1_accepted_1(deferred), this)
+                if (withTimeoutOrNull == coroutine_suspended) {
+                    return coroutine_suspended
+                }
+            }
+            2 -> {
+                ResultKt.throwOnFailure(result)
+                val fileId = this.L$0 as String
+                val fileSize = this.J$0
+                val accepted = result as? Boolean ?: false
+                ConnectionManager.pendingSend = null
+                if (!accepted) {
+                    Log.w("PhoneHub", "sendFile: PC 未确认或拒绝，取消发送 fileId=$fileId")
+                    ConnectionManager.transferInProgress = false
+                    ConnectionManager.pendingSend = null
+                    return Unit
+                }
+                val channel = ConnectionManager._currentChannel.value
+                this.L$0 = null
+                when (channel) {
+                    ConnectionManager.ChannelType.ADB, ConnectionManager.ChannelType.WIFI -> {
+                        this.label = 3
+                        val sendFileWifi = ConnectionManager.INSTANCE.sendFileWifi(fileId, this.file, fileSize, this)
+                        if (sendFileWifi == coroutine_suspended) {
+                            return coroutine_suspended
+                        }
+                    }
+                    else -> {
+                        ConnectionManager.transferInProgress = false
+                        ConnectionManager.pendingSend = null
+                        return Unit
+                    }
+                }
+            }
+            3 -> {
+                ResultKt.throwOnFailure(result)
+                ConnectionManager.transferInProgress = false
+                ConnectionManager.pendingSend = null
+                return Unit
+            }
+            else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+        }
+        return Unit
+    }
+}

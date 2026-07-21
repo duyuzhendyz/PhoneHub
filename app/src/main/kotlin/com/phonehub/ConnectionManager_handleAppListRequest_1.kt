@@ -4,18 +4,13 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.util.Log
-import androidx.constraintlayout.widget.ConstraintLayout
 import io.ktor.http.ContentDisposition
 import java.io.File
-import java.util.List
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function1
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonArrayBuilder
@@ -23,122 +18,114 @@ import kotlinx.serialization.json.JsonElementBuildersKt
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 
-class ConnectionManager {
-    var label: Int? = null
+class ConnectionManager_handleAppListRequest_1(
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public ConnectionManager$handleAppListRequest$1(Continuation<? super ConnectionManager$handleAppListRequest$1> continuation) {
-        super(2, continuation)
-        }
+    var label: Int = 0
 
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new ConnectionManager$handleAppListRequest$1(continuation)
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return ConnectionManager_handleAppListRequest_1(continuation)
+    }
 
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((ConnectionManager$handleAppListRequest$1) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as ConnectionManager_handleAppListRequest_1).invokeSuspend(Unit)
+    }
 
-    override
-    fun invokeSuspend(/* Object $result */): Any {
-        var context: Context? = null
-        var pm: PackageManager? = null
-        var msg: JsonObject? = null
+    override fun invokeSuspend(result: Any): Any {
         var sendRaw: Any? = null
         val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
         try {
-            switch (this.label) {
-                case 0:
-                ResultKt.throwOnFailure($result)
-                context = ConnectionManager.context
-                if (context != null && (pm = context.getPackageManager()) != null) {
-                    val infos: List = pm.getInstalledApplications(0)
-                    Intrinsics.checkNotNullExpressionValue(infos, "getInstalledApplications(...)")
-                    JsonArrayBuilder builder$iv = JsonArrayBuilder()
-                    for (final ApplicationInfo info : infos) {
-                        JsonElementBuildersKt.addJsonObject(builder$iv, Function1() { // from class: com.phonehub.ConnectionManager$handleAppListRequest$1$$ExternalSyntheticLambda1
-                            override
-                            fun invoke(obj: Any): Any {
-                                Unit invokeSuspend$lambda$1$lambda$0
-                                invokeSuspend$lambda$1$lambda$0 = ConnectionManager$handleAppListRequest$1.invokeSuspend$lambda$1$lambda$0(pm, info, (JsonObjectBuilder) obj)
-                                return invokeSuspend$lambda$1$lambda$0
+            when (this.label) {
+                0 -> {
+                    ResultKt.throwOnFailure(result)
+                    val context: Context? = ConnectionManager.context
+                    if (context != null) {
+                        val pm: PackageManager = context.packageManager
+                        if (pm != null) {
+                            val infos: List<ApplicationInfo> = pm.getInstalledApplications(0)
+                            val builderIv = JsonArrayBuilder()
+                            for (info in infos) {
+                                JsonElementBuildersKt.addJsonObject(builderIv) {
+                                    `invokeSuspend$lambda$1$lambda$0`(pm, info, this)
                                 }
-                            })
-                        }
-                    val arr: JsonArray = builder$iv.build()
-                    msg = ConnectionManager.INSTANCE.buildJsonMessage(Function1() { // from class: com.phonehub.ConnectionManager$handleAppListRequest$1$$ExternalSyntheticLambda2
-                        override
-                        fun invoke(obj: Any): Any {
-                            Unit invokeSuspend$lambda$3
-                            invokeSuspend$lambda$3 = ConnectionManager$handleAppListRequest$1.invokeSuspend$lambda$3(JsonArray.this, (JsonObjectBuilder) obj)
-                            return invokeSuspend$lambda$3
                             }
-                        })
-                    this.label = 1
-                    sendRaw = ConnectionManager.INSTANCE.sendRaw(msg.toString(), this)
-                    if (sendRaw == coroutine_suspended) {
-                        var coroutine_suspended: return? = null
+                            val arr: JsonArray = builderIv.build()
+                            val msg: JsonObject = ConnectionManager.INSTANCE.buildJsonMessage {
+                                `invokeSuspend$lambda$3`(arr, this)
+                            }
+                            this.label = 1
+                            sendRaw = ConnectionManager.INSTANCE.sendRaw(msg.toString(), this)
+                            if (sendRaw == coroutine_suspended) {
+                                return coroutine_suspended
+                            }
                         }
                     }
-                return Unit.INSTANCE
-                case 1:
-                ResultKt.throwOnFailure($result)
-                break
-                default:
-                throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+                    return Unit
                 }
-            } catch (Exception e) {
+                1 -> {
+                    ResultKt.throwOnFailure(result)
+                }
+                else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+            }
+        } catch (e: Exception) {
             Log.e("PhoneHub", "App list failed", e)
-            }
-        return Unit.INSTANCE
         }
+        return Unit
+    }
 
-    public static final Unit invokeSuspend$lambda$1$lambda$0(PackageManager $pm, ApplicationInfo $info, JsonObjectBuilder $this$addJsonObject) {
-        var j: Long? = null
-        val str: String = ""
-        JsonElementBuildersKt.put($this$addJsonObject, ContentDisposition.Parameters.Name, $pm.getApplicationLabel($info).toString())
-        JsonElementBuildersKt.put($this$addJsonObject, "package", $info.packageName)
-        JsonElementBuildersKt.put($this$addJsonObject, "system", Boolean.valueOf(($info.flags & 1) != 0))
-        try {
-            val str2: String = $pm.getPackageInfo($info.packageName, 0).versionName
-            if (str2 != null) {
-                str = str2
+    companion object {
+        fun `invokeSuspend$lambda$1$lambda$0`(
+            pm: PackageManager,
+            info: ApplicationInfo,
+            addJsonObjectBuilder: JsonObjectBuilder
+        ): Unit {
+            var str: String = ""
+            JsonElementBuildersKt.put(addJsonObjectBuilder, ContentDisposition.Parameters.Name, pm.getApplicationLabel(info).toString())
+            JsonElementBuildersKt.put(addJsonObjectBuilder, "package", info.packageName)
+            JsonElementBuildersKt.put(addJsonObjectBuilder, "system", (info.flags and 1) != 0)
+            try {
+                val str2: String? = pm.getPackageInfo(info.packageName, 0).versionName
+                if (str2 != null) {
+                    str = str2
                 }
-            } catch (Exception e) {
+            } catch (e: Exception) {
             }
-        JsonElementBuildersKt.put($this$addJsonObject, "version", str)
-        val j2: Long = 0
-        try {
-            j = File($info.sourceDir).length()
-            } catch (Exception e2) {
-            j = 0
+            JsonElementBuildersKt.put(addJsonObjectBuilder, "version", str)
+            var j: Long = 0
+            try {
+                j = File(info.sourceDir).length()
+            } catch (e2: Exception) {
+                j = 0
             }
-        JsonElementBuildersKt.put($this$addJsonObject, ContentDisposition.Parameters.Size, Long.valueOf(j))
-        try {
-            j2 = $pm.getPackageInfo($info.packageName, 0).firstInstallTime
-            } catch (Exception e3) {
+            JsonElementBuildersKt.put(addJsonObjectBuilder, ContentDisposition.Parameters.Size, j)
+            var j2: Long = 0
+            try {
+                j2 = pm.getPackageInfo(info.packageName, 0).firstInstallTime
+            } catch (e3: Exception) {
             }
-        JsonElementBuildersKt.put($this$addJsonObject, "install_time", Long.valueOf(j2))
-        return Unit.INSTANCE
+            JsonElementBuildersKt.put(addJsonObjectBuilder, "install_time", j2)
+            return Unit
         }
 
-    public static final Unit invokeSuspend$lambda$3(final JsonArray $arr, JsonObjectBuilder $this$buildJsonMessage) {
-        JsonElementBuildersKt.put($this$buildJsonMessage, "source", "phone")
-        JsonElementBuildersKt.putJsonObject($this$buildJsonMessage, "data", Function1() { // from class: com.phonehub.ConnectionManager$handleAppListRequest$1$$ExternalSyntheticLambda0
-            override
-            fun invoke(obj: Any): Any {
-                Unit invokeSuspend$lambda$3$lambda$2
-                invokeSuspend$lambda$3$lambda$2 = ConnectionManager$handleAppListRequest$1.invokeSuspend$lambda$3$lambda$2(JsonArray.this, (JsonObjectBuilder) obj)
-                return invokeSuspend$lambda$3$lambda$2
-                }
-            })
-        return Unit.INSTANCE
+        fun `invokeSuspend$lambda$3`(
+            arr: JsonArray,
+            buildJsonMessageBuilder: JsonObjectBuilder
+        ): Unit {
+            JsonElementBuildersKt.put(buildJsonMessageBuilder, "source", "phone")
+            JsonElementBuildersKt.putJsonObject(buildJsonMessageBuilder, "data") {
+                `invokeSuspend$lambda$3$lambda$2`(arr, this)
+            }
+            return Unit
         }
 
-    public static final Unit invokeSuspend$lambda$3$lambda$2(JsonArray $arr, JsonObjectBuilder $this$putJsonObject) {
-        JsonElementBuildersKt.put($this$putJsonObject, "action", "app_list")
-        $this$putJsonObject.put("apps", $arr)
-        return Unit.INSTANCE
+        fun `invokeSuspend$lambda$3$lambda$2`(
+            arr: JsonArray,
+            putJsonObjectBuilder: JsonObjectBuilder
+        ): Unit {
+            JsonElementBuildersKt.put(putJsonObjectBuilder, "action", "app_list")
+            putJsonObjectBuilder.put("apps", arr)
+            return Unit
         }
     }
+}

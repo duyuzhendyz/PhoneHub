@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="APK 安装" />
+    <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:background="#ff2d2d2d" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip" android:text="电脑可使用 ADB push 并通过本机静默安装 APK。安装过程中会显示正在安装通知。" />
+    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip">
+        <Button android:id="@id/btnApkPick" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="选择 APK 安装" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
+        <Button android:id="@id/btnApkInstallLast" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="安装最近接收" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+    </LinearLayout>
+    <TextView android:textSize="14.0sp" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="最近接收的 APK" />
+    <ListView android:id="@id/apkList" android:scrollbars="vertical" android:layout_width="fill_parent" android:layout_height="0.0dip" android:divider="#ff404040" android:dividerHeight="1.0dip" android:layout_weight="1.0" />
+    <TextView android:textSize="13.0sp" android:textColor="#ff666666" android:layout_gravity="center" android:id="@id/apkEmpty" android:visibility="gone" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无接收的 APK" />
+</LinearLayout>

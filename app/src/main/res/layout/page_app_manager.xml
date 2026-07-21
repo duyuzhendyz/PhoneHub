@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="应用管理" />
+    <LinearLayout android:orientation="horizontal" android:background="#ff2d2d2d" android:padding="8.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
+        <EditText android:textSize="12.0sp" android:textColor="#ffffffff" android:textColorHint="#ff666666" android:id="@id/appFilter" android:background="#ff1e1e1e" android:layout_width="0.0dip" android:layout_height="40.0dip" android:hint="搜索应用名或包名..." android:layout_weight="1.0" android:paddingHorizontal="8.0dip" />
+        <Button android:id="@id/btnAppRefresh" android:layout_width="wrap_content" android:layout_height="40.0dip" android:text="刷新" android:layout_marginStart="8.0dip" />
+    </LinearLayout>
+    <ListView android:id="@id/appList" android:scrollbars="vertical" android:layout_width="fill_parent" android:layout_height="0.0dip" android:divider="#ff404040" android:dividerHeight="1.0dip" android:layout_weight="1.0" />
+    <TextView android:textSize="13.0sp" android:textColor="#ff666666" android:layout_gravity="center" android:id="@id/appEmpty" android:visibility="gone" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无应用" />
+</LinearLayout>

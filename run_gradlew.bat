@@ -7,5 +7,5 @@ cd /d c:\PhoneHub
 echo === Java version ===
 "%JAVA_HOME%\bin\java.exe" -version
 echo === Starting Gradle assembleDebug (using local gradle 8.9) ===
-call "c:\PhoneHub\gradle-dist\gradle-8.9\bin\gradle.bat" assembleDebug --no-daemon --console=plain --offline
+call "c:\PhoneHub\gradle-dist\gradle-8.9\bin\gradle.bat" assembleDebug --no-daemon --console=plain
 echo === Gradle exit code: %ERRORLEVEL% ===

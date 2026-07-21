@@ -1,6 +1,5 @@
 package com.phonehub
 
-import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
@@ -22,7 +21,6 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.constraintlayout.widget.ConstraintLayout
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
@@ -32,295 +30,220 @@ import java.util.Date
 import java.util.Locale
 import kotlin.io.CloseableKt
 
-class ScreenshotActivity : AppCompatActivity {
-    val REQ_MEDIA_PROJECTION: private static final int = 5001
-    val TAG: private static final String = "PHScreenshot"
-    var container: private LinearLayout? = null
-    var hint: private TextView? = null
-    var progress: private ProgressBar? = null
-    var projection: private MediaProjection? = null
-    var projectionManager: private MediaProjectionManager? = null
+class ScreenshotActivity : AppCompatActivity() {
+    private var container: LinearLayout? = null
+    private var hint: TextView? = null
+    private var progress: ProgressBar? = null
+    private var projection: MediaProjection? = null
+    private var projectionManager: MediaProjectionManager? = null
 
-    override
-    fun onCreate(savedInstanceState: Bundle): Unit {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        LinearLayout $this$onCreate_u24lambda_u240 = LinearLayout(this)
-        $this$onCreate_u24lambda_u240.setOrientation(1)
-        $this$onCreate_u24lambda_u240.setGravity(17)
-        $this$onCreate_u24lambda_u240.setPadding(48, 48, 48, 48)
-        $this$onCreate_u24lambda_u240.setBackgroundColor(Color.parseColor("#cc000000"))
-        this.container = $this$onCreate_u24lambda_u240
-        TextView $this$onCreate_u24lambda_u241 = TextView(this)
-        $this$onCreate_u24lambda_u241.setText("正在请求截屏权限...")
-        $this$onCreate_u24lambda_u241.setTextColor(-1)
-        $this$onCreate_u24lambda_u241.setTextSize(14.0f)
-        $this$onCreate_u24lambda_u241.setPadding(0, 0, 0, 24)
-        this.hint = $this$onCreate_u24lambda_u241
-        ProgressBar $this$onCreate_u24lambda_u242 = ProgressBar(this)
-        $this$onCreate_u24lambda_u242.setIndeterminate(true)
-        this.progress = $this$onCreate_u24lambda_u242
-        val linearLayout: LinearLayout = this.container
-        val progressBar: ProgressBar = null
-        if (linearLayout == null) {
-            Intrinsics.throwUninitializedPropertyAccessException("container")
-            linearLayout = null
-            }
-        val textView: TextView = this.hint
-        if (textView == null) {
-            Intrinsics.throwUninitializedPropertyAccessException("hint")
-            textView = null
-            }
+        val linearLayout = LinearLayout(this)
+        linearLayout.orientation = 1
+        linearLayout.gravity = 17
+        linearLayout.setPadding(48, 48, 48, 48)
+        linearLayout.setBackgroundColor(Color.parseColor("#cc000000"))
+        this.container = linearLayout
+        val textView = TextView(this)
+        textView.text = "正在请求截屏权限..."
+        textView.setTextColor(-1)
+        textView.textSize = 14.0f
+        textView.setPadding(0, 0, 0, 24)
+        this.hint = textView
+        val progressBar = ProgressBar(this)
+        progressBar.isIndeterminate = true
+        this.progress = progressBar
         linearLayout.addView(textView)
-        val linearLayout2: LinearLayout = this.container
-        if (linearLayout2 == null) {
-            Intrinsics.throwUninitializedPropertyAccessException("container")
-            linearLayout2 = null
-            }
-        val progressBar2: ProgressBar = this.progress
-        if (progressBar2 == null) {
-            Intrinsics.throwUninitializedPropertyAccessException("progress")
-            progressBar2 = null
-            }
-        linearLayout2.addView(progressBar2)
-        val linearLayout3: LinearLayout = this.container
-        if (linearLayout3 == null) {
-            Intrinsics.throwUninitializedPropertyAccessException("container")
-            linearLayout3 = null
-            }
-        setContentView(linearLayout3)
-        val systemService: Any = getSystemService("media_projection")
-        this.projectionManager = systemService is MediaProjectionManager ? (MediaProjectionManager) systemService : null
+        linearLayout.addView(progressBar)
+        setContentView(linearLayout)
+        val systemService = getSystemService("media_projection")
+        this.projectionManager = if (systemService is MediaProjectionManager) systemService else null
         if (this.projectionManager == null) {
-            val textView2: TextView = this.hint
-            if (textView2 == null) {
-                Intrinsics.throwUninitializedPropertyAccessException("hint")
-                textView2 = null
-                }
-            textView2.setText("当前设备不支持截屏")
-            val progressBar3: ProgressBar = this.progress
-            if (progressBar3 == null) {
-                Intrinsics.throwUninitializedPropertyAccessException("progress")
-                } else {
-                progressBar = progressBar3
-                }
-            progressBar.setVisibility(8)
-            Handler(Looper.getMainLooper()).postDelayed(Runnable() { // from class: com.phonehub.ScreenshotActivity$$ExternalSyntheticLambda1
-                override
-                fun run(): Unit {
-                    ScreenshotActivity.this.finish()
-                    }
-                }, 1500L)
+            this.hint?.text = "当前设备不支持截屏"
+            this.progress?.visibility = 8
+            Handler(Looper.getMainLooper()).postDelayed({
+                this@ScreenshotActivity.finish()
+            }, 1500L)
             return
-            }
+        }
         try {
-            val mediaProjectionManager: MediaProjectionManager = this.projectionManager
-            Intrinsics.checkNotNull(mediaProjectionManager)
-            startActivityForResult(mediaProjectionManager.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION)
-            } catch (Exception e) {
+            val mediaProjectionManager = this.projectionManager
+            if (mediaProjectionManager != null) {
+                startActivityForResult(mediaProjectionManager.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION)
+            }
+        } catch (e: Exception) {
             Log.e(TAG, "createScreenCaptureIntent failed", e)
             finish()
-            }
         }
+    }
 
-    override
-    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent): Unit {
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_MEDIA_PROJECTION) {
             if (resultCode != -1 || data == null) {
                 finish()
                 return
-                }
+            }
             try {
-                val mediaProjectionManager: MediaProjectionManager = this.projectionManager
-                this.projection = mediaProjectionManager != null ? mediaProjectionManager.getMediaProjection(resultCode, data) : null
+                val mediaProjectionManager = this.projectionManager
+                this.projection = mediaProjectionManager?.getMediaProjection(resultCode, data)
                 ConnectionManager.INSTANCE.cacheMediaProjectionToken(resultCode, data)
                 doScreenshot()
                 return
-                } catch (SecurityException e) {
+            } catch (e: SecurityException) {
                 Log.e(TAG, "getMediaProjection failed", e)
                 finish()
                 return
-                }
             }
-        finish()
         }
+        finish()
+    }
 
-    fun doScreenshot(): Unit {
+    fun doScreenshot() {
         try {
-            val metrics: DisplayMetrics = new DisplayMetrics()
-            getWindowManager().getDefaultDisplay().getRealMetrics(metrics)
-            val w: Int = metrics.widthPixels
-            val h: Int = metrics.heightPixels
-            val dpi: Int = metrics.densityDpi
-            val imageReader: ImageReader = ImageReader.newInstance(w, h, 1, 2)
-            Intrinsics.checkNotNullExpressionValue(imageReader, "newInstance(...)")
-            val mediaProjection: MediaProjection = this.projection
+            val metrics = DisplayMetrics()
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            val w = metrics.widthPixels
+            val h = metrics.heightPixels
+            val dpi = metrics.densityDpi
+            val imageReader = ImageReader.newInstance(w, h, 1, 2)
+            val mediaProjection = this.projection
             if (mediaProjection != null) {
-                mediaProjection.registerCallback(new MediaProjection.Callback() { // from class: com.phonehub.ScreenshotActivity$doScreenshot$1
-                    }, Handler(Looper.getMainLooper()))
+                mediaProjection.registerCallback(object : MediaProjection.Callback() {}, Handler(Looper.getMainLooper()))
+            }
+            val mediaProjection2 = this.projection
+            val virtualDisplay = mediaProjection2?.createVirtualDisplay(
+                "PhoneHubScreenshot", w, h, dpi, 16, imageReader.surface, null, null
+            )
+            imageReader.setOnImageAvailableListener(object : ImageReader.OnImageAvailableListener {
+                override fun onImageAvailable(reader: ImageReader) {
+                    `doScreenshot$lambda$4`(w, h, this@ScreenshotActivity, virtualDisplay, imageReader, reader)
                 }
-            val mediaProjection2: MediaProjection = this.projection
-            val virtualDisplay: VirtualDisplay = mediaProjection2 != null ? mediaProjection2.createVirtualDisplay("PhoneHubScreenshot", w, h, dpi, 16, imageReader.getSurface(), null, null) : null
-            imageReader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() { // from class: com.phonehub.ScreenshotActivity$$ExternalSyntheticLambda2
-                override
-                fun onImageAvailable(imageReader2: ImageReader): Unit {
-                    ScreenshotActivity.doScreenshot$lambda$4(w, h, this, virtualDisplay, imageReader, imageReader2)
-                    }
-                }, Handler(Looper.getMainLooper()))
-            } catch (Exception e) {
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) {
             Log.e(TAG, "doScreenshot failed", e)
             finish()
-            }
         }
+    }
 
-    /* JADX WARN: Code restructure failed: missing block: B:11:0x004f, code lost:
-
-    if (r0 != null) goto L22
-     */
-    /* JADX WARN: Code restructure failed: missing block: B:12:0x006f, code lost:
-
-    r14.close()
-     */
-    /* JADX WARN: Code restructure failed: missing block: B:13:0x0073, code lost:
-
-    return
-     */
-    /* JADX WARN: Code restructure failed: missing block: B:14:0x006c, code lost:
-
-    r0.stop()
-     */
-    /* JADX WARN: Code restructure failed: missing block: B:31:0x006a, code lost:
-
-    if (r0 == null) goto L23
-     */
-    /*
-    Code decompiled incorrectly, please refer to instructions dump.
-    */
-    public static final Unit doScreenshot$lambda$4(int $w, int $h, ScreenshotActivity this$0, VirtualDisplay $virtualDisplay, ImageReader $imageReader, ImageReader reader) {
-        var mediaProjection: MediaProjection? = null
-        val image: Image = reader.acquireLatestImage()
-        if (image == null) {
-            return
-            }
-        try {
-            try {
-                Image.Plane[] planes = image.getPlanes()
-                val buffer: ByteBuffer = planes[0].getBuffer()
-                val pixelStride: Int = planes[0].getPixelStride()
-                val rowStride: Int = planes[0].getRowStride()
-                val rowPadding: Int = rowStride - (pixelStride * $w)
-                val bmp: Bitmap = Bitmap.createBitmap((rowPadding / pixelStride) + $w, $h, Bitmap.Config.ARGB_8888)
-                Intrinsics.checkNotNullExpressionValue(bmp, "createBitmap(...)")
-                buffer.rewind()
-                bmp.copyPixelsFromBuffer(buffer)
-                val cropped: Bitmap = Bitmap.createBitmap(bmp, 0, 0, $w, $h)
-                Intrinsics.checkNotNullExpressionValue(cropped, "createBitmap(...)")
-                this$0.onScreenshotCaptured(cropped)
-                image.close()
-                if ($virtualDisplay != null) {
-                    $virtualDisplay.release()
-                    }
-                mediaProjection = this$0.projection
-                } catch (Exception e) {
-                Log.e(TAG, "Image available handle failed", e)
-                image.close()
-                if ($virtualDisplay != null) {
-                    $virtualDisplay.release()
-                    }
-                mediaProjection = this$0.projection
-                }
-            } catch (Throwable th) {
-            image.close()
-            if ($virtualDisplay != null) {
-                $virtualDisplay.release()
-                }
-            val mediaProjection2: MediaProjection = this$0.projection
-            if (mediaProjection2 != null) {
-                mediaProjection2.stop()
-                }
-            $imageReader.close()
-            var th: throw? = null
-            }
-        }
-
-    fun onScreenshotCaptured(bmp: Bitmap): Unit {
+    private fun onScreenshotCaptured(bmp: Bitmap) {
         var handler: Handler? = null
         var runnable: Runnable? = null
         try {
             try {
-                val ts: String = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())
-                val fileName: String = "screenshot_" + ts + ".png"
+                val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                val fileName = "screenshot_" + ts + ".png"
                 saveToGallery(bmp, fileName)
-                val outFile: File = new File(getExternalFilesDir(null), fileName)
-                val fileOutputStream: FileOutputStream = new FileOutputStream(outFile)
+                val outFile = File(getExternalFilesDir(null)!!, fileName)
+                val fileOutputStream = FileOutputStream(outFile)
                 try {
-                    val out: FileOutputStream = fileOutputStream
+                    val out = fileOutputStream
                     bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-                    CloseableKt.closeFinally(fileOutputStream, null)
+                    CloseableKt.closeFinally(out, null)
                     ConnectionManager.INSTANCE.sendFile(outFile)
                     handler = Handler(Looper.getMainLooper())
-                    runnable = Runnable() { // from class: com.phonehub.ScreenshotActivity$$ExternalSyntheticLambda0
-                        override
-                        fun run(): Unit {
-                            ScreenshotActivity.this.finish()
-                            }
-                        }
-                    } finally {
+                    runnable = Runnable {
+                        this@ScreenshotActivity.finish()
                     }
-                } catch (Throwable th) {
-                Handler(Looper.getMainLooper()).postDelayed(Runnable() { // from class: com.phonehub.ScreenshotActivity$$ExternalSyntheticLambda0
-                    override
-                    fun run(): Unit {
-                        ScreenshotActivity.this.finish()
-                        }
-                    }, 100L)
-                var th: throw? = null
+                } finally {
                 }
-            } catch (Exception e) {
+            } catch (th: Throwable) {
+                Handler(Looper.getMainLooper()).postDelayed(Runnable {
+                    this@ScreenshotActivity.finish()
+                }, 100L)
+                throw th
+            }
+        } catch (e: Exception) {
             Log.e(TAG, "onScreenshotCaptured failed", e)
             handler = Handler(Looper.getMainLooper())
-            runnable = Runnable() { // from class: com.phonehub.ScreenshotActivity$$ExternalSyntheticLambda0
-                override
-                fun run(): Unit {
-                    ScreenshotActivity.this.finish()
-                    }
-                }
+            runnable = Runnable {
+                this@ScreenshotActivity.finish()
             }
-        handler.postDelayed(runnable, 100L)
         }
+        val h = handler
+        val r = runnable
+        if (h != null && r != null) {
+            h.postDelayed(r, 100L)
+        }
+    }
 
-    fun saveToGallery(bmp: Bitmap, fileName: String): Unit {
+    private fun saveToGallery(bmp: Bitmap, fileName: String) {
         var openOutputStream: OutputStream? = null
         try {
-            val resolver: ContentResolver = getContentResolver()
-            val values: ContentValues = new ContentValues()
+            val resolver = contentResolver
+            val values = ContentValues()
             values.put("_display_name", fileName)
             values.put("mime_type", "image/png")
             values.put("relative_path", Environment.DIRECTORY_PICTURES + "/PhoneHub")
-            val uri: Uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            if (uri != null && (openOutputStream = resolver.openOutputStream(uri)) != null) {
-                val outputStream: OutputStream = openOutputStream
-                try {
-                    val os: OutputStream = outputStream
-                    Boolean.valueOf(bmp.compress(Bitmap.CompressFormat.PNG, 100, os))
-                    CloseableKt.closeFinally(outputStream, null)
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri != null) {
+                openOutputStream = resolver.openOutputStream(uri)
+                if (openOutputStream != null) {
+                    val outputStream = openOutputStream
+                    try {
+                        val os = outputStream
+                        bmp.compress(Bitmap.CompressFormat.PNG, 100, os)
+                        CloseableKt.closeFinally(outputStream, null)
                     } finally {
                     }
                 }
-            } catch (Exception e) {
+            }
+        } catch (e: Exception) {
             Log.e(TAG, "saveToGallery failed", e)
-            }
-        }
-
-    override
-    fun onDestroy(): Unit {
-        try {
-            val mediaProjection: MediaProjection = this.projection
-            if (mediaProjection != null) {
-                mediaProjection.stop()
-                }
-            } catch (Exception e) {
-            }
-        super.onDestroy()
         }
     }
+
+    override fun onDestroy() {
+        try {
+            val mediaProjection = this.projection
+            mediaProjection?.stop()
+        } catch (e: Exception) {
+        }
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val REQ_MEDIA_PROJECTION = 5001
+        private const val TAG = "PHScreenshot"
+
+        internal fun `doScreenshot$lambda$4`(
+            w: Int, h: Int, activity: ScreenshotActivity,
+            virtualDisplay: VirtualDisplay?, imageReader: ImageReader, reader: ImageReader
+        ) {
+            var mediaProjection: MediaProjection? = null
+            val image = reader.acquireLatestImage() ?: return
+            try {
+                try {
+                    val planes = image.planes
+                    val buffer: ByteBuffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - (pixelStride * w)
+                    val bmp = Bitmap.createBitmap((rowPadding / pixelStride) + w, h, Bitmap.Config.ARGB_8888)
+                    buffer.rewind()
+                    bmp.copyPixelsFromBuffer(buffer)
+                    val cropped = Bitmap.createBitmap(bmp, 0, 0, w, h)
+                    activity.onScreenshotCaptured(cropped)
+                    image.close()
+                    virtualDisplay?.release()
+                    mediaProjection = activity.projection
+                } catch (e: Exception) {
+                    Log.e(TAG, "Image available handle failed", e)
+                    image.close()
+                    virtualDisplay?.release()
+                    mediaProjection = activity.projection
+                }
+                mediaProjection?.stop()
+                imageReader.close()
+            } catch (th: Throwable) {
+                image.close()
+                virtualDisplay?.release()
+                val mediaProjection2 = activity.projection
+                mediaProjection2?.stop()
+                imageReader.close()
+                throw th
+            }
+        }
+    }
+}

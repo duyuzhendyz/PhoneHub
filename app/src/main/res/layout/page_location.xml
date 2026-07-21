@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="移动路线图" />
+    <LinearLayout android:orientation="horizontal" android:background="#ff2d2d2d" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
+        <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:id="@id/locCountText" android:layout_width="0.0dip" android:layout_height="wrap_content" android:text="已记录: 0 个点" android:layout_weight="1.0" />
+        <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:id="@id/locLastText" android:layout_width="0.0dip" android:layout_height="wrap_content" android:text="最近: 无" android:layout_weight="1.0" />
+    </LinearLayout>
+    <FrameLayout android:background="#ff2d2d2d" android:layout_width="fill_parent" android:layout_height="0.0dip" android:layout_marginBottom="8.0dip" android:layout_weight="1.0">
+        <org.osmdroid.views.MapView android:id="@id/locationMap" android:layout_width="fill_parent" android:layout_height="fill_parent" />
+        <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:layout_gravity="center" android:id="@id/locHintText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="等待定位..." />
+    </FrameLayout>
+    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
+        <Button android:id="@id/btnLocStart" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="启动定位" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
+        <Button android:id="@id/btnLocStop" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="停止定位" android:layout_weight="1.0" android:layout_marginHorizontal="4.0dip" />
+        <Button android:id="@id/btnLocUpload" android:layout_width="0.0dip" android:layout_height="48.0dip" android:text="补传到PAW" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+    </LinearLayout>
+</LinearLayout>

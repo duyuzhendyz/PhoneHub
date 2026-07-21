@@ -1,72 +1,50 @@
 package com.phonehub
 
-import androidx.constraintlayout.widget.ConstraintLayout
-import com.phonehub.ConnectionManager
-import java.util.HashMap
-import java.util.List
 import kotlin.KotlinNothingValueException
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
 import kotlin.coroutines.jvm.internal.Boxing
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.StateFlow
 
-class MainActivity {
-    var label: Int? = null
-    final  MainActivity this$0
+class `MainActivity$setupFlows$14`(private val `this$0`: MainActivity, continuation: Continuation<*>?) : SuspendLambda(2, continuation) {
+    var label: Int = 0
 
-    public MainActivity$setupFlows$14(MainActivity mainActivity, Continuation<? super MainActivity$setupFlows$14> continuation) {
-        super(2, continuation)
-        this.this$0 = mainActivity
-        }
-
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new MainActivity$setupFlows$14(this.this$0, continuation)
-        }
-
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((MainActivity$setupFlows$14) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
-
-    override
-    fun invokeSuspend(/* Object $result */): Any {
-        val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
-        switch (this.label) {
-            case 0:
-            ResultKt.throwOnFailure($result)
-            StateFlow<List<ConnectionManager.ClipboardItem>> clipboardFavorites = ConnectionManager.INSTANCE.getClipboardFavorites()
-            val mainActivity: MainActivity = this.this$0
-            this.label = 1
-            if (clipboardFavorites.collect(FlowCollector() { // from class: com.phonehub.MainActivity$setupFlows$14.1
-                override
-                public   Object emit(Object value, Continuation $completion) {
-                    return emit((List<ConnectionManager.ClipboardItem>) value, (Continuation<? super Unit>) $completion)
-                    }
-
-                fun emit(/* List<ConnectionManager.ClipboardItem> list */, continuation: Continuation<? super Unit>): Any {
-                    var hashMap: HashMap? = null
-                    hashMap = MainActivity.this.pageCache
-                    hashMap.remove(Boxing.boxInt(4))
-                    return Unit.INSTANCE
-                    }
-                }, this) == coroutine_suspended) {
-                var coroutine_suspended: return? = null
-                }
-            break
-            case 1:
-            ResultKt.throwOnFailure($result)
-            break
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
-            }
-        throw KotlinNothingValueException()
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return `MainActivity$setupFlows$14`(`this$0`, continuation)
     }
+
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<*>): Any {
+        return (create(coroutineScope, continuation) as `MainActivity$setupFlows$14`).invokeSuspend(Unit)
+    }
+
+    override fun invokeSuspend(result: Any): Any {
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        when (label) {
+            0 -> {
+                ResultKt.throwOnFailure(result)
+                val clipboardFavorites: StateFlow<List<ConnectionManager.ClipboardItem>> = ConnectionManager.getClipboardFavorites()
+                val mainActivity = `this$0`
+                label = 1
+                val collectResult = clipboardFavorites.collect(object : FlowCollector<List<ConnectionManager.ClipboardItem>> {
+                    override suspend fun emit(list: List<ConnectionManager.ClipboardItem>) {
+                        val hashMap = mainActivity.pageCache
+                        hashMap.remove(Boxing.boxInt(4))
+                    }
+                })
+                if (collectResult == coroutine_suspended) {
+                    return coroutine_suspended
+                }
+            }
+            1 -> {
+                ResultKt.throwOnFailure(result)
+            }
+            else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+        }
+        throw KotlinNothingValueException()
+    }
+}

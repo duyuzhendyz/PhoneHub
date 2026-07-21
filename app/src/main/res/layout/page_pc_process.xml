@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="16.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip" android:text="进程管理" />
+    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip">
+        <Button android:id="@id/btn_proc_pc" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="电脑进程" android:layout_weight="1.0" android:layout_marginEnd="4.0dip" />
+        <Button android:id="@id/btn_proc_phone" android:layout_width="0.0dip" android:layout_height="40.0dip" android:text="手机进程" android:layout_weight="1.0" android:layout_marginStart="4.0dip" />
+    </LinearLayout>
+    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content">
+        <EditText android:textSize="14.0sp" android:textColor="#ffffffff" android:textColorHint="#ffb0b0b0" android:id="@id/et_search" android:background="#ff2d2d2d" android:padding="10.0dip" android:layout_width="0.0dip" android:layout_height="wrap_content" android:hint="搜索进程名称或PID" android:layout_weight="1.0" />
+        <Button android:id="@id/btn_refresh" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="刷新" android:layout_marginStart="8.0dip" />
+    </LinearLayout>
+    <TextView android:textColor="#ffb0b0b0" android:id="@id/tv_status" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginTop="8.0dip" android:layout_marginBottom="4.0dip" android:text="点击刷新获取电脑进程列表" />
+    <LinearLayout android:orientation="horizontal" android:layout_width="fill_parent" android:layout_height="wrap_content" android:layout_marginBottom="4.0dip">
+        <TextView android:textSize="13.0sp" android:textColor="#ffb0b0b0" android:gravity="center_vertical" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="排序:" android:layout_marginEnd="6.0dip" />
+        <Spinner android:id="@id/spinner_sort" android:background="#ff2d2d2d" android:layout_width="0.0dip" android:layout_height="36.0dip" android:popupBackground="#ff3d3d3d" android:layout_weight="1.0" />
+    </LinearLayout>
+    <ListView android:id="@id/lv_processes" android:layout_width="fill_parent" android:layout_height="0.0dip" android:layout_weight="1.0" />
+</LinearLayout>

@@ -1,6 +1,5 @@
 package com.phonehub
 
-import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.lifecycle.CoroutineLiveDataKt
 import java.util.Map
 import kotlin.KotlinNothingValueException
@@ -9,70 +8,55 @@ import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.SharedFlow
 
-class MainActivity {
-    var label: Int? = null
-    final  MainActivity this$0
+class MainActivity_setupFlows_9(
+    private val `this$0`: MainActivity,
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public MainActivity$setupFlows$9(MainActivity mainActivity, Continuation<? super MainActivity$setupFlows$9> continuation) {
-        super(2, continuation)
-        this.this$0 = mainActivity
-        }
+    var label: Int = 0
 
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new MainActivity$setupFlows$9(this.this$0, continuation)
-        }
-
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((MainActivity$setupFlows$9) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
-
-    override
-    fun invokeSuspend(/* Object $result */): Any {
-        val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
-        switch (this.label) {
-            case 0:
-            ResultKt.throwOnFailure($result)
-            val receivedText: SharedFlow<Pair<String, String>> = ConnectionManager.INSTANCE.getReceivedText()
-            val mainActivity: MainActivity = this.this$0
-            this.label = 1
-            if (receivedText.collect(FlowCollector() { // from class: com.phonehub.MainActivity$setupFlows$9.1
-                override
-                public   Object emit(Object value, Continuation $completion) {
-                    return emit((Pair<String, String>) value, (Continuation<? super Unit>) $completion)
-                    }
-
-                fun emit(pair: Pair<String, String>, continuation: Continuation<? super Unit>): Any {
-                    var map: Map? = null
-                    val filename: String = pair.component1()
-                    val text: String = pair.component2()
-                    val key: String = filename + "|" + text
-                    map = MainActivity.this.handledTextContents
-                    val lastHandled: Long = (Long) map.get(key)
-                    if (lastHandled == null || System.currentTimeMillis() - lastHandled.longValue() >= CoroutineLiveDataKt.DEFAULT_TIMEOUT) {
-                        MainActivity.this.showReceivedTextDialog(filename, text)
-                        return Unit.INSTANCE
-                        }
-                    return Unit.INSTANCE
-                    }
-                }, this) == coroutine_suspended) {
-                var coroutine_suspended: return? = null
-                }
-            break
-            case 1:
-            ResultKt.throwOnFailure($result)
-            break
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
-            }
-        throw KotlinNothingValueException()
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return MainActivity_setupFlows_9(this.`this$0`, continuation)
     }
+
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as MainActivity_setupFlows_9).invokeSuspend(Unit)
+    }
+
+    override fun invokeSuspend(result: Any): Any {
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        when (label) {
+            0 -> {
+                ResultKt.throwOnFailure(result)
+                val receivedText: SharedFlow<Pair<String, String>> = ConnectionManager.INSTANCE.receivedText
+                val mainActivity: MainActivity = this.`this$0`
+                label = 1
+                val collectResult = receivedText.collect(object : FlowCollector<Pair<String, String>> {
+                    override suspend fun emit(pair: Pair<String, String>) {
+                        val filename: String = pair.component1()
+                        val text: String = pair.component2()
+                        val key: String = filename + "|" + text
+                        val map: Map<String, Any?> = mainActivity.handledTextContents
+                        val lastHandled: Long? = map[key] as? Long
+                        if (lastHandled == null || System.currentTimeMillis() - lastHandled >= CoroutineLiveDataKt.DEFAULT_TIMEOUT) {
+                            mainActivity.showReceivedTextDialog(filename, text)
+                        }
+                    }
+                })
+                if (collectResult == coroutine_suspended) {
+                    return coroutine_suspended
+                }
+            }
+            1 -> {
+                ResultKt.throwOnFailure(result)
+            }
+            else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+        }
+        throw KotlinNothingValueException()
+    }
+}

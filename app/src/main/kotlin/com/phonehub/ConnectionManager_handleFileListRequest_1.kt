@@ -1,17 +1,13 @@
 package com.phonehub
 
 import android.util.Log
-import androidx.constraintlayout.widget.ConstraintLayout
 import io.ktor.http.ContentDisposition
 import java.io.File
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function1
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonArrayBuilder
@@ -19,149 +15,121 @@ import kotlinx.serialization.json.JsonElementBuildersKt
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 
-class ConnectionManager {
-    final  String $path
-    var label: Int? = null
+class ConnectionManager_handleFileListRequest_1(
+    private val path: String,
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public ConnectionManager$handleFileListRequest$1(String str, Continuation<? super ConnectionManager$handleFileListRequest$1> continuation) {
-        super(2, continuation)
-        this.$path = str
-        }
+    var label: Int = 0
 
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new ConnectionManager$handleFileListRequest$1(this.$path, continuation)
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return ConnectionManager_handleFileListRequest_1(this.path, continuation)
+    }
 
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((ConnectionManager$handleFileListRequest$1) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as ConnectionManager_handleFileListRequest_1).invokeSuspend(Unit)
+    }
 
-    override
-    fun invokeSuspend(/* Object $result */): Any {
+    override fun invokeSuspend(result: Any): Any {
         var msg: JsonObject? = null
         var sendRaw: Any? = null
         var msg2: JsonObject? = null
         var sendRaw2: Any? = null
-        val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
         try {
-            } catch (Exception e) {
-            Log.e("PhoneHub", "File list failed", e)
-            }
-        switch (this.label) {
-            case 0:
-            ResultKt.throwOnFailure($result)
-            val dir: File = new File(this.$path)
-            if (dir.exists() && dir.isDirectory()) {
-                val files: Array<File> = dir.listFiles()
-                if (files == null) {
-                    files = new File[0]
-                    }
-                JsonArrayBuilder builder$iv = JsonArrayBuilder()
-                for (final File f : files) {
-                    JsonElementBuildersKt.addJsonObject(builder$iv, Function1() { // from class: com.phonehub.ConnectionManager$handleFileListRequest$1$$ExternalSyntheticLambda3
-                        override
-                        fun invoke(obj: Any): Any {
-                            Unit invokeSuspend$lambda$4$lambda$3
-                            invokeSuspend$lambda$4$lambda$3 = ConnectionManager$handleFileListRequest$1.invokeSuspend$lambda$4$lambda$3(f, (JsonObjectBuilder) obj)
-                            return invokeSuspend$lambda$4$lambda$3
-                            }
-                        })
-                    }
-                val arr: JsonArray = builder$iv.build()
-                val connectionManager: ConnectionManager = ConnectionManager.INSTANCE
-                val str: String = this.$path
-                msg2 = connectionManager.buildJsonMessage(Function1() { // from class: com.phonehub.ConnectionManager$handleFileListRequest$1$$ExternalSyntheticLambda4
-                    override
-                    fun invoke(obj: Any): Any {
-                        Unit invokeSuspend$lambda$6
-                        invokeSuspend$lambda$6 = ConnectionManager$handleFileListRequest$1.invokeSuspend$lambda$6(str, arr, (JsonObjectBuilder) obj)
-                        return invokeSuspend$lambda$6
+            when (this.label) {
+                0 -> {
+                    ResultKt.throwOnFailure(result)
+                    val dir = File(this.path)
+                    if (dir.exists() && dir.isDirectory) {
+                        var files = dir.listFiles()
+                        if (files == null) {
+                            files = emptyArray<File>()
                         }
-                    })
-                this.label = 2
-                sendRaw2 = ConnectionManager.INSTANCE.sendRaw(msg2.toString(), this)
-                if (sendRaw2 == coroutine_suspended) {
-                    var coroutine_suspended: return? = null
+                        val builder = JsonArrayBuilder()
+                        for (f in files) {
+                            JsonElementBuildersKt.addJsonObject(builder) { obj ->
+                                invokeSuspendLambda4Lambda3(f, obj as JsonObjectBuilder)
+                            }
+                        }
+                        val arr = builder.build()
+                        val connectionManager = ConnectionManager
+                        val str = this.path
+                        msg2 = connectionManager.buildJsonMessage { obj ->
+                            invokeSuspendLambda6(str, arr, obj as JsonObjectBuilder)
+                        }
+                        this.label = 2
+                        sendRaw2 = ConnectionManager.sendRaw(msg2.toString(), this)
+                        if (sendRaw2 == coroutine_suspended) {
+                            return coroutine_suspended
+                        }
+                        return Unit
                     }
-                return Unit.INSTANCE
-                }
-            val connectionManager2: ConnectionManager = ConnectionManager.INSTANCE
-            val str2: String = this.$path
-            msg = connectionManager2.buildJsonMessage(Function1() { // from class: com.phonehub.ConnectionManager$handleFileListRequest$1$$ExternalSyntheticLambda2
-                override
-                fun invoke(obj: Any): Any {
-                    Unit invokeSuspend$lambda$2
-                    invokeSuspend$lambda$2 = ConnectionManager$handleFileListRequest$1.invokeSuspend$lambda$2(str2, (JsonObjectBuilder) obj)
-                    return invokeSuspend$lambda$2
+                    val connectionManager2 = ConnectionManager
+                    val str2 = this.path
+                    msg = connectionManager2.buildJsonMessage { obj ->
+                        invokeSuspendLambda2(str2, obj as JsonObjectBuilder)
                     }
-                })
-            this.label = 1
-            sendRaw = ConnectionManager.INSTANCE.sendRaw(msg.toString(), this)
-            if (sendRaw == coroutine_suspended) {
-                var coroutine_suspended: return? = null
+                    this.label = 1
+                    sendRaw = ConnectionManager.sendRaw(msg.toString(), this)
+                    if (sendRaw == coroutine_suspended) {
+                        return coroutine_suspended
+                    }
+                    return Unit
                 }
-            return Unit.INSTANCE
-            case 1:
-            ResultKt.throwOnFailure($result)
-            return Unit.INSTANCE
-            case 2:
-            ResultKt.throwOnFailure($result)
-            return Unit.INSTANCE
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+                1 -> {
+                    ResultKt.throwOnFailure(result)
+                    return Unit
+                }
+                2 -> {
+                    ResultKt.throwOnFailure(result)
+                    return Unit
+                }
+                else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
             }
+        } catch (e: Exception) {
+            Log.e("PhoneHub", "File list failed", e)
         }
-
-    public static final Unit invokeSuspend$lambda$2(final String $path, JsonObjectBuilder $this$buildJsonMessage) {
-        JsonElementBuildersKt.put($this$buildJsonMessage, "source", "phone")
-        JsonElementBuildersKt.putJsonObject($this$buildJsonMessage, "data", Function1() { // from class: com.phonehub.ConnectionManager$handleFileListRequest$1$$ExternalSyntheticLambda1
-            override
-            fun invoke(obj: Any): Any {
-                Unit invokeSuspend$lambda$2$lambda$1
-                invokeSuspend$lambda$2$lambda$1 = ConnectionManager$handleFileListRequest$1.invokeSuspend$lambda$2$lambda$1($path, (JsonObjectBuilder) obj)
-                return invokeSuspend$lambda$2$lambda$1
-                }
-            })
-        return Unit.INSTANCE
-        }
-
-    public static final Unit invokeSuspend$lambda$2$lambda$1(String $path, JsonObjectBuilder $this$putJsonObject) {
-        JsonElementBuildersKt.put($this$putJsonObject, "action", "file_list")
-        JsonElementBuildersKt.put($this$putJsonObject, "path", $path)
-        JsonArrayBuilder builder$iv = JsonArrayBuilder()
-        val unit: Unit = Unit.INSTANCE
-        $this$putJsonObject.put("files", builder$iv.build())
-        return Unit.INSTANCE
-        }
-
-    public static final Unit invokeSuspend$lambda$4$lambda$3(File $f, JsonObjectBuilder $this$addJsonObject) {
-        JsonElementBuildersKt.put($this$addJsonObject, ContentDisposition.Parameters.Name, $f.getName())
-        JsonElementBuildersKt.put($this$addJsonObject, "path", $f.getAbsolutePath())
-        JsonElementBuildersKt.put($this$addJsonObject, ContentDisposition.Parameters.Size, Long.valueOf($f.length()))
-        JsonElementBuildersKt.put($this$addJsonObject, "is_dir", Boolean.valueOf($f.isDirectory()))
-        JsonElementBuildersKt.put($this$addJsonObject, "modified", Long.valueOf($f.lastModified()))
-        return Unit.INSTANCE
-        }
-
-    public static final Unit invokeSuspend$lambda$6(final String $path, final JsonArray $arr, JsonObjectBuilder $this$buildJsonMessage) {
-        JsonElementBuildersKt.put($this$buildJsonMessage, "source", "phone")
-        JsonElementBuildersKt.putJsonObject($this$buildJsonMessage, "data", Function1() { // from class: com.phonehub.ConnectionManager$handleFileListRequest$1$$ExternalSyntheticLambda0
-            override
-            fun invoke(obj: Any): Any {
-                Unit invokeSuspend$lambda$6$lambda$5
-                invokeSuspend$lambda$6$lambda$5 = ConnectionManager$handleFileListRequest$1.invokeSuspend$lambda$6$lambda$5($path, $arr, (JsonObjectBuilder) obj)
-                return invokeSuspend$lambda$6$lambda$5
-                }
-            })
-        return Unit.INSTANCE
-        }
-
-    public static final Unit invokeSuspend$lambda$6$lambda$5(String $path, JsonArray $arr, JsonObjectBuilder $this$putJsonObject) {
-        JsonElementBuildersKt.put($this$putJsonObject, "action", "file_list")
-        JsonElementBuildersKt.put($this$putJsonObject, "path", $path)
-        $this$putJsonObject.put("files", $arr)
-        return Unit.INSTANCE
-        }
+        return Unit
     }
+
+    fun invokeSuspendLambda2(path: String, builder: JsonObjectBuilder): Unit {
+        JsonElementBuildersKt.put(builder, "source", "phone")
+        JsonElementBuildersKt.putJsonObject(builder, "data") { obj ->
+            invokeSuspendLambda2Lambda1(path, obj as JsonObjectBuilder)
+        }
+        return Unit
+    }
+
+    fun invokeSuspendLambda2Lambda1(path: String, builder: JsonObjectBuilder): Unit {
+        JsonElementBuildersKt.put(builder, "action", "file_list")
+        JsonElementBuildersKt.put(builder, "path", path)
+        val builderIv = JsonArrayBuilder()
+        JsonElementBuildersKt.put(builder, "files", builderIv.build())
+        return Unit
+    }
+
+    fun invokeSuspendLambda4Lambda3(f: File, builder: JsonObjectBuilder): Unit {
+        JsonElementBuildersKt.put(builder, ContentDisposition.Parameters.Name, f.name)
+        JsonElementBuildersKt.put(builder, "path", f.absolutePath)
+        JsonElementBuildersKt.put(builder, ContentDisposition.Parameters.Size, f.length())
+        JsonElementBuildersKt.put(builder, "is_dir", f.isDirectory)
+        JsonElementBuildersKt.put(builder, "modified", f.lastModified())
+        return Unit
+    }
+
+    fun invokeSuspendLambda6(path: String, arr: JsonArray, builder: JsonObjectBuilder): Unit {
+        JsonElementBuildersKt.put(builder, "source", "phone")
+        JsonElementBuildersKt.putJsonObject(builder, "data") { obj ->
+            invokeSuspendLambda6Lambda5(path, arr, obj as JsonObjectBuilder)
+        }
+        return Unit
+    }
+
+    fun invokeSuspendLambda6Lambda5(path: String, arr: JsonArray, builder: JsonObjectBuilder): Unit {
+        JsonElementBuildersKt.put(builder, "action", "file_list")
+        JsonElementBuildersKt.put(builder, "path", path)
+        JsonElementBuildersKt.put(builder, "files", arr)
+        return Unit
+    }
+}

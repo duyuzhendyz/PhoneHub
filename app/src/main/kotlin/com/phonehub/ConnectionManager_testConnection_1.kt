@@ -1,29 +1,24 @@
 package com.phonehub
 
-import androidx.constraintlayout.widget.ConstraintLayout
 import kotlin.coroutines.Continuation
-import kotlin.coroutines.jvm.internal.ContinuationImpl
-import kotlin.coroutines.jvm.internal.DebugMetadata
+import kotlin.coroutines.intrinsics.IntrinsicsKt
+import kotlin.coroutines.jvm.internal.SuspendLambda
 
-class ConnectionManager {
-    int I$0
-    Object L$0
-    Object L$1
-    var label: Int? = null
-    /* synthetic */ Object result;
-    final  ConnectionManager this$0
+class ConnectionManager_testConnection_1(
+    private val outer: ConnectionManager,
+    continuation: Continuation<*>
+) : SuspendLambda(2, continuation) {
 
-    public ConnectionManager$testConnection$1(ConnectionManager connectionManager, Continuation<? super ConnectionManager$testConnection$1> continuation) {
-        super(continuation)
-        this.this$0 = connectionManager
-        }
+    var label: Int = 0
 
-    override
-    fun invokeSuspend(obj: Any): Any {
-        var testConnection: Any? = null
-        this.result = obj
-        this.label |= Integer.MIN_VALUE
-        testConnection = this.this$0.testConnection(null, 0, this)
-        var testConnection: return? = null
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return ConnectionManager_testConnection_1(this.outer, continuation)
     }
+
+    override fun invokeSuspend(result: Any): Any {
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        this.label |= Int.MIN_VALUE
+        val testConnection = outer.testConnection(null, 0, this)
+        return if (testConnection == coroutine_suspended) coroutine_suspended else Unit
+    }
+}

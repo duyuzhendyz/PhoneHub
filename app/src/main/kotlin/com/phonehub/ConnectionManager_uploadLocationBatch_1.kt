@@ -1,114 +1,92 @@
 package com.phonehub
 
 import android.util.Log
-import androidx.constraintlayout.widget.ConstraintLayout
 import java.util.ArrayList
-import java.util.List
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.Boxing
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function1
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonElementBuildersKt
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import org.json.JSONArray
-import org.json.JSONObject
 
-class ConnectionManager {
-    final  JSONArray $arr
-    var label: Int? = null
+class ConnectionManager_uploadLocationBatch_1(
+    private val arr: JSONArray,
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public ConnectionManager$uploadLocationBatch$1(JSONArray jSONArray, Continuation<? super ConnectionManager$uploadLocationBatch$1> continuation) {
-        super(2, continuation)
-        this.$arr = jSONArray
-        }
+    var label: Int = 0
 
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new ConnectionManager$uploadLocationBatch$1(this.$arr, continuation)
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return ConnectionManager_uploadLocationBatch_1(this.arr, continuation)
+    }
 
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((ConnectionManager$uploadLocationBatch$1) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as ConnectionManager_uploadLocationBatch_1).invokeSuspend(Unit)
+    }
 
-    override
-    fun invokeSuspend(/* Object $result */): Any {
+    override fun invokeSuspend(result: Any): Any {
         var msg: JsonObject? = null
         var sendRaw: Any? = null
-        val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
-        switch (this.label) {
-            case 0:
-            ResultKt.throwOnFailure($result)
-            try {
-                val elements: List = new ArrayList()
-                val length: Int = this.$arr.length()
-                for (int i = 0; i < length; i++) {
-                    val o: JSONObject = this.$arr.getJSONObject(i)
-                    JsonObjectBuilder builder$iv = JsonObjectBuilder()
-                    JsonElementBuildersKt.put(builder$iv, "lat", Boxing.boxDouble(o.getDouble("lat")))
-                    JsonElementBuildersKt.put(builder$iv, "lon", Boxing.boxDouble(o.getDouble("lon")))
-                    JsonElementBuildersKt.put(builder$iv, "timestamp", Boxing.boxLong(o.getLong("timestamp")))
-                    JsonElementBuildersKt.put(builder$iv, "uploaded", Boxing.boxBoolean(o.optBoolean("uploaded", true)))
-                    elements.add(builder$iv.build())
+        val coroutine_suspended = IntrinsicsKt.getCOROUTINE_SUSPENDED()
+        when (this.label) {
+            0 -> {
+                ResultKt.throwOnFailure(result)
+                try {
+                    val elements = ArrayList<JsonElement>()
+                    val length = this.arr.length()
+                    for (i in 0 until length) {
+                        val o = this.arr.getJSONObject(i)
+                        val builderIv = JsonObjectBuilder()
+                        JsonElementBuildersKt.put(builderIv, "lat", o.getDouble("lat"))
+                        JsonElementBuildersKt.put(builderIv, "lon", o.getDouble("lon"))
+                        JsonElementBuildersKt.put(builderIv, "timestamp", o.getLong("timestamp"))
+                        JsonElementBuildersKt.put(builderIv, "uploaded", o.optBoolean("uploaded", true))
+                        elements.add(builderIv.build())
                     }
-                msg = ConnectionManager.INSTANCE.buildJsonMessage(Function1() { // from class: com.phonehub.ConnectionManager$uploadLocationBatch$1$$ExternalSyntheticLambda1
-                    override
-                    fun invoke(obj: Any): Any {
-                        Unit invokeSuspend$lambda$2
-                        invokeSuspend$lambda$2 = ConnectionManager$uploadLocationBatch$1.invokeSuspend$lambda$2(elements, (JsonObjectBuilder) obj)
-                        return invokeSuspend$lambda$2
-                        }
-                    })
-                this.label = 1
-                sendRaw = ConnectionManager.INSTANCE.sendRaw(msg.toString(), this)
-                } catch (Exception e) {
-                e = e
-                Log.e("PhoneHub", "uploadLocationBatch failed", e)
-                return Unit.INSTANCE
+                    msg = ConnectionManager.buildJsonMessage { obj ->
+                        invokeSuspendLambda2(elements, obj as JsonObjectBuilder)
+                    }
+                    this.label = 1
+                    sendRaw = ConnectionManager.sendRaw(msg.toString(), this)
+                } catch (e: Exception) {
+                    Log.e("PhoneHub", "uploadLocationBatch failed", e)
+                    return Unit
                 }
-            if (sendRaw == coroutine_suspended) {
-                var coroutine_suspended: return? = null
+                if (sendRaw == coroutine_suspended) {
+                    return coroutine_suspended
                 }
-            return Unit.INSTANCE
-            case 1:
-            try {
-                ResultKt.throwOnFailure($result)
-                } catch (Exception e2) {
-                e = e2
-                Log.e("PhoneHub", "uploadLocationBatch failed", e)
-                return Unit.INSTANCE
-                }
-            return Unit.INSTANCE
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
+                return Unit
             }
-        }
-
-    public static final Unit invokeSuspend$lambda$2(final List $elements, JsonObjectBuilder $this$buildJsonMessage) {
-        JsonElementBuildersKt.put($this$buildJsonMessage, "source", "phone")
-        JsonElementBuildersKt.putJsonObject($this$buildJsonMessage, "data", Function1() { // from class: com.phonehub.ConnectionManager$uploadLocationBatch$1$$ExternalSyntheticLambda0
-            override
-            fun invoke(obj: Any): Any {
-                Unit invokeSuspend$lambda$2$lambda$1
-                invokeSuspend$lambda$2$lambda$1 = ConnectionManager$uploadLocationBatch$1.invokeSuspend$lambda$2$lambda$1($elements, (JsonObjectBuilder) obj)
-                return invokeSuspend$lambda$2$lambda$1
+            1 -> {
+                try {
+                    ResultKt.throwOnFailure(result)
+                } catch (e: Exception) {
+                    Log.e("PhoneHub", "uploadLocationBatch failed", e)
+                    return Unit
                 }
-            })
-        return Unit.INSTANCE
-        }
-
-    public static final Unit invokeSuspend$lambda$2$lambda$1(List $elements, JsonObjectBuilder $this$putJsonObject) {
-        JsonElementBuildersKt.put($this$putJsonObject, "action", "location_batch")
-        $this$putJsonObject.put("points", JsonArray($elements))
-        return Unit.INSTANCE
+                return Unit
+            }
+            else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
         }
     }
+
+    fun invokeSuspendLambda2(elements: List<JsonElement>, builder: JsonObjectBuilder): Unit {
+        JsonElementBuildersKt.put(builder, "source", "phone")
+        JsonElementBuildersKt.putJsonObject(builder, "data") { obj ->
+            invokeSuspendLambda2Lambda1(elements, obj as JsonObjectBuilder)
+        }
+        return Unit
+    }
+
+    fun invokeSuspendLambda2Lambda1(elements: List<JsonElement>, builder: JsonObjectBuilder): Unit {
+        JsonElementBuildersKt.put(builder, "action", "location_batch")
+        builder.put("points", JsonArray(elements))
+        return Unit
+    }
+}

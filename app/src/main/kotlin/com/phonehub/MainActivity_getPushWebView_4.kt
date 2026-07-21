@@ -1,146 +1,112 @@
 package com.phonehub
 
-import androidx.constraintlayout.widget.ConstraintLayout
 import com.phonehub.MainActivity
-import java.util.Collection
 import java.util.Comparator
-import java.util.Iterator
-import java.util.List
-import java.util.Map
-import kotlin.KotlinNothingValueException
 import kotlin.ResultKt
 import kotlin.Unit
 import kotlin.collections.CollectionsKt
 import kotlin.comparisons.ComparisonsKt
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.IntrinsicsKt
-import kotlin.coroutines.jvm.internal.DebugMetadata
 import kotlin.coroutines.jvm.internal.SuspendLambda
-import kotlin.jvm.functions.Function2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.SharedFlow
 
-class MainActivity {
-    var label: Int? = null
-    final  MainActivity this$0
+class MainActivity_getPushWebView_4(
+    private val mainActivity: MainActivity,
+    continuation: Continuation<Unit>
+) : SuspendLambda(2, continuation) {
 
-    public MainActivity$getPushWebView$4(MainActivity mainActivity, Continuation<? super MainActivity$getPushWebView$4> continuation) {
-        super(2, continuation)
-        this.this$0 = mainActivity
-        }
+    override fun create(obj: Any, continuation: Continuation<*>): Continuation<Unit> {
+        return MainActivity_getPushWebView_4(this.mainActivity, continuation)
+    }
 
-    override
-    fun create(obj: Any, continuation: Continuation<?>): Continuation<Unit> {
-        return new MainActivity$getPushWebView$4(this.this$0, continuation)
-        }
+    override fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<Unit>): Any {
+        return (create(coroutineScope, continuation) as MainActivity_getPushWebView_4).invokeSuspend(Unit)
+    }
 
-    override
-    fun invoke(coroutineScope: CoroutineScope, continuation: Continuation<? super Unit>): Any {
-        return ((MainActivity$getPushWebView$4) create(coroutineScope, continuation)).invokeSuspend(Unit.INSTANCE)
-        }
-
-    override
-    fun invokeSuspend(/* Object $result */): Any {
+    override fun invokeSuspend(result: Any): Any {
         val coroutine_suspended: Any = IntrinsicsKt.getCOROUTINE_SUSPENDED()
-        switch (this.label) {
-            case 0:
-            ResultKt.throwOnFailure($result)
-            val urlHistorySync: SharedFlow<List<Map<String, Object>>> = ConnectionManager.INSTANCE.getUrlHistorySync()
-            val mainActivity: MainActivity = this.this$0
-            this.label = 1
-            if (urlHistorySync.collect(FlowCollector() { // from class: com.phonehub.MainActivity$getPushWebView$4.1
-                override
-                public   Object emit(Object value, Continuation $completion) {
-                    return emit((List<? extends Map<String, ? extends Object>>) value, (Continuation<? super Unit>) $completion)
-                    }
-
-                fun emit(list: List<? extends Map<String, ? extends Object>>, continuation: Continuation<? super Unit>): Any {
-                    List $this$sortByDescending$iv
-                    var list2: List? = null
-                    var list3: List? = null
-                    var list4: List? = null
-                    var iterable: Iterable? = null
-                    var list5: List? = null
-                    val changed: Boolean = false
-                    val it: Iterator<? extends Map<String, ? extends Object>> = list.iterator()
-                    while (true) {
-                        val exists: Boolean = true
-                        if (!it.hasNext()) {
-                            break
+        when (this.label) {
+            0 -> {
+                ResultKt.throwOnFailure(result)
+                val urlHistorySync: SharedFlow<List<Map<String, Any?>>> = ConnectionManager.INSTANCE.urlHistorySync
+                val mainActivity = this.mainActivity
+                this.label = 1
+                val collect = urlHistorySync.collect(object : FlowCollector<List<Map<String, Any?>>> {
+                    override suspend fun emit(value: List<Map<String, Any?>>) {
+                        val list = value
+                        var changed = false
+                        val it = list.iterator()
+                        while (true) {
+                            var exists = true
+                            if (!it.hasNext()) {
+                                break
                             }
-                        val item: Map = it.next()
-                        val obj: Any = item.get("url")
-                        val url: String = obj instanceof String ? (String) obj : null
-                        if (url == null) {
-                            url = ""
-                            }
-                        val obj2: Any = item.get("direction")
-                        val str: String = obj2 instanceof String ? (String) obj2 : null
-                        val direction: String = str != null ? str : ""
-                        val obj3: Any = item.get("timestamp")
-                        val l: Long = obj3 instanceof Long ? (Long) obj3 : null
-                        val timestamp: Long = l != null ? l.longValue() : 0L
-                        if (!(url.length() == 0)) {
-                            iterable = MainActivity.this.urlHistory
-                            Iterable $this$any$iv = iterable
-                            if (!($this$any$iv is Collection) || !((Collection) $this$any$iv).isEmpty()) {
-                                val it2: Iterator<T> = $this$any$iv.iterator()
-                                while (true) {
-                                    if (it2.hasNext()) {
-                                        Object element$iv = it2.next()
-                                        MainActivity.UrlHistoryItem it3 = (MainActivity.UrlHistoryItem) element$iv
-                                        if (Intrinsics.areEqual(it3.getUrl(), url) && Intrinsics.areEqual(it3.getDirection(), direction)) {
-                                            break
+                            val item = it.next() as Map<String, Any?>
+                            val obj = item["url"]
+                            val url: String = (obj as? String) ?: ""
+                            val obj2 = item["direction"]
+                            val direction: String = (obj2 as? String) ?: ""
+                            val obj3 = item["timestamp"]
+                            val l = obj3 as? Long
+                            val timestamp: Long = l ?: 0L
+                            if (url.isNotEmpty()) {
+                                val iterable = mainActivity.urlHistory
+                                val anyIv: Iterable<*> = iterable
+                                if (anyIv !is Collection || !(anyIv as Collection).isEmpty()) {
+                                    val it2 = anyIv.iterator()
+                                    while (true) {
+                                        if (it2.hasNext()) {
+                                            val elementIv = it2.next()
+                                            val it3 = elementIv as MainActivity.UrlHistoryItem
+                                            if (it3.url == url && it3.direction == direction) {
+                                                break
                                             }
                                         } else {
-                                        exists = false
-                                        break
+                                            exists = false
+                                            break
                                         }
                                     }
                                 } else {
-                                exists = false
+                                    exists = false
                                 }
-                            if (!exists) {
-                                list5 = MainActivity.this.urlHistory
-                                list5.add(new MainActivity.UrlHistoryItem(url, direction, timestamp))
-                                changed = true
+                                if (!exists) {
+                                    val list5 = mainActivity.urlHistory
+                                    list5.add(MainActivity.UrlHistoryItem(url, direction, timestamp))
+                                    changed = true
                                 }
                             }
                         }
-                    if (changed) {
-                        $this$sortByDescending$iv = MainActivity.this.urlHistory
-                        if ($this$sortByDescending$iv.size() > 1) {
-                            CollectionsKt.sortWith($this$sortByDescending$iv, Comparator() { // from class: com.phonehub.MainActivity$getPushWebView$4$1$emit$$inlined$sortByDescending$1
-                                override
-                                fun compare(t: T, t2: T): Int {
-                                    MainActivity.UrlHistoryItem it4 = (MainActivity.UrlHistoryItem) t2
-                                    MainActivity.UrlHistoryItem it5 = (MainActivity.UrlHistoryItem) t
-                                    return ComparisonsKt.compareValues(Long.valueOf(it4.getTimestamp()), Long.valueOf(it5.getTimestamp()))
-                                    }
+                        if (changed) {
+                            val sortByDescendingIv = mainActivity.urlHistory
+                            if (sortByDescendingIv.size > 1) {
+                                CollectionsKt.sortWith(sortByDescendingIv, Comparator { t, t2 ->
+                                    val it4 = t2 as MainActivity.UrlHistoryItem
+                                    val it5 = t as MainActivity.UrlHistoryItem
+                                    ComparisonsKt.compareValues(it4.timestamp, it5.timestamp)
                                 })
                             }
-                        list2 = MainActivity.this.urlHistory
-                        if (list2.size() > 50) {
-                            list3 = MainActivity.this.urlHistory
-                            list4 = MainActivity.this.urlHistory
-                            list3.subList(50, list4.size()).clear()
+                            if (sortByDescendingIv.size > 50) {
+                                val list3 = mainActivity.urlHistory
+                                val list4 = mainActivity.urlHistory
+                                list3.subList(50, list4.size).clear()
                             }
-                        MainActivity.this.saveUrlHistory()
-                        MainActivity.this.refreshUrlHistoryList()
+                            mainActivity.saveUrlHistory()
+                            mainActivity.refreshUrlHistoryList()
                         }
-                    return Unit.INSTANCE
                     }
-                }, this) == coroutine_suspended) {
-                var coroutine_suspended: return? = null
+                }, this)
+                if (collect == coroutine_suspended) {
+                    return coroutine_suspended
                 }
-            break
-            case 1:
-            ResultKt.throwOnFailure($result)
-            break
-            default:
-            throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
             }
-        throw KotlinNothingValueException()
+            1 -> {
+                ResultKt.throwOnFailure(result)
+            }
+            else -> throw IllegalStateException("call to 'resume' before 'invoke' with coroutine")
         }
+        return Unit
     }
+}

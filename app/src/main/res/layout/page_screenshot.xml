@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:background="#ff1e1e1e" android:padding="12.0dip" android:layout_width="fill_parent" android:layout_height="fill_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <TextView android:textSize="20.0sp" android:textStyle="bold" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="截图" />
+    <TextView android:textSize="12.0sp" android:textColor="#ffb0b0b0" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="12.0dip" android:text="点击按钮立即截取当前屏幕。截图会自动保存到相册 PhoneHub 目录，并回传电脑。" />
+    <Button android:id="@id/btnTakeScreenshot" android:layout_width="fill_parent" android:layout_height="48.0dip" android:layout_marginBottom="12.0dip" android:text="立即截图" />
+    <TextView android:textSize="14.0sp" android:textColor="#ffffffff" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginBottom="8.0dip" android:text="已截取的图片" />
+    <ListView android:id="@id/screenshotList" android:scrollbars="vertical" android:layout_width="fill_parent" android:layout_height="0.0dip" android:divider="#ff404040" android:dividerHeight="1.0dip" android:layout_weight="1.0" />
+    <TextView android:textSize="13.0sp" android:textColor="#ff666666" android:layout_gravity="center" android:id="@id/screenshotEmpty" android:visibility="gone" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无截图" />
+</LinearLayout>
