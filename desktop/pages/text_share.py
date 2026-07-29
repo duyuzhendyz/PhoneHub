@@ -11,7 +11,8 @@ from PyQt5.QtGui import QDrag, QIcon, QFont
 from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel,
                             PushButton, PrimaryPushButton,
                             LineEdit, ListWidget, TextEdit,
-                            setFont, FluentIcon as FIF)
+                            setFont, FluentIcon as FIF,
+                            InfoBar, InfoBarPosition)
 from styles import get_theme, _c, set_item_text_color, dark_dialog_style, dark_msg_box
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), "PhoneHub", "data")
@@ -89,7 +90,7 @@ class TextSharePage(QWidget):
         recv_btn_row = QHBoxLayout()
         self.copy_recv_btn = PushButton("复制内容")
         recv_btn_row.addWidget(self.copy_recv_btn)
-        self.save_recv_btn = PrimaryPushButton("保存为TXT")
+        self.save_recv_btn = PrimaryPushButton("保存")
         recv_btn_row.addWidget(self.save_recv_btn)
         recv_btn_row.addStretch()
         recv_layout.addLayout(recv_btn_row)
@@ -161,6 +162,7 @@ class TextSharePage(QWidget):
             try:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(text)
+                InfoBar.success("保存成功", f"已保存到 {file_path}", parent=self, duration=2000, position=InfoBarPosition.TOP)
             except Exception as e:
                 dark_msg_box(self, QMessageBox.Warning, "保存失败", str(e))
 
@@ -215,7 +217,7 @@ class TextSharePage(QWidget):
             return
         menu = QMenu(self)
         act_copy = menu.addAction("复制")
-        act_save = menu.addAction("保存为TXT")
+        act_save = menu.addAction("保存")
         act_resend = menu.addAction("重新发送")
         act_del = menu.addAction("删除")
         action = menu.exec_(self.history_list.mapToGlobal(pos))

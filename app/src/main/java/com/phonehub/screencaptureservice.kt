@@ -1,9 +1,7 @@
 package com.phonehub
 
 import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -13,8 +11,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.content.pm.ServiceInfo
 import android.util.Log
-import androidx.core.app.NotificationCompat
 
 /**
  * 屏幕截图/投屏前台服务（Android 14+ 强制要求）
@@ -72,11 +70,17 @@ class ScreenCaptureService : Service() {
         instance = this
         isRunning = true
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("屏幕截图服务运行中"))
-        Log.i(TAG, "ScreenCaptureService created")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, buildNotification("屏幕截图服务运行中"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("屏幕截图服务运行中"))
+        }
+        LogUtil.scrI("ScreenCaptureService 创建")
+        LogUtil.scrI("Android版本: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        LogUtil.scrD("onStartCommand: startId=$startId")
         return START_NOT_STICKY
     }
 
@@ -85,7 +89,7 @@ class ScreenCaptureService : Service() {
         isRunning = false
         stopProjection()
         super.onDestroy()
-        Log.i(TAG, "ScreenCaptureService destroyed")
+        LogUtil.scrI("ScreenCaptureService 销毁")
     }
 
     /**
@@ -93,17 +97,27 @@ class ScreenCaptureService : Service() {
      */
     fun startProjection(resultCode: Int, data: Intent) {
         try {
+            LogUtil.scrI("启动 MediaProjection: resultCode=$resultCode")
             val pm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
-            projection = pm?.getMediaProjection(resultCode, data)
+            if (pm == null) {
+                LogUtil.scrE("无法获取 MEDIA_PROJECTION_SERVICE")
+                return
+            }
+            projection = pm.getMediaProjection(resultCode, data)
+            if (projection == null) {
+                LogUtil.scrE("getMediaProjection 返回null")
+                return
+            }
+            LogUtil.scrI("MediaProjection 实例获取成功")
             projection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    Log.i(TAG, "MediaProjection stopped")
+                    LogUtil.scrW("MediaProjection 被停止")
                     stopProjection()
                 }
             }, mainHandler)
-            Log.i(TAG, "MediaProjection started")
+            LogUtil.scrI("MediaProjection 启动成功，注册回调")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start MediaProjection", e)
+            LogUtil.scrE("Failed to start MediaProjection", e)
         }
     }
 
@@ -112,9 +126,11 @@ class ScreenCaptureService : Service() {
      */
     fun stopProjection() {
         try {
+            LogUtil.scrD("停止 MediaProjection")
             projection?.stop()
+            LogUtil.scrD("MediaProjection 已停止")
         } catch (e: Exception) {
-            Log.e(TAG, "Error stopping projection", e)
+            LogUtil.scrE("Error stopping projection", e)
         }
         projection = null
     }
@@ -122,40 +138,26 @@ class ScreenCaptureService : Service() {
     /**
      * 获取当前 MediaProjection 实例（供 ConnectionManager 后台截图复用）
      */
-    fun getProjection(): MediaProjection? = projection
+    fun getProjection(): MediaProjection? {
+        val hasProj = projection != null
+        LogUtil.scrD("getProjection: ${if (hasProj) "有实例" else "无实例"}")
+        return projection
+    }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val mgr = getSystemService(NotificationManager::class.java)
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "屏幕截图服务",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "屏幕截图和投屏功能需要此服务"
-                setShowBadge(false)
-            }
-            mgr.createNotificationChannel(channel)
-        }
+        val mgr = getSystemService(NotificationManager::class.java)
+        SharedNotificationHelper.createChannel(
+            mgr, CHANNEL_ID,
+            "屏幕截图服务",
+            "屏幕截图和投屏功能需要此服务",
+            NotificationManager.IMPORTANCE_LOW
+        )
     }
 
     private fun buildNotification(text: String): Notification {
-        val mainIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pi = PendingIntent.getActivity(
-            this, 0, mainIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        return SharedNotificationHelper.buildNotification(
+            this, CHANNEL_ID, text,
+            androidx.core.app.NotificationCompat.PRIORITY_LOW
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("PhoneHub")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setOngoing(true)
-            .setSilent(true)
-            .setContentIntent(pi)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build()
     }
 }

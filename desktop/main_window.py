@@ -53,10 +53,10 @@ class MainWindow(FluentWindow):
         # 启动服务器
         self.manager.start_server()
 
-        # F3 截图热键监听
-        self._f3_thread = None
-        self._f3_running = False
-        self._start_f3_listener()
+        # F3 截图热键监听（已禁用，保留代码不做删除）
+        # self._f3_thread = None
+        # self._f3_running = False
+        # self._start_f3_listener()
 
     def _setup_smooth_transition(self):
         """设置平滑的页面切换过渡动画"""

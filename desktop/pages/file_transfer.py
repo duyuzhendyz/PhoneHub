@@ -23,6 +23,7 @@ class ConflictDialog(QDialog):
     def __init__(self, filename, parent=None):
         super().__init__(parent)
         self.setWindowTitle("文件冲突")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.choice = ConflictDialog.SKIP
         self._setup_ui(filename)
         # 应用深色模式样式
@@ -159,6 +160,7 @@ class FileTransferPage(QWidget):
         self.cancel_btn.clicked.connect(self._cancel_transfer)
         self.done_btn.clicked.connect(self._on_done_clicked)
         self.open_recv_btn.clicked.connect(self._open_recv_folder)
+        self.history_list.itemDoubleClicked.connect(self._on_history_double_clicked)
         self.manager.file_transfer_progress.connect(self._on_progress)
         self.manager.file_transfer_complete.connect(self._on_complete)
         self.manager.file_receive_started.connect(self._on_receive_started)
@@ -289,6 +291,9 @@ class FileTransferPage(QWidget):
             return
         ok = self.manager.send_file(file_path)
         if not ok:
+            self._reset_to_idle()
+            InfoBar.error("发送失败", "无法启动传输，请检查连接状态。", parent=self,
+                          duration=3000, position=InfoBarPosition.TOP)
             return
         # 重置采样和状态
         self._speed_samples.clear()
@@ -439,6 +444,54 @@ class FileTransferPage(QWidget):
         os.makedirs(path, exist_ok=True)
         subprocess.Popen(f'explorer "{path}"')
 
+    def _on_history_double_clicked(self, item):
+        """双击历史条目重新发送：从 '[时间] 已发送 xxx' 中恢复文件名。"""
+        text = item.text().strip()
+        marker = "] 已发送 "
+        if marker not in text:
+            InfoBar.warning("无法识别", "该历史记录不支持重新发送。", parent=self,
+                            duration=3000, position=InfoBarPosition.TOP)
+            return
+        file_name = text.split(marker, 1)[1].strip()
+        if not file_name:
+            InfoBar.warning("文件缺失", "历史记录中的文件名无效。", parent=self,
+                            duration=3000, position=InfoBarPosition.TOP)
+            return
+        target = os.path.join(self.manager.receive_dir, file_name)
+        if not os.path.exists(target):
+            InfoBar.warning("文件不存在", "历史文件已被删除或移动，无法再次发送。", parent=self,
+                            duration=3000, position=InfoBarPosition.TOP)
+            return
+        # 如果当前有传输正在进行，先提示用户等待
+        if self._state in ("sending", "receiving"):
+            InfoBar.info("传输中", "请等待当前传输完成后，再重新发送历史文件。", parent=self,
+                         duration=4000, position=InfoBarPosition.TOP)
+            return
+        self._select_from_path(target)
+
+    def _select_from_path(self, file_path):
+        ok = self.manager.send_file(file_path)
+        if not ok:
+            self._reset_to_idle()
+            InfoBar.error("发送失败", "无法启动传输，请检查连接状态。", parent=self,
+                          duration=3000, position=InfoBarPosition.TOP)
+            return
+        self._speed_samples.clear()
+        self._smooth_speed = 0.0
+        self._current_file_name = os.path.basename(file_path)
+        self._current_send_path = file_path
+        self._current_file_size = 0
+        self._state = "sending"
+        self._last_done_file_id = None
+        self._progress_emitted = False
+        self._reset_completion_ui()
+        self._update_action_buttons(sending=True)
+        self.current_file_label.setText(f"发送中: {self._current_file_name}")
+        self.progress_bar.setValue(0)
+        self.speed_label.setText("等待手机开始接收...")
+        self.eta_label.setText("")
+        self.progress_frame.setVisible(True)
+
     # ==================== 信号回调 ====================
 
     def _on_progress(self, file_id, sent, total, timestamp):
@@ -474,6 +527,7 @@ class FileTransferPage(QWidget):
         return f"{int(sec // 3600)} 时 {int((sec % 3600) // 60)} 分"
 
     def _resolve_conflict(self, filename):
+        """兼容调用：立即返回已存在重名时的处理结果；弹窗逻辑走异步版本，避免阻塞主线程。"""
         target = os.path.join(self.manager.receive_dir, filename)
         if not os.path.exists(target):
             return filename
@@ -489,12 +543,71 @@ class FileTransferPage(QWidget):
             base, ext = os.path.splitext(filename)
             i = 1
             while True:
-                new_name = f"{base}_{i}{ext}"
+                new_name = f"{base}({i}){ext}"
                 if not os.path.exists(os.path.join(self.manager.receive_dir, new_name)):
                     return new_name
                 i += 1
         else:
             return None
+
+    def _resolve_conflict_async(self, file_name, file_size, file_id):
+        """检测到重名时非阻塞弹窗，用户选择后立即决定接受/拒绝，减少卡顿感。"""
+        target = os.path.join(self.manager.receive_dir, file_name)
+        if not os.path.exists(target):
+            self._accept_incoming_file(file_name, file_size, file_id)
+            return
+        dlg = ConflictDialog(file_name, self)
+        dlg.finished.connect(lambda _: self._on_conflict_finished(dlg, file_name, file_size, file_id))
+        dlg.show()
+        QTimer.singleShot(0, dlg.raise_)
+
+    def _on_conflict_finished(self, dlg, file_name, file_size, file_id):
+        if dlg.choice == ConflictDialog.OVERWRITE:
+            try:
+                os.remove(os.path.join(self.manager.receive_dir, file_name))
+            except Exception:
+                pass
+            self._accept_incoming_file(file_name, file_size, file_id)
+        elif dlg.choice == ConflictDialog.RENAME:
+            base, ext = os.path.splitext(file_name)
+            i = 1
+            while True:
+                new_name = f"{base}({i}){ext}"
+                if not os.path.exists(os.path.join(self.manager.receive_dir, new_name)):
+                    break
+                i += 1
+            self._accept_incoming_file(new_name, file_size, file_id)
+        else:
+            try:
+                self.manager.send_file_reject(file_id, "用户跳过")
+                self.manager.cancel_transfer()
+            except Exception:
+                pass
+
+    def _accept_incoming_file(self, resolved, file_size, file_id):
+        if resolved != getattr(self, '_current_file_name', ""):
+            try:
+                self.manager.current_receive_file = os.path.join(self.manager.receive_dir, resolved)
+            except Exception:
+                pass
+        try:
+            self.manager.send_file_accept(file_id, resolved)
+        except Exception:
+            pass
+        self._current_file_name = resolved
+        self._current_file_size = file_size
+        self._state = "receiving"
+        self._last_done_file_id = None
+        self._progress_emitted = False
+        self._speed_samples.clear()
+        self._smooth_speed = 0.0
+        self._reset_completion_ui()
+        self._update_action_buttons(sending=True)
+        self.current_file_label.setText(f"接收中: {resolved}")
+        self.progress_bar.setValue(0)
+        self.speed_label.setText("等待手机上传...")
+        self.eta_label.setText("")
+        self.progress_frame.setVisible(True)
 
     def _on_complete(self, file_id, file_path):
         # 接收完成
@@ -513,36 +626,8 @@ class FileTransferPage(QWidget):
         self._show_completion_ui()
 
     def _on_receive_started(self, file_name, file_size, file_id):
-        # 手机端发来的文件：先处理重名冲突，再发送 accept/reject 给手机端
-        resolved = self._resolve_conflict(file_name)
-        if resolved is None:
-            # 用户选择跳过：拒绝接收，通知手机端
-            self.manager.send_file_reject(file_id, "用户跳过")
-            self.manager.cancel_transfer()
-            return
-        if resolved != file_name:
-            try:
-                if hasattr(self.manager, 'current_receive_file'):
-                    new_path = os.path.join(self.manager.receive_dir, resolved)
-                    self.manager.current_receive_file = new_path
-            except Exception:
-                pass
-        # 发送 accept 通知手机端开始上传
-        self.manager.send_file_accept(file_id, resolved)
-        self._current_file_name = resolved
-        self._current_file_size = file_size
-        self._state = "receiving"
-        self._last_done_file_id = None
-        self._progress_emitted = False
-        self._speed_samples.clear()
-        self._smooth_speed = 0.0
-        self._reset_completion_ui()
-        self._update_action_buttons(sending=True)
-        self.current_file_label.setText(f"接收中: {resolved}")
-        self.progress_bar.setValue(0)
-        self.speed_label.setText("等待手机上传...")
-        self.eta_label.setText("")
-        self.progress_frame.setVisible(True)  # 显示进度条区域
+        # 手机端发来的文件：弹出重名选择（非阻塞），选择后由回调接受/拒绝
+        self._resolve_conflict_async(file_name, file_size, file_id)
 
     def _on_file_sent(self, file_id):
         # PC端发送完成（手机确认 file_complete）

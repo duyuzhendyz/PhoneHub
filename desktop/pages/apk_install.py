@@ -155,13 +155,12 @@ class ApkInstallPage(QWidget):
             self._install_apk(file_path)
 
     def _install_apk(self, apk_path):
-        """安装 APK：仅支持 ADB 通道"""
+        """安装 APK：统一走文件传输模块，手机端收到完整 APK 后自动触发安装。"""
         if self._installing:
             return
         ch = self.manager.current_channel
-        if ch != "adb":
-            self._show_message(QMessageBox.Warning, "通道不可用",
-                               "APK 安装仅支持 ADB 通道。请通过 USB 连接手机并确保 ADB 可用。")
+        if ch not in ("adb", "wifi"):
+            self._show_message(QMessageBox.Warning, "通道不可用", "请先通过 ADB 或 WiFi 连接手机。")
             return
         if not os.path.exists(apk_path):
             self._show_message(QMessageBox.Warning, "文件不存在", apk_path)
@@ -170,53 +169,18 @@ class ApkInstallPage(QWidget):
         self.select_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress_bar.setValue(0)
-
-        # ADB 模式：push 后 pm install
-        threading.Thread(target=self._install_worker_adb, args=(apk_path,), daemon=True).start()
-
-    def _install_worker_adb(self, apk_path):
-        """ADB 模式安装线程：push 到手机后用 pm install 静默安装"""
-        try:
-            file_name = os.path.basename(apk_path)
-            file_size = os.path.getsize(apk_path)
-            # 第一步：ADB push
-            self.install_progress.emit(5, f"正在推送 {file_name} ({file_size/1024/1024:.1f} MB)...")
-            remote_path = APK_REMOTE_DIR + file_name
-            # 确保远程目录存在
-            self.manager.adb_command('shell', 'mkdir', '-p', APK_REMOTE_DIR)
-            # 使用 subprocess 直接执行 push 以便实时进度
-            cmd = ['adb']
-            if self.manager.adb_device_id:
-                cmd += ['-s', self.manager.adb_device_id]
-            cmd += ['push', apk_path, remote_path]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
-            # 等待推送完成
-            while True:
-                ret = proc.poll()
-                if ret is not None:
-                    break
-                self.install_progress.emit(40, f"推送中... ({file_name})")
-                time.sleep(0.5)
-            if proc.returncode != 0:
-                self.install_done.emit(False, f"推送失败: {proc.stderr.read()}")
-                return
-            self.install_progress.emit(60, "推送完成, 正在静默安装...")
-
-            # 第二步：pm install（远程安装，adb install 仅接受本地路径故不能用）
-            install_output = self.manager.adb_command('shell', 'pm', 'install', '-r', '-t', remote_path)
-            self.install_progress.emit(90, "安装完成, 清理临时文件...")
-
-            # 第三步：清理
-            self.manager.adb_command('shell', 'rm', remote_path)
-
-            success_str = "Success"
-            if install_output and success_str in install_output:
-                self.install_done.emit(True, f"安装成功: {file_name}")
-            else:
-                msg = (install_output or "").strip().splitlines()[-1] if install_output else "未知结果"
-                self.install_done.emit(False, f"安装失败: {msg}")
-        except Exception as e:
-            self.install_done.emit(False, f"安装异常: {e}")
+        self._pending_apk_path = apk_path
+        ok = self.manager.send_file(apk_path)
+        if not ok:
+            self._installing = False
+            self._update_button_states()
+            self._show_message(QMessageBox.Warning, "发送失败", "无法启动文件传输，请检查连接状态。")
+            return
+        self.status_label.setText("已交给文件传输，请在文件传输页面查看进度")
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setValue(0)
+        InfoBar.info("APK 推送到文件传输", "已将 {} 交给文件传输模块，手机端接收完成后自动安装。".format(os.path.basename(apk_path)),
+                     parent=self, duration=3000, position=InfoBarPosition.TOP)
 
     def _install_wifi(self, apk_path):
         """WiFi 模式：通过 send_file 传输 APK，传输成功后手机端自动安装"""
@@ -281,13 +245,18 @@ class ApkInstallPage(QWidget):
 
     @pyqtSlot(str, str)
     def _on_wifi_transfer_complete(self, file_id, file_path):
-        """WiFi 文件传输完成回调"""
+        """文件传输完成回调：若本次任务是 APK，则通知手机端自动安装。"""
         self._close_wifi_dialog()
-        file_name = os.path.basename(self._wifi_transfer_apk_path) if hasattr(self, '_wifi_transfer_apk_path') else "APK"
+        pending = getattr(self, '_pending_apk_path', None) or getattr(self, '_wifi_transfer_apk_path', None)
+        if not pending:
+            return
+        file_name = os.path.basename(pending)
         try:
             self.manager.send_action("install_apk", {"path": "/sdcard/Download/PhoneHub/" + file_name})
         except Exception:
             pass
+        self._pending_apk_path = None
+        self._wifi_transfer_apk_path = None
         self.install_done.emit(True, f"APK 已传输到手机: {file_name}\n手机端将自动安装。")
 
     @pyqtSlot(int, str)

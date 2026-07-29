@@ -59,7 +59,7 @@ class CameraCanvas(QFrame):
 
 
 class CameraWindow(QWidget):
-    """独立摄像头查看窗口：等比缩放，30fps显示
+    """独立摄像头查看窗口：等比缩放，最高60fps显示
     支持手机摄像头画面（来自 camera_frame_received 信号）
     和电脑摄像头预览（从 manager._latest_camera_frame 拉取）
     """
@@ -80,7 +80,7 @@ class CameraWindow(QWidget):
         self._resizing = False
         self._setup_ui()
         self._display_timer = QTimer(self)
-        self._display_timer.setInterval(33)
+        self._display_timer.setInterval(16)
         self._display_timer.timeout.connect(self._flush_frame)
         self.resize(640, 480)
 

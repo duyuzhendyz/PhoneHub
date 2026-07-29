@@ -166,6 +166,65 @@
             android:layout_marginBottom="16dp" />
 
         <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PAW 服务器地址"
+            android:textColor="#b0b0b0"
+            android:textSize="13sp"
+            android:layout_gravity="start"
+            android:layout_marginBottom="8dp"
+            android:layout_marginTop="8dp" />
+
+        <EditText
+            android:id="@+id/pawUrlInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="#2d2d2d"
+            android:hint="https://yourname.pythonanywhere.com"
+            android:textColorHint="#666666"
+            android:textColor="#ffffff"
+            android:textSize="14sp"
+            android:paddingHorizontal="16dp"
+            android:inputType="textUri"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PAW Token"
+            android:textColor="#b0b0b0"
+            android:textSize="13sp"
+            android:layout_gravity="start"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/pawTokenInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="#2d2d2d"
+            android:hint="541881452418845"
+            android:textColorHint="#666666"
+            android:textColor="#ffffff"
+            android:textSize="14sp"
+            android:paddingHorizontal="16dp"
+            android:inputType="textPassword"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/savePawBtn"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:text="保存 PAW 设置"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/pawConnectBtn"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="PAW 连接"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
             android:id="@+id/connectStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

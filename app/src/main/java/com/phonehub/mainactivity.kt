@@ -4,9 +4,12 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.CountDownTimer
@@ -33,6 +36,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.text.Editable
+import android.content.res.Configuration
 import java.net.HttpURLConnection
 import java.net.URL
 import android.text.InputType
@@ -58,12 +62,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ipInput: EditText
     private lateinit var portInput: EditText
     private lateinit var tokenInput: EditText
+    private lateinit var pawUrlInput: EditText
+    private lateinit var pawTokenInput: EditText
     private lateinit var connectBtn: Button
+    private lateinit var pawConnectBtn: Button
     private lateinit var connectStatus: TextView
     private lateinit var statusText: TextView
     private lateinit var titleText: TextView
     private lateinit var pageContainer: FrameLayout
 
+    // 截图 Toast 防抖：同一消息 4 秒内只展示一次，避免“电脑截图已保存并发送”连续闪烁
+    private var lastScreenshotToastAtMs = 0L
+    private var lastScreenshotToastMsg = ""
+    private var isKeyboardFullscreen = false
+    private var savedTab = 0   // Remember previous tab before entering keyboard fullscreen
     private var currentTab = 0
     private val pageCache = HashMap<Int, View>()
     private var mirrorImageView: android.widget.ImageView? = null  // save.md 功能7 电脑画面显示
@@ -222,6 +234,8 @@ class MainActivity : AppCompatActivity() {
         ipInput = findViewById(R.id.ipInput)
         portInput = findViewById(R.id.portInput)
         tokenInput = findViewById(R.id.tokenInput)
+        pawUrlInput = findViewById(R.id.pawUrlInput)
+        pawTokenInput = findViewById(R.id.pawTokenInput)
         connectBtn = findViewById(R.id.connectBtn)
         connectStatus = findViewById(R.id.connectStatus)
         statusText = findViewById(R.id.statusText)
@@ -236,6 +250,46 @@ class MainActivity : AppCompatActivity() {
         if (cachedPort > 0) portInput.setText(cachedPort.toString()) else portInput.setText("58627")
         val cachedToken = prefs.getString("cached_token", "")
         if (!cachedToken.isNullOrEmpty()) tokenInput.setText(cachedToken) else tokenInput.setText("541881452418845")
+
+        // PAW 配置
+        val cachedPawUrl = prefs.getString("cached_paw_url", "")
+        if (!cachedPawUrl.isNullOrEmpty()) pawUrlInput.setText(cachedPawUrl)
+        val cachedPawToken = prefs.getString("cached_paw_token", "")
+        if (!cachedPawToken.isNullOrEmpty()) pawTokenInput.setText(cachedPawToken)
+
+        // PAW 保存按钮
+        findViewById<Button>(R.id.savePawBtn)?.setOnClickListener {
+            val url = pawUrlInput.text.toString().trim()
+            val token = pawTokenInput.text.toString().trim()
+            if (url.isNotEmpty() && token.isNotEmpty()) {
+                ConnectionManager.setPawConfig(url, token)
+                prefs.edit()
+                    .putString("cached_paw_url", url)
+                    .putString("cached_paw_token", token)
+                    .apply()
+                Toast.makeText(this, "PAW 设置已保存", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "地址和令牌不能为空", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // PAW 连接按钮
+        pawConnectBtn = findViewById(R.id.pawConnectBtn)
+        pawConnectBtn.setOnClickListener {
+            val url = pawUrlInput.text.toString().trim()
+            val token = pawTokenInput.text.toString().trim()
+            if (url.isEmpty() || token.isEmpty()) {
+                Toast.makeText(this, "请先填写 PAW 地址和 Token 并保存", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            ConnectionManager.setPawConfig(url, token)
+            prefs.edit()
+                .putString("cached_paw_url", url)
+                .putString("cached_paw_token", token)
+                .apply()
+            Toast.makeText(this, "正在通过 PAW 连接...", Toast.LENGTH_SHORT).show()
+            ConnectionManager.connectPaw()
+        }
 
         // Token 显示/隐藏切换
         val toggleBtn = findViewById<TextView>(R.id.toggleTokenVisibility)
@@ -255,6 +309,8 @@ class MainActivity : AppCompatActivity() {
 
         // 启动时自动请求所有权限
         requestAllPermissions()
+        // 请求忽略电池优化（防止后台被杀）
+        requestBatteryOptimization()
 
         setupTabs()
         // 防止 SharedFlow replay 导致重启后重复弹窗：把上次收到的文字标记为已处理
@@ -268,9 +324,24 @@ class MainActivity : AppCompatActivity() {
         handleTextNotificationIntent(intent)
         handleFileTransferNotificationIntent(intent)
 
+        // 实时同步手机媒体音量变化到电脑端
+        registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                try {
+                    val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val vol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    ConnectionManager.sendAction("volume_changed", mapOf("volume" to vol))
+                } catch (_: Exception) {}
+            }
+        }, IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
+
         // 使用 OnBackPressedDispatcher 替代已废弃的 onBackPressed()
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (isKeyboardFullscreen) {
+                    exitKeyboardFullscreen()
+                    return
+                }
                 if (isMirrorFullscreen) {
                     exitMirrorFullscreen()
                     return
@@ -1050,19 +1121,7 @@ class MainActivity : AppCompatActivity() {
         // 键盘按钮：进入全屏键盘页面
         v.findViewById<Button>(R.id.btnKeyboard)?.applyDarkTheme()
         v.findViewById<Button>(R.id.btnKeyboard)?.setOnClickListener {
-            val keyboardView = getFullKeyboardView()
-            val dialog = android.app.AlertDialog.Builder(this)
-                .setView(keyboardView)
-                .setOnDismissListener {
-                    // 对话框关闭时无需额外处理
-                }
-                .create()
-            dialog.window?.setBackgroundDrawableResource(android.R.color.black)
-            dialog.window?.setLayout(
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            dialog.show()
+            enterKeyboardFullscreen()
         }
         // 媒体信息由电脑端主动推送，手机端被动接收
         val mediaInfoText = v.findViewById<TextView>(R.id.mediaInfoText)
@@ -1113,7 +1172,7 @@ class MainActivity : AppCompatActivity() {
             ConnectionManager.sendMediaCommand("key_$modStr$key")
         }
 
-        // 字母 / 数字 / 标点 / 功能键
+        // 字母 / 数字 / 标点 / 功能键 / 方向键
         val keyMap = mapOf(
             R.id.k_1 to "1", R.id.k_2 to "2", R.id.k_3 to "3", R.id.k_4 to "4", R.id.k_5 to "5",
             R.id.k_6 to "6", R.id.k_7 to "7", R.id.k_8 to "8", R.id.k_9 to "9", R.id.k_0 to "0",
@@ -1127,7 +1186,10 @@ class MainActivity : AppCompatActivity() {
             R.id.k_up to "up", R.id.k_down to "down", R.id.k_left to "left", R.id.k_right to "right",
             R.id.k_f1 to "f1", R.id.k_f2 to "f2", R.id.k_f3 to "f3", R.id.k_f4 to "f4",
             R.id.k_f5 to "f5", R.id.k_f6 to "f6", R.id.k_f7 to "f7", R.id.k_f8 to "f8",
-            R.id.k_f9 to "f9", R.id.k_f10 to "f10", R.id.k_f11 to "f11", R.id.k_f12 to "f12"
+            R.id.k_f9 to "f9", R.id.k_f10 to "f10", R.id.k_f11 to "f11", R.id.k_f12 to "f12",
+            // 新增按键：Escape, Tab, Home, End, PgUp, PgDown
+            R.id.k_escape to "escape", R.id.k_tab to "tab", R.id.k_home to "home",
+            R.id.k_end to "end", R.id.k_pgup to "page_up", R.id.k_pgdn to "page_down"
         )
         for ((id, key) in keyMap) {
             rootView.findViewById<Button>(id)?.setOnClickListener { sendKey(key) }
@@ -1152,15 +1214,84 @@ class MainActivity : AppCompatActivity() {
                 }
                 updateModifierStatus()
             }
-            // 移除长按监听，统一用点击切换
             btn?.setOnLongClickListener(null)
         }
     }
 
-    private fun getFullKeyboardView(): View {
-        val v = LayoutInflater.from(this).inflate(R.layout.page_full_keyboard, null)
+    private fun enterKeyboardFullscreen() {
+        if (isKeyboardFullscreen) return
+        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        
+        val win = window
+        androidx.core.view.WindowInsetsControllerCompat(win, win.decorView).apply {
+            hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        supportActionBar?.hide()
+
+        // 隐藏 setupScreen，显示 pageContainer 作为键盘容器
+         val setupScreen = findViewById<LinearLayout>(R.id.setupScreen)
+         val pageContainer = findViewById<FrameLayout>(R.id.pageContainer)
+         
+         setupScreen.visibility = View.GONE
+         pageContainer.visibility = View.VISIBLE
+         pageContainer.removeAllViews() // Clear current page
+         
+         // 创建全屏键盘视图并添加到 pageContainer（使用横屏布局）
+         val keyboardView = getFullKeyboardView(landscapeMode = true)
+        pageContainer.addView(keyboardView)
+
+        isKeyboardFullscreen = true
+    }
+
+    private fun exitKeyboardFullscreen() {
+        if (!isKeyboardFullscreen) return
+        isKeyboardFullscreen = false
+
+        val win = window
+        androidx.core.view.WindowInsetsControllerCompat(win, win.decorView).apply {
+            show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+        supportActionBar?.show()
+
+        val setupScreen = findViewById<LinearLayout>(R.id.setupScreen)
+        val pageContainer = findViewById<FrameLayout>(R.id.pageContainer)
+        
+        // Restore tab UI and setup screen visibility
+        setupScreen.visibility = View.VISIBLE
+        pageContainer.visibility = View.GONE
+        
+        // 恢复首页内容到 pageContainer（与 enterKeyboardFullscreen 对应）
+        restoreHomeScreen()
+    }
+
+    private fun getFullKeyboardView(landscapeMode: Boolean = false): View {
+        val v: View
+        val layoutResId: Int
+        // Simple: always use page_full_keyboard (works in both orientations)
+        // For true landscape support, consider using layout-land resources properly
+        layoutResId = R.layout.page_full_keyboard
+        v = LayoutInflater.from(this).inflate(layoutResId, null)
         wireFullKeyboard(v)
         return v
+    }
+
+    private fun restoreHomeScreen() {
+        // 退出键盘全屏后，恢复首页导航网格
+        val setupScreen = findViewById<LinearLayout>(R.id.setupScreen)
+        val pageContainer = findViewById<FrameLayout>(R.id.pageContainer)
+        
+        // 清理当前页面容器
+        pageContainer.removeAllViews()
+        
+        // 展示首页 Tab 0（实际显示功能网格）
+        val homeView = getPageView(0)
+        pageContainer.addView(homeView)
+        
+        // 设置当前标签为首页
+        currentTab = 0
+        
+        // setupScreen 已可见，pageContainer 隐藏，保持默认状态
     }
 
     // ============================== 剪贴板（已合并历史/收藏）==============================
@@ -2907,7 +3038,7 @@ class MainActivity : AppCompatActivity() {
                 if (url.isNotEmpty()) {
                     addUrlHistory(url, "电脑 -> 手机")
                     refreshUrlHistoryList()
-                    Toast.makeText(this@MainActivity, "收到电脑推送 URL: $url", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "收到电脑推送 URL: $url", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -2940,6 +3071,7 @@ class MainActivity : AppCompatActivity() {
         return v
     }
 
+
     /** 刷新推送网页页面的历史列表显示 */
     private fun refreshUrlHistoryList() {
         pageCache[15]?.let { cv ->
@@ -2962,24 +3094,30 @@ class MainActivity : AppCompatActivity() {
     private fun getSettingsView(): View {
         val v = LayoutInflater.from(this).inflate(R.layout.page_settings, null)
 
-        // val etPawUrl = v.findViewById<EditText>(R.id.etPawUrl)  // 【禁止删除】PAW 设置
-        // val etPawToken = v.findViewById<EditText>(R.id.etPawToken)  // 【禁止删除】PAW 设置
-        // val btnSavePaw = v.findViewById<Button>(R.id.btnSavePaw)  // 【禁止删除】PAW 设置
+        val etPawUrl = v.findViewById<EditText>(R.id.etPawUrl)
+        val etPawToken = v.findViewById<EditText>(R.id.etPawToken)
+        val btnSavePaw = v.findViewById<Button>(R.id.btnSavePaw)
 
-        // etPawUrl.setText(ConnectionManager.getPawUrl())  // 【禁止删除】PAW URL
-        // etPawToken.setText(ConnectionManager.getSecretToken())  // 【禁止删除】PAW Token
+        // 加载已保存的 PAW 配置
+        val prefs = getSharedPreferences("phonehub_prefs", Context.MODE_PRIVATE)
+        prefs.getString("cached_paw_url", "")?.let { etPawUrl.setText(it) }
+        prefs.getString("cached_paw_token", "")?.let { etPawToken.setText(it) }
 
-        // btnSavePaw?.applyDarkTheme(primary = true)  // 【禁止删除】PAW 保存按钮
-        // btnSavePaw?.setOnClickListener {  // 【禁止删除】PAW 设置保存
-        //     val url = etPawUrl.text.toString().trim()
-        //     val token = etPawToken.text.toString().trim()
-        //     if (url.isNotEmpty() && token.isNotEmpty()) {
-        //         ConnectionManager.setPawConfig(url, token)
-        //         Toast.makeText(this, "PAW 设置已保存", Toast.LENGTH_SHORT).show()
-        //     } else {
-        //         Toast.makeText(this, "地址和令牌不能为空", Toast.LENGTH_SHORT).show()
-        //     }
-        // }
+        btnSavePaw?.applyDarkTheme(primary = true)
+        btnSavePaw?.setOnClickListener {
+            val url = etPawUrl.text.toString().trim()
+            val token = etPawToken.text.toString().trim()
+            if (url.isNotEmpty() && token.isNotEmpty()) {
+                ConnectionManager.setPawConfig(url, token)
+                prefs.edit()
+                    .putString("cached_paw_url", url)
+                    .putString("cached_paw_token", token)
+                    .apply()
+                Toast.makeText(this, "PAW 设置已保存", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "地址和令牌不能为空", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         v.findViewById<Button>(R.id.disconnectBtn2)?.applyDarkTheme()
         v.findViewById<Button>(R.id.disconnectBtn2)?.setOnClickListener {
@@ -3011,6 +3149,7 @@ class MainActivity : AppCompatActivity() {
         val channel = ConnectionManager.currentChannel.value
         val channelName = when (channel) {
             ConnectionManager.ChannelType.WIFI -> "WiFi 直连"
+            ConnectionManager.ChannelType.PAW -> "PAW 中转"
             ConnectionManager.ChannelType.ADB -> "USB 数据线"
             else -> "无"
         }
@@ -3126,6 +3265,7 @@ class MainActivity : AppCompatActivity() {
                         ConnectionManager.sendUrlHistorySync(
                             urlHistory.map { Triple(it.url, it.direction, it.timestamp) }
                         )
+                        try { ConnectionManager.sendAction("get_volume") } catch (_: Exception) {}
                     }
                 }
             }
@@ -3145,6 +3285,10 @@ class MainActivity : AppCompatActivity() {
         // 收集截图结果事件，显示 Toast 提示
         CoroutineScope(Dispatchers.Main).launch {
             ConnectionManager.screenshotResult.collect { msg ->
+                val now = System.currentTimeMillis()
+                if (msg == lastScreenshotToastMsg && now - lastScreenshotToastAtMs < 4000) return@collect
+                lastScreenshotToastMsg = msg
+                lastScreenshotToastAtMs = now
                 android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
             }
         }
@@ -3766,6 +3910,19 @@ class MainActivity : AppCompatActivity() {
         }
         val bufferSize = maxOf(minBufferSize, 4096)
 
+        // 必须使用 AudioPlaybackCaptureConfiguration 捕获系统媒体声音；无 MediaProjection 时先引导授权
+        if (mediaProjection == null) {
+            val cached = ConnectionManager.getCachedMediaProjection()
+            mediaProjection = cached
+        }
+        if (mediaProjection == null) {
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, "请先启动手机投屏或进行一次截图授权，以获取系统内录权限", Toast.LENGTH_LONG).show()
+                audioCaptureRunning = false
+                pageCache[8]?.findViewById<Button>(R.id.btnAudio)?.text = "声音传输"
+            }
+            return
+        }
         // 优先使用 AudioPlaybackCaptureConfiguration 捕获系统内音（需要 MediaProjection）
         // 直接复用投屏的 mediaProjection，避免 getCachedMediaProjection() 释放已有实例导致投屏断开
         try {
@@ -3794,14 +3951,13 @@ class MainActivity : AppCompatActivity() {
             audioRecord = null
         }
 
-        // 回退到麦克风录音
+        // 不再回退到麦克风：用户需求为手机媒体声音（系统内录），授权失败则停止
         if (audioRecord == null) {
-            audioRecord = android.media.AudioRecord(
-                android.media.MediaRecorder.AudioSource.MIC,
-                sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO,
-                android.media.AudioFormat.ENCODING_PCM_16BIT, bufferSize
-            )
-            Log.i("MainActivity", "AudioRecord 使用 MIC 源")
+            Log.e("MainActivity", "无法创建 AudioPlaybackCapture，未回退到 MIC")
+            runOnUiThread { Toast.makeText(this@MainActivity, "系统内录不可用，请重新启动投屏后重试", Toast.LENGTH_LONG).show() }
+            audioCaptureRunning = false
+            pageCache[8]?.findViewById<Button>(R.id.btnAudio)?.text = "声音传输"
+            return
         }
 
         // 检查 AudioRecord 是否初始化成功
@@ -3809,7 +3965,7 @@ class MainActivity : AppCompatActivity() {
             Log.e("MainActivity", "AudioRecord 初始化失败，state=${audioRecord?.state}")
             audioRecord?.release()
             audioRecord = null
-            runOnUiThread { Toast.makeText(this, "录音初始化失败，请检查麦克风权限", Toast.LENGTH_SHORT).show() }
+            runOnUiThread { Toast.makeText(this, "系统内录不可用，请确保已授权投屏权限", Toast.LENGTH_SHORT).show() }
             return
         }
 
@@ -3865,5 +4021,22 @@ class MainActivity : AppCompatActivity() {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+    }
+
+    /** 请求忽略电池优化（防止后台被杀） */
+    private fun requestBatteryOptimization() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+                val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = android.net.Uri.parse("package:$packageName")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+                Log.i("PhoneHub", "已请求忽略电池优化")
+            }
+        } catch (e: Exception) {
+            Log.w("PhoneHub", "请求电池优化白名单失败: ${e.message}")
+        }
     }
 }

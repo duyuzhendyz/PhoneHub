@@ -267,10 +267,6 @@ class ScreenMirrorPage(QWidget):
         self.pc_stream_btn = PrimaryPushButton("推流电脑画面到手机")
         ctrl_layout.addWidget(self.pc_stream_btn)
 
-        self.stop_btn = PushButton("停止推流")
-        self.stop_btn.setEnabled(False)
-        ctrl_layout.addWidget(self.stop_btn)
-
         # 手机投屏到电脑
         self.phone_to_pc_btn = PrimaryPushButton("手机投屏到电脑")
         ctrl_layout.addWidget(self.phone_to_pc_btn)
@@ -302,6 +298,7 @@ class ScreenMirrorPage(QWidget):
         self.vol_slider.setRange(0, 15)
         self.vol_slider.setValue(7)
         self.vol_slider.setFixedWidth(200)
+        self._vol_sync_enabled = True
         vol_row.addWidget(self.vol_slider)
         self.vol_value_label = BodyLabel("7")
         self.vol_value_label.setFixedWidth(30)
@@ -325,8 +322,6 @@ class ScreenMirrorPage(QWidget):
         btn_row.addWidget(self.btn_notif_panel)
         self.btn_control_center = PushButton("控制中心")
         btn_row.addWidget(self.btn_control_center)
-        self.btn_screenshot = PushButton("截屏")
-        btn_row.addWidget(self.btn_screenshot)
         self.btn_phone_screenshot = PushButton("手机截图")
         btn_row.addWidget(self.btn_phone_screenshot)
         btn_row.addStretch()
@@ -342,7 +337,6 @@ class ScreenMirrorPage(QWidget):
 
     def _connect_signals(self):
         self.pc_stream_btn.clicked.connect(self._toggle_pc_stream)
-        self.stop_btn.clicked.connect(self._stop_stream)
         self.phone_to_pc_btn.clicked.connect(self._toggle_phone_mirror)
         self.open_window_btn.clicked.connect(self._open_mirror_window)
         self.audio_btn.clicked.connect(self._toggle_audio)
@@ -360,11 +354,11 @@ class ScreenMirrorPage(QWidget):
         self.btn_recents.clicked.connect(lambda: self.manager.send_command("recents"))
         self.btn_notif_panel.clicked.connect(lambda: self.manager.send_command("open_notifications_panel"))
         self.btn_control_center.clicked.connect(lambda: self.manager.send_command("control_center"))
-        self.btn_screenshot.clicked.connect(lambda: self.manager.send_command("screenshot"))
         self.btn_phone_screenshot.clicked.connect(self._phone_screenshot)
 
         try:
-            self.manager.connection_status_changed.connect(lambda c, ch: self._update_button_states())
+            self.manager.connection_status_changed.connect(lambda c, ch: (self._update_button_states(), self._request_phone_volume()))
+            self.manager.phone_volume_received.connect(self._on_phone_volume_changed)
         except Exception:
             pass
         try:
@@ -372,6 +366,8 @@ class ScreenMirrorPage(QWidget):
             self.manager.phone_frame_received.connect(self._on_phone_frame_received)
         except Exception:
             pass
+        # 请求初始音量
+        self._request_phone_volume()
 
     def _update_button_states(self):
         try:
@@ -380,11 +376,30 @@ class ScreenMirrorPage(QWidget):
         except Exception:
             pass
 
+    def _request_phone_volume(self):
+        """向手机请求当前媒体音量，作为滑块初始值。"""
+        try:
+            self.manager.send_command("get_volume")
+        except Exception:
+            pass
+
+    def _on_phone_volume_changed(self, volume):
+        """手机端媒体音量变化同步到滑块（电脑拖动期间不覆盖用户操作）"""
+        if not getattr(self, '_vol_sync_enabled', True):
+            return
+        try:
+            clamped = int(max(0, min(15, volume)))
+            self.vol_slider.setValue(clamped)
+        except Exception:
+            pass
+
     def _on_vol_pressed(self):
-        """首次触碰滑块时立即发送当前值"""
+        """首次触碰滑块时立即发送当前值并短暂关闭来自手机的同步，避免回弹。"""
+        self._vol_sync_enabled = False
         value = self.vol_slider.value()
         self.manager.send_command("set_volume", extra={"volume": value})
         self._last_vol_send = time.time()
+        QTimer.singleShot(300, lambda: setattr(self, '_vol_sync_enabled', True))
 
     def _on_vol_changed(self, value):
         """拖动中 50ms 节流发送"""
@@ -457,22 +472,11 @@ class ScreenMirrorPage(QWidget):
             if self.manager._pc_stream_running:
                 self.manager.stop_pc_stream()
                 self.pc_stream_btn.setText("推流电脑画面到手机")
-                self.stop_btn.setEnabled(False)
             else:
                 self.manager.start_pc_stream()
                 self.pc_stream_btn.setText("停止推流")
-                self.stop_btn.setEnabled(True)
         except Exception as e:
             dark_msg_box(self, QMessageBox.Warning, "操作失败", f"推流操作出错: {e}")
-
-    def _stop_stream(self):
-        """停止电脑画面推流"""
-        try:
-            self.manager.stop_pc_stream()
-        except Exception:
-            pass
-        self.pc_stream_btn.setText("推流电脑画面到手机")
-        self.stop_btn.setEnabled(False)
 
     def _toggle_phone_mirror(self):
         """手机投屏到电脑：启停切换"""

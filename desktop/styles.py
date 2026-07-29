@@ -71,6 +71,7 @@ def _c():
         "error": "#FF99A4" if is_dark else "#C42B1C",
         "card": "#2C2C2C" if is_dark else "#FFFFFF",
         "card_border": "#3A3A3A" if is_dark else "#E8E8E8",
+        "flyout": "#323232" if is_dark else "#F7F7F7",
     }
 
 

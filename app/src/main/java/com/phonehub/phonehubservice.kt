@@ -85,6 +85,30 @@ class PhoneHubService : Service() {
         }
     }
 
+    /**
+     * 通知构建辅助类：负责创建通知渠道和构建前台通知
+     */
+    private object NotificationHelper {
+        private const val CHANNEL_ID = "phonehub_foreground"
+        const val NOTIFICATION_ID = 1001
+
+        fun createChannel(mgr: NotificationManager) {
+            SharedNotificationHelper.createChannel(
+                mgr, CHANNEL_ID,
+                "PhoneHub 保活",
+                "保持 PhoneHub 与电脑持续连接",
+                NotificationManager.IMPORTANCE_LOW
+            )
+        }
+
+        fun buildNotification(context: Context): Notification {
+            return SharedNotificationHelper.buildNotification(
+                context, CHANNEL_ID, "PhoneHub 保活中",
+                androidx.core.app.NotificationCompat.PRIORITY_MIN
+            )
+        }
+    }
+
     private var wakeLock: PowerManager.WakeLock? = null
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
     private var watchdogFuture: ScheduledFuture<*>? = null
@@ -94,8 +118,9 @@ class PhoneHubService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("PhoneHub 保活中"))
+        val mgr = getSystemService(NotificationManager::class.java)
+        NotificationHelper.createChannel(mgr)
+        startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.buildNotification(this))
         acquireWakeLock()
         startWatchdog()
         Log.i(TAG, "PhoneHubService created")
@@ -145,42 +170,6 @@ class PhoneHubService : Service() {
     private fun stopWatchdog() {
         watchdogFuture?.cancel(false)
         watchdogFuture = null
-    }
-
-    // ==================== 通知 ====================
-
-    private fun createNotificationChannel() {
-        val mgr = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "PhoneHub 保活",
-            NotificationManager.IMPORTANCE_LOW  // LOW: 不发声但持续显示
-        ).apply {
-            description = "保持 PhoneHub 与电脑持续连接"
-            setShowBadge(false)
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-        }
-        mgr.createNotificationChannel(channel)
-    }
-
-    private fun buildNotification(text: String): Notification {
-        val mainIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pi = PendingIntent.getActivity(
-            this, 0, mainIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("PhoneHub")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setOngoing(true)                        // 不可滑动移除
-            .setSilent(true)                         // 无声音
-            .setContentIntent(pi)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build()
     }
 
     // ==================== WakeLock ====================

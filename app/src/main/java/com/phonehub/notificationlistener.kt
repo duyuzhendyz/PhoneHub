@@ -15,6 +15,7 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.*
 
 /**
  * 通知监听服务（功能 10）
@@ -27,6 +28,10 @@ import java.util.Locale
  * 为空表示全部转发。
  */
 class NotificationListener : NotificationListenerService() {
+    private val notificationScope = CoroutineScope(Dispatchers.Main + Job())
+    private var lastNotifications = mutableMapOf<String, Long>()
+    private var pollJob: Job? = null
+
     companion object {
         private const val TAG = "PHNotificationListener"
         private const val PREF_NAME = "phonehub_prefs"
@@ -86,7 +91,7 @@ class NotificationListener : NotificationListenerService() {
         super.onListenerConnected()
         instance = this
         Log.i(TAG, "NotificationListener connected - 开始监听通知")
-        // 连接成功后立即上报当前所有活动通知
+        // 初始上报一次当前所有活动通知（作为基线）
         try {
             val active = getActiveNotifications()
             Log.i(TAG, "当前活动通知数量: ${active?.size ?: 0}")
@@ -94,9 +99,21 @@ class NotificationListener : NotificationListenerService() {
                 for (sbn in active) {
                     processAndReport(sbn)
                 }
+                // 记录这些通知的当前时间戳作为基准
+                active.forEach { sbn ->
+                    lastNotifications[sbn.key] = System.currentTimeMillis()
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "onListenerConnected getActiveNotifications failed", e)
+        }
+
+        // 启动每 1 秒一次的轮询检查
+        pollJob = notificationScope.launch {
+            while (true) {
+                delay(1000) // 1 秒
+                checkAndReportChanges()
+            }
         }
     }
 
@@ -104,6 +121,35 @@ class NotificationListener : NotificationListenerService() {
         instance = null
         Log.i(TAG, "NotificationListener disconnected - 停止监听通知")
         super.onListenerDisconnected()
+        // 取消轮询协程
+        pollJob?.cancel()
+    }
+
+    /**
+     * 每 1 秒调用一次：比较当前通知与上次记录的不同之处，如有变化则重新上报。
+     */
+    private fun checkAndReportChanges() {
+        try {
+            val active = getActiveNotifications() ?: return
+            val currentKeys = mutableSetOf<String>()
+            for (sbn in active) {
+                currentKeys.add(sbn.key)
+                val lastTime = lastNotifications[sbn.key]
+                if (lastTime == null || System.currentTimeMillis() - lastTime > 100L) {
+                    // 新增或长时间未更新，重新上报（去抖动：至少100毫秒才上报相同内容，避免频繁重复）
+                    processAndReport(sbn)
+                    lastNotifications[sbn.key] = System.currentTimeMillis()
+                }
+            }
+            // 检查是否有通知被移除（currentKeys 中没有但 lastNotifications 中有）
+            val removedKeys = lastNotifications.keys.subtract(currentKeys)
+            if (removedKeys.isNotEmpty()) {
+                // 对已删除的通知，也可选择上报空消息或直接清除；这里简单清除记录
+                removedKeys.forEach { key -> lastNotifications.remove(key) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "checkAndReportChanges failed", e)
+        }
     }
 
     override fun onDestroy() {

@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                                QListWidgetItem,
                                QMessageBox, QMenu, QInputDialog,
                                QTreeWidgetItem, QHeaderView,
-                               QFileDialog)
+                               QFileDialog, QProgressDialog)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel,
@@ -103,11 +103,14 @@ class FileManagerPage(QWidget):
         self.download_btn.clicked.connect(self._download_selected)
         self.delete_btn.clicked.connect(self._delete_selected)
         self.rename_btn.clicked.connect(self._rename_selected)
+        self._pending_open_after_download = None
+        self._download_progress_dlg = None
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.customContextMenuRequested.connect(self._on_tree_menu)
         try:
             self.manager.connection_status_changed.connect(lambda c, ch: self._update_channel_label())
             self.manager.file_list_received.connect(self._populate_from_json)
+            self.manager.file_transfer_complete.connect(self._on_file_transfer_complete)
         except Exception:
             pass
         self._update_channel_label()
@@ -129,6 +132,14 @@ class FileManagerPage(QWidget):
 
     # ==================== 深色弹窗辅助方法 ====================
 
+    @staticmethod
+    def _remove_help_button(dlg):
+        """移除 Qt 自动生成的 '?' 帮助按钮（深色模式下尤其碍眼）"""
+        try:
+            dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        except Exception:
+            pass
+
     def _show_message(self, icon, title, text):
         """显示深色模式兼容的消息弹窗"""
         msg = QMessageBox(self)
@@ -136,6 +147,12 @@ class FileManagerPage(QWidget):
         msg.setWindowTitle(title)
         msg.setText(text)
         msg.setStyleSheet(dark_dialog_style())
+        self._remove_help_button(msg)
+        try:
+            from styles import apply_dark_title_bar
+            apply_dark_title_bar(msg)
+        except Exception:
+            pass
         return msg.exec_()
 
     def _show_question(self, title, text):
@@ -147,6 +164,12 @@ class FileManagerPage(QWidget):
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg.setDefaultButton(QMessageBox.No)
         msg.setStyleSheet(dark_dialog_style())
+        self._remove_help_button(msg)
+        try:
+            from styles import apply_dark_title_bar
+            apply_dark_title_bar(msg)
+        except Exception:
+            pass
         return msg.exec_() == QMessageBox.Yes
 
     def _show_input(self, title, label, text=""):
@@ -156,8 +179,47 @@ class FileManagerPage(QWidget):
         dlg.setLabelText(label)
         dlg.setTextValue(text)
         dlg.setStyleSheet(dark_dialog_style())
+        self._remove_help_button(dlg)
+        try:
+            from styles import apply_dark_title_bar
+            apply_dark_title_bar(dlg)
+        except Exception:
+            pass
         ok = dlg.exec_() == QInputDialog.Accepted
         return dlg.textValue(), ok
+
+    def _start_download_progress(self, caption, filename):
+        """显示不确定进度的传输弹窗，ADB/WiFi 下载共用。"""
+        if self._download_progress_dlg and self._download_progress_dlg.isVisible():
+            self._download_progress_dlg.close()
+        dlg = QProgressDialog(caption, "取消", 0, 0, self)
+        dlg.setWindowTitle("正在传输文件")
+        dlg.setWindowModality(Qt.WindowModal)
+        self._remove_help_button(dlg)
+        try:
+            from styles import apply_dark_title_bar
+            apply_dark_title_bar(dlg)
+        except Exception:
+            pass
+        dlg.setStyleSheet(dark_dialog_style())
+        dlg.show()
+        self._download_progress_dlg = dlg
+
+    def _close_download_progress(self):
+        if self._download_progress_dlg and self._download_progress_dlg.isVisible():
+            self._download_progress_dlg.close()
+        self._download_progress_dlg = None
+
+    def _on_file_transfer_complete(self, file_id, file_path):
+        """WiFi/ADB 通道传输完成后：如用户触发的是“打开”菜单，自动调用系统默认程序打开。"""
+        pending = getattr(self, '_pending_open_after_download', None)
+        self._pending_open_after_download = None
+        self._close_download_progress()
+        if pending and file_path and os.path.basename(file_path) == os.path.basename(pending):
+            try:
+                os.startfile(file_path)
+            except Exception as e:
+                self._show_message(QMessageBox.Information, "提示", "文件已保存到:\n{}\n\n打开失败: {}".format(file_path, e))
 
     # ==================== 文件列表刷新 ====================
 
@@ -377,10 +439,21 @@ class FileManagerPage(QWidget):
             if not target_dir:
                 return
             local = os.path.join(target_dir, data['name'])
+            self._start_download_progress(f"正在下载: {data['name']}", data['name'])
+            self.repaint()
             try:
                 self.manager.adb_pull(remote, local)
+                self._close_download_progress()
+                self._pending_open_after_download = local
+                # 尝试自动打开文件
+                try:
+                    os.startfile(local)
+                except Exception as eopen:
+                    self._show_message(QMessageBox.Information, "打开失败", f"文件已保存但无法自动打开: {eopen}")
                 self._show_message(QMessageBox.Information, "下载成功", f"已保存到:\n{local}")
             except Exception as e:
+                self._pending_open_after_download = None
+                self._close_download_progress()
                 self._show_message(QMessageBox.Warning, "下载失败", str(e))
         else:
             # WiFi 模式：手机端发送文件
@@ -391,10 +464,12 @@ class FileManagerPage(QWidget):
                 self._show_message(QMessageBox.Warning, "忙碌", "当前有文件正在传输，请等待完成后再下载。")
                 return
             try:
+                self._pending_open_after_download = data['name']
                 self.manager.send_action("send_file_request", {"path": remote})
                 # 自动切换到文件传输页面
                 self._switch_to_transfer_page()
             except Exception as e:
+                self._pending_open_after_download = None
                 self._show_message(QMessageBox.Warning, "下载失败", str(e))
 
     def _switch_to_transfer_page(self):
@@ -543,10 +618,14 @@ class FileManagerPage(QWidget):
         if self.manager.current_channel == "adb":
             import tempfile
             local = os.path.join(tempfile.gettempdir(), data['name'])
+            self._start_download_progress(f"正在加载: {data['name']}", data['name'])
+            self.repaint()
             try:
                 self.manager.adb_pull(remote, local)
+                self._close_download_progress()
                 os.startfile(local)
             except Exception as e:
+                self._close_download_progress()
                 self._show_message(QMessageBox.Warning, "打开失败", str(e))
         else:
             # WiFi 模式：请求手机发送文件，接收后打开
@@ -557,8 +636,10 @@ class FileManagerPage(QWidget):
                 self._show_message(QMessageBox.Warning, "忙碌", "当前有文件正在传输，请等待完成后再打开。")
                 return
             self._open_after_download_name = data['name']
+            self._pending_open_after_download = data['name']
             try:
                 self.manager.send_action("send_file_request", {"path": remote})
                 self._switch_to_transfer_page()
             except Exception as e:
+                self._pending_open_after_download = None
                 self._show_message(QMessageBox.Warning, "打开失败", str(e))

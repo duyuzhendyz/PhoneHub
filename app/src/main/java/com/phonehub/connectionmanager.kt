@@ -19,9 +19,11 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.content.pm.ServiceInfo
 import android.os.PowerManager
 import android.os.StatFs
 import android.provider.MediaStore
@@ -29,6 +31,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import android.media.AudioManager
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -63,7 +66,7 @@ object ConnectionManager {
     private const val DEFAULT_SECRET_TOKEN = "541881452418845"
     private const val DEFAULT_PORT = 58627
     private const val CHUNK_SIZE = 524288  // 512KB，与PC端保持一致，减少HTTP请求数量
-    // private const val DEFAULT_PAW_URL = "https://duyuzhendyz.pythonanywhere.com"  // 【禁止删除】PAW 中转服务地址
+    private const val DEFAULT_PAW_URL = ""
     private const val DEFAULT_IP = "192.168.3.9"
 
     // 重连参数
@@ -97,11 +100,11 @@ object ConnectionManager {
     }
 
     private fun loadPawConfig() {
-        // 不再从 SharedPreferences 读取旧的 paw_token，避免残留的自定义值与 PC 端默认 token 不匹配导致认证失败
-        secretToken = DEFAULT_SECRET_TOKEN
-        // 清理旧的 paw_token 和 cached_token 缓存
         val ctx = context ?: return
         val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        // 从 SharedPreferences 加载 secretToken，无缓存时使用默认值
+        secretToken = prefs.getString(KEY_PAW_TOKEN, DEFAULT_SECRET_TOKEN) ?: DEFAULT_SECRET_TOKEN
+        // 清理旧的 paw_token 和 cached_token 缓存
         val editor = prefs.edit()
         if (prefs.contains("paw_token")) {
             editor.remove("paw_token")
@@ -225,10 +228,6 @@ object ConnectionManager {
     var lastPcHeartbeatAt = 0L
         private set
 
-    @Volatile
-    var transferInProgress = false
-        private set
-
     // 远程控制：记录上次触摸按下位置（归一化坐标→像素坐标后缓存）
     @Volatile
     private var _lastTouchDownX = -1f
@@ -240,6 +239,7 @@ object ConnectionManager {
 
     fun getPcIp(): String? = pcIp
     private var pawPollingJob: Job? = null
+    private var pawStatusReportJob: Job? = null
     private var statusJob: Job? = null
     private var msgPollingJob: Job? = null
     private var statusReportJob: Job? = null
@@ -254,8 +254,9 @@ object ConnectionManager {
     @Volatile
     private var cachedProjectionData: Intent? = null
     private var projectionManager: MediaProjectionManager? = null
+    // 使用 WeakReference 避免持有 MediaProjection 强引用导致内存泄漏
     @Volatile
-    private var activeProjection: MediaProjection? = null
+    private var activeProjectionRef: java.lang.ref.WeakReference<MediaProjection>? = null
 
     // 分离发送和接收 Job，避免互相 cancel 导致闪退
     private var sendJob: Job? = null
@@ -266,6 +267,8 @@ object ConnectionManager {
     private var locationStoreDir: File? = null
 
     private var reconnectFailCount = 0
+    private var userVerifiedConnection = false
+    private var lastPcCpuAt = 0L
 
     // 文件接收状态（断点续传）
     private val fileReceiveState = ConcurrentHashMap<String, FileReceiveState>()
@@ -354,7 +357,7 @@ object ConnectionManager {
     }
 
     enum class ChannelType(val priority: Int) {
-        NONE(0), ADB(30), WIFI(20), PAW(10)
+        NONE(0), ADB(30), WIFI(20), PAW(10);
 
         companion object {
             fun fromName(s: String?): ChannelType =
@@ -399,6 +402,8 @@ object ConnectionManager {
         loadClipboardStore()
         startStatusReportLoop()
         startAdbWatchdog()
+        // 启动媒体信息监控（定期轮询，尽快反映播放状态变化）
+        startMediaMonitoring()
         // 通知监听权限由用户在通知页手动开启，不在启动时自动检查或跳转设置页
         // 启动时自动连接（使用缓存的 IP/端口/Token，无缓存则用默认值）
         scope.launch {
@@ -406,8 +411,10 @@ object ConnectionManager {
             val cachedIp = getCachedIp() ?: DEFAULT_IP
             val cachedPort = if (prefs.contains("cached_port")) prefs.getInt("cached_port", DEFAULT_PORT) else DEFAULT_PORT
             val cachedToken = prefs.getString("cached_token", DEFAULT_SECRET_TOKEN) ?: DEFAULT_SECRET_TOKEN
+            // 优先使用 cached_token，其次使用 paw_token
+            val effectiveToken = if (cachedToken != DEFAULT_SECRET_TOKEN) cachedToken else secretToken
             delay(300)  // 等待 client 初始化完成
-            connect(cachedIp, cachedPort, cachedToken)
+            connect(cachedIp, cachedPort, effectiveToken)
         }
     }
 
@@ -631,7 +638,7 @@ object ConnectionManager {
      * 立即切换通道（降级用）。升级请走 watchdog 累计确认。
      */
     private fun switchChannelImmediate(target: ChannelType) {
-        if (transferInProgress) {
+        if (sendJob?.isActive == true || receiveJob?.isActive == true) {
             Log.i(TAG, "传输中，暂缓通道切换到 $target")
             return
         }
@@ -709,7 +716,7 @@ object ConnectionManager {
                 } else if (failCount > 0) {
                     delay(1000L * failCount)  // 递增退避: 1s, 2s, 3s, 4s, 5s
                 } else {
-                    delay(100)
+                    delay(500)
                 }
             }
         }
@@ -911,10 +918,19 @@ object ConnectionManager {
             }
             "screen_touch" -> {
                 // 电脑端远程控制手机屏幕（归一化坐标）
-                val x = data["x"]?.jsonPrimitive?.floatOrNull ?: return
-                val y = data["y"]?.jsonPrimitive?.floatOrNull ?: return
-                val op = data["op"]?.jsonPrimitive?.contentOrNull ?: "click"
-                performScreenTouch(x, y, op)
+                val x = data["x"]?.jsonPrimitive?.floatOrNull
+                if (x == null) {
+                    LogUtil.connE("screen_touch 缺少 x 坐标，跳过处理")
+                } else {
+                    val y = data["y"]?.jsonPrimitive?.floatOrNull
+                    if (y == null) {
+                        LogUtil.connE("screen_touch 缺少 y 坐标，跳过处理")
+                    } else {
+                        val op = data["op"]?.jsonPrimitive?.contentOrNull ?: "click"
+                        LogUtil.connI("收到screen_touch命令: x=$x, y=$y, op=$op, 通道=$currentChannel")
+                        performScreenTouch(x, y, op)
+                    }
+                }
             }
             "media_info" -> {
                 val title = data["title"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -992,7 +1008,6 @@ object ConnectionManager {
                 if (pending != null && pending.fileId == fileId) {
                     pending.deferred.complete(false)
                 }
-                transferInProgress = false
                 _fileTransferProgress.value = null
             }
             "transfer_control" -> {
@@ -1036,7 +1051,6 @@ object ConnectionManager {
                         try { currentConn?.disconnect() } catch (e: Exception) {}
                         sendJob?.cancel()
                         receiveJob?.cancel()
-                        transferInProgress = false
                         resumeInfo = null
                         pendingSend = null
                         _fileTransferProgress.value = null
@@ -1052,6 +1066,10 @@ object ConnectionManager {
         pawPollingJob?.cancel()
         statusJob?.cancel()
         _currentChannel.value = ChannelType.PAW
+        
+        // PAW 通道需要独立的状态上报任务（替代 ADB/WiFi 的轮询机制）
+        startPawStatusReport()
+        
         // 注册 PAW 设备
         scope.launch {
             if (pawDeviceId == null) {
@@ -1119,6 +1137,75 @@ object ConnectionManager {
         }
     }
 
+    /**
+     * PAW 通道状态上报：每5秒向PC发送一次手机状态
+     */
+    private fun startPawStatusReport() {
+        pawStatusReportJob?.cancel()
+        pawStatusReportJob = scope.launch {
+            while (isActive) {
+                try {
+                    delay(5000)  // 每5秒上报一次
+                    sendPawStatusReport()
+                } catch (e: Exception) {
+                    Log.e(TAG, "PAW status report failed", e)
+                }
+            }
+        }
+    }
+
+    /**
+     * 通过 PAW 发送手机状态到 PC
+     */
+    private suspend fun sendPawStatusReport() {
+        val ctx = context ?: return
+        try {
+            val battery = getBatteryStatus(ctx)
+            val temp = getBatteryTemperature(ctx)
+            val net = getNetworkType(ctx)
+            val storage = getStorageInfo()
+            val mem = getMemUsage()
+            val cpu = getPhoneCpuUsage()
+
+            val msg = buildJsonMessage {
+                put("source", "phone")
+                putJsonObject("data") {
+                    put("action", "status")
+                    put("cpu", cpu)
+                    put("battery", battery)
+                    put("temperature", temp)
+                    put("network", net)
+                    put("storage_total", storage.first)
+                    put("storage_free", storage.second)
+                    put("memory_usage", mem)
+                    put("device_model", android.os.Build.MODEL)
+                    put("android_version", android.os.Build.VERSION.RELEASE)
+                        put("volume", getCurrentMusicVolume())
+                }
+            }
+
+            // 通过 PAW 发送
+            val conn = URL("$pawUrl/api/send").openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer $secretToken")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.outputStream.use { os ->
+                os.write(msg.toString().toByteArray(Charsets.UTF_8))
+            }
+            val responseCode = conn.responseCode
+            conn.disconnect()
+
+            if (responseCode == 200) {
+                lastPcHeartbeatAt = System.currentTimeMillis()
+                lastPcCpuAt = System.currentTimeMillis()
+                _phoneMemUsage.value = mem
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "sendPawStatusReport failed", e)
+        }
+    }
+
     private fun handlePawMessage(msg: JsonObject) {
         // PAW 通道消息通过 handlePcMessage 处理
         handlePcMessage(msg)
@@ -1176,6 +1263,7 @@ object ConnectionManager {
                 PhoneHubAccessibilityService.instance?.performGlobalLock()
             }
             "screenshot" -> triggerScreenshot()
+            "get_volume" -> sendCurrentVolume()
             "key" -> {
                 val key = data["key"]?.jsonPrimitive?.contentOrNull ?: return
                 val mods = data["mods"]?.jsonArray?.map { it.jsonPrimitive.contentOrNull ?: "" } ?: emptyList()
@@ -1573,6 +1661,7 @@ object ConnectionManager {
                     put("memory_usage", mem)
                     put("device_model", android.os.Build.MODEL)
                     put("android_version", android.os.Build.VERSION.RELEASE)
+                        put("volume", getCurrentMusicVolume())
                 }
             }
             scope.launch { sendRaw(msg.toString()) }
@@ -1920,12 +2009,62 @@ object ConnectionManager {
         }
     }
 
+
+    private fun getCurrentMusicVolume(): Int {
+        return try {
+            val am = context?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return 7
+            am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+        } catch (_: Exception) { 7 }
+    }
+
+    private fun sendCurrentVolume() {
+        sendAction("volume_changed", mapOf("volume" to getCurrentMusicVolume()))
+    }
+
+    // ============================== 媒体信息监控 ==============================
+    private var mediaMonitorJob: Job? = null
+
+    /**
+     * 启动媒体信息周期性监控：每 2 秒查询当前播放媒体的标题，如有变化则上报给 PC
+     */
+    fun startMediaMonitoring() {
+        mediaMonitorJob?.cancel()
+        mediaMonitorJob = scope.launch {
+            while (isActive) {
+                delay(2000) // 2 秒间隔
+                val currentTitle = getCurrentMediaTitle()
+                if (!currentTitle.isNullOrBlank() && currentTitle != _mediaInfo.value.split(" - ").first()) {
+                    _mediaInfo.value = currentTitle
+                    sendMediaCommand("media_update")
+                }
+            }
+        }
+    }
+
+    /**
+     * 停止媒体信息监控
+     */
+    fun stopMediaMonitoring() {
+        mediaMonitorJob?.cancel()
+        mediaMonitorJob = null
+    }
+
+    /**
+     * 尝试从 AudioManager 获取当前正在播放媒体的标题（通过 RemoteControlClient 元数据）
+     * 简化实现：目前仅作为框架预留，实际开发中需适配不同 Android 版本的媒体会话 API
+     */
+    private fun getCurrentMediaTitle(): String? {
+        // 简化占位：暂时不实现复杂的媒体标题获取逻辑，返回 null 由上层决定
+        // 实际完整方案可使用 MediaSessionCompat.Callback 或广播监听
+        return null
+    }
+
     // ============================== 文件传输 ==============================
 
     // Task 10: 使用 sendJob 替代 fileTransferJob，不再 cancel receiveJob
     fun sendFile(file: File) {
         if (!file.exists()) return
-        // 自动重置卡死状态：如果 sendJob 不再活跃但 transferInProgress 仍为 true
+        // 自动重置卡死状态：如果 sendJob 不再活跃但仍有传输在进行
         if (sendJob?.isActive == true) {
             // 检查 ackTracker 中是否有卡住超过 60 秒的任务，如果有则取消
             val now = System.currentTimeMillis()
@@ -1934,15 +2073,10 @@ object ConnectionManager {
                 Log.w(TAG, "sendFile: 检测到卡死任务 $stuckFileId，强制取消 sendJob")
                 sendJob?.cancel()
                 ackTracker.remove(stuckFileId)
-                transferInProgress = false
             } else {
                 Log.w(TAG, "sendFile: 上次发送任务仍在进行，忽略新请求")
                 return
             }
-        }
-        if (transferInProgress) {
-            Log.w(TAG, "sendFile: transferInProgress 卡死，自动重置")
-            transferInProgress = false
         }
         sendJob = scope.launch {
             try {
@@ -1950,7 +2084,6 @@ object ConnectionManager {
                 val fileSize = file.length()
                 fileTransferCancel = false
                 transferPaused = false
-                transferInProgress = true
 
                 val headMsg = buildJsonMessage {
                     put("source", "phone")
@@ -1990,7 +2123,6 @@ object ConnectionManager {
             } catch (e: Exception) {
                 Log.e(TAG, "Send file failed", e)
             } finally {
-                transferInProgress = false
                 pendingSend = null
             }
         }
@@ -2008,15 +2140,10 @@ object ConnectionManager {
                 Log.w(TAG, "sendFile(Uri): 检测到卡死任务 $stuckFileId，强制取消 sendJob")
                 sendJob?.cancel()
                 ackTracker.remove(stuckFileId)
-                transferInProgress = false
             } else {
                 Log.w(TAG, "sendFile(Uri): 上次发送任务仍在进行，忽略新请求")
                 return
             }
-        }
-        if (transferInProgress) {
-            Log.w(TAG, "sendFile(Uri): transferInProgress 卡死，自动重置")
-            transferInProgress = false
         }
         val ctx = context ?: return
         sendJob = scope.launch {
@@ -2024,7 +2151,6 @@ object ConnectionManager {
                 val fileId = UUID.randomUUID().toString()
                 fileTransferCancel = false
                 transferPaused = false
-                transferInProgress = true
 
                 // 通过 ContentResolver 查询文件名和大小
                 val cr = ctx.contentResolver
@@ -2092,7 +2218,6 @@ object ConnectionManager {
                 showToast("发送异常: ${e.message}")
                 _fileTransferProgress.value = null
             } finally {
-                transferInProgress = false
                 pendingSend = null
             }
         }
@@ -2310,7 +2435,6 @@ object ConnectionManager {
         receiveJob = scope.launch {
             var conn: HttpURLConnection? = null
             try {
-                transferInProgress = true
                 fileTransferCancel = false
                 transferPaused = false
                 // 保存恢复信息（PC→手机方向暂停后继续时断点续传）
@@ -2465,7 +2589,6 @@ object ConnectionManager {
             } finally {
                 try { conn?.disconnect() } catch (e: Exception) {}
                 currentConn = null
-                transferInProgress = false
                 fileReceiveState.remove(fileId)
             }
         }
@@ -2530,7 +2653,6 @@ object ConnectionManager {
         // Task 10: 分别 cancel 发送和接收 Job
         sendJob?.cancel()
         receiveJob?.cancel()
-        transferInProgress = false
         resumeInfo = null
         pendingSend = null
         _fileTransferProgress.value = null
@@ -3055,21 +3177,28 @@ object ConnectionManager {
         val rc = cachedProjectionResultCode
         val data = cachedProjectionData ?: return null
         return try {
-            // Android 14+: 先释放已有的活跃实例
-            if (android.os.Build.VERSION.SDK_INT >= 34 && activeProjection != null) {
-                try { activeProjection?.stop() } catch (_: Exception) {}
-                activeProjection = null
+            // Android 14+: 先检查已有的 WeakReference 是否还有效
+            val existing = activeProjectionRef?.get()
+            if (existing != null) {
+                Log.d(TAG, "复用已有的 MediaProjection 实例")
+                existing
+            } else {
+                // Android 14+: 先释放已有的活跃实例（如果 WeakReference 指向的对象已被 GC 回收）
+                if (android.os.Build.VERSION.SDK_INT >= 34) {
+                    try { activeProjectionRef?.get()?.stop() } catch (_: Exception) {}
+                    activeProjectionRef = null
+                }
+                val projection = pm.getMediaProjection(rc, data)
+                if (android.os.Build.VERSION.SDK_INT >= 34) {
+                    activeProjectionRef = java.lang.ref.WeakReference(projection)
+                    projection?.registerCallback(object : MediaProjection.Callback() {
+                        override fun onStop() {
+                            activeProjectionRef = null
+                        }
+                    }, android.os.Handler(android.os.Looper.getMainLooper()))
+                }
+                projection
             }
-            val projection = pm.getMediaProjection(rc, data)
-            if (android.os.Build.VERSION.SDK_INT >= 34) {
-                activeProjection = projection
-                projection?.registerCallback(object : MediaProjection.Callback() {
-                    override fun onStop() {
-                        activeProjection = null
-                    }
-                }, android.os.Handler(android.os.Looper.getMainLooper()))
-            }
-            projection
         } catch (e: Exception) {
             Log.e(TAG, "getCachedMediaProjection failed", e)
             null
@@ -3226,6 +3355,9 @@ object ConnectionManager {
                 try { virtualDisplay?.release() } catch (e: Exception) {}
                 try { imageReader?.close() } catch (e: Exception) {}
                 try { projection?.stop() } catch (e: Exception) {}
+                if (android.os.Build.VERSION.SDK_INT >= 34) {
+                    activeProjectionRef = null
+                }
             }
         }
     }
@@ -3239,7 +3371,7 @@ object ConnectionManager {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/PhoneHub")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Computer")
             }
             val uri: Uri? = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
             uri?.let {
@@ -3411,30 +3543,52 @@ object ConnectionManager {
      * 将归一化坐标 (0-1) 转为像素坐标并执行触摸操作
      */
     private fun performScreenTouch(normX: Float, normY: Float, op: String) {
-        val ctx = context ?: return
+        LogUtil.connI("收到屏幕操控指令: op=$op, norm=($normX, $normY)")
+        
+        val ctx = context ?: run {
+            LogUtil.connE("context 为空，无法执行操控")
+            return
+        }
+        
         val metrics = android.util.DisplayMetrics()
         val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager
         @Suppress("DEPRECATION")
         wm?.defaultDisplay?.getRealMetrics(metrics)
-        val px = normX * metrics.widthPixels
-        val py = normY * metrics.heightPixels
+        
+        val screenWidth = metrics.widthPixels
+        val screenHeight = metrics.heightPixels
+        LogUtil.connD("屏幕尺寸: ${screenWidth}x${screenHeight}")
+        
+        val px = normX * screenWidth
+        val py = normY * screenHeight
+        LogUtil.connI("归一化坐标 (${normX}, ${normY}) -> 像素坐标 ($px, $py)")
+        
         val acc = PhoneHubAccessibilityService.instance
         if (acc == null) {
-            Log.w(TAG, "performScreenTouch: 无障碍服务未连接，无法执行操控。请在设置→无障碍中开启 PhoneHub 服务")
+            LogUtil.connE("无障碍服务未连接！用户需要在 设置→无障碍 中开启 PhoneHub")
             showToast("无障碍服务未开启，无法操控。请在设置→无障碍中开启 PhoneHub")
             return
         }
+        LogUtil.connI("无障碍服务已连接，准备执行操作")
+        
         when (op) {
-            "click" -> acc.performTap(px, py)
+            "click" -> {
+                LogUtil.connD("执行点击操作")
+                acc.performTap(px, py)
+            }
             "down" -> {
                 _lastTouchDownX = px
                 _lastTouchDownY = py
+                LogUtil.connD("触摸按下: ($px, $py)")
             }
             "move" -> {
                 val lastX = _lastTouchDownX
                 val lastY = _lastTouchDownY
+                LogUtil.connD("触摸移动: ($lastX,$lastY) -> ($px,$py)")
                 if (lastX >= 0 && lastY >= 0) {
                     acc.performSwipe(lastX, lastY, px, py, 50)
+                } else {
+                    LogUtil.connW("没有有效的按下位置，跳过移动")
                 }
                 _lastTouchDownX = px
                 _lastTouchDownY = py
@@ -3442,21 +3596,34 @@ object ConnectionManager {
             "up" -> {
                 val lastX = _lastTouchDownX
                 val lastY = _lastTouchDownY
+                LogUtil.connD("触摸抬起: ($lastX,$lastY) -> ($px,$py)")
                 if (lastX >= 0 && lastY >= 0) {
                     val dx = Math.abs(px - lastX)
                     val dy = Math.abs(py - lastY)
+                    LogUtil.connD("移动距离: dx=$dx, dy=$dy")
                     if (dx < 10 && dy < 10) {
+                        LogUtil.connI("移动距离小于10像素，执行点击")
                         acc.performTap(px, py)
                     } else {
+                        LogUtil.connI("移动距离大于10像素，执行滑动")
                         acc.performSwipe(lastX, lastY, px, py, 100)
                     }
+                } else {
+                    LogUtil.connW("没有有效的按下位置")
                 }
                 _lastTouchDownX = -1f
                 _lastTouchDownY = -1f
             }
-            "right" -> acc.performBack()
-            else -> acc.performTap(px, py)
+            "right" -> {
+                LogUtil.connI("执行右键（返回键）操作")
+                acc.performBack()
+            }
+            else -> {
+                LogUtil.connW("未知操作类型: $op，默认执行点击")
+                acc.performTap(px, py)
+            }
         }
+        LogUtil.connI("屏幕操控指令执行完毕: $op ($px, $py)")
     }
 
     // ============================== 通知监听 ===============================
@@ -3594,13 +3761,15 @@ object ConnectionManager {
 
     private fun sendClipboardHistoryToPc() {
         scope.launch {
+            // 增量同步：仅发送最近 50 条，减少网络开销
+            val recentItems = _clipboardHistory.value.take(50)
             val arr = buildJsonArray {
-                _clipboardHistory.value.forEach {
+                for (item in recentItems) {
                     addJsonObject {
-                        put("content", it.content)
-                        put("source", it.source)
-                        put("timestamp", it.timestamp)
-                        put("favorite", it.favorite)
+                        put("content", item.content)
+                        put("source", item.source)
+                        put("timestamp", item.timestamp)
+                        put("favorite", item.favorite)
                     }
                 }
             }
@@ -3826,16 +3995,29 @@ object ConnectionManager {
         msgPollingJob?.cancel()
         // pawPollingJob?.cancel()  // 【禁止删除】PAW 轮询停止
         statusReportJob?.cancel()
+        pawStatusReportJob?.cancel()  // PAW 状态上报
         // Task 10: 分别 cancel 发送和接收 Job
         sendJob?.cancel()
         receiveJob?.cancel()
-        transferInProgress = false
         ackTracker.clear()
         fileReceiveState.clear()
         _connectionState.value = ConnectionState.DISCONNECTED
         _currentChannel.value = ChannelType.NONE
         _connectionMessage.value = "未连接"
         _fileTransferProgress.value = null
+    }
+
+    /**
+     * 通过 PAW 中转服务器连接
+     */
+    fun connectPaw() {
+        userConnectedIntent = true
+        lastConnectFailReason = null
+        _connectionState.value = ConnectionState.CONNECTING
+        _connectionMessage.value = "正在通过 PAW 连接..."
+        Log.i(TAG, "connectPaw() called")
+        // 启动 PAW 通道
+        startChannel(ChannelType.PAW)
     }
 
     fun runOnUiThread(block: () -> Unit) {

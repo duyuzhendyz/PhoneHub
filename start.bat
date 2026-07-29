@@ -1,2 +1,2 @@
 @echo off
-start "" "c:\PhoneHub\app\build\outputs\apk\debug"
+start "" "C:\PhoneHub\app\build\outputs\apk\release"

@@ -130,6 +130,21 @@ class SettingsPage(QWidget):
         token_row.addStretch()
         conn_layout.addLayout(token_row)
 
+        paw_url_row = QHBoxLayout()
+        paw_url_row.addWidget(BodyLabel("PAW 服务器地址:"))
+        self.paw_url_input = LineEdit()
+        try:
+            from connection_manager import PAW_URL as _current_paw_url
+            _paw_url = self.settings_data.get("paw_url", _current_paw_url)
+        except Exception:
+            _paw_url = self.settings_data.get("paw_url", "")
+        self.paw_url_input.setText(_paw_url)
+        self.paw_url_input.setPlaceholderText("https://yourname.pythonanywhere.com")
+        self.paw_url_input.setMinimumWidth(300)
+        paw_url_row.addWidget(self.paw_url_input)
+        paw_url_row.addStretch()
+        conn_layout.addLayout(paw_url_row)
+
         self.auto_start_cb = CheckBox("开机自动启动")
         conn_layout.addWidget(self.auto_start_cb)
 
@@ -261,10 +276,15 @@ class SettingsPage(QWidget):
             if port_text:
                 self.manager.port = int(port_text)
             paw_token = self.paw_token_input.text().strip()
+            paw_url = self.paw_url_input.text().strip()
             if paw_token:
                 import connection_manager
                 connection_manager.SECRET_TOKEN = paw_token
                 self.settings_data["paw_token"] = paw_token
+            if paw_url:
+                import connection_manager
+                connection_manager.PAW_URL = paw_url
+                self.settings_data["paw_url"] = paw_url
             self.settings_data["auto_start"] = self.auto_start_cb.isChecked()
             self.settings_data["auto_sync"] = self.auto_sync_cb.isChecked()
             self.settings_data["auto_open"] = self.auto_open_cb.isChecked()

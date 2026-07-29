@@ -175,13 +175,12 @@ class PushWebPage(QWidget):
         is_url = self._is_url(text)
         if ch == "adb":
             if is_url:
-                # URL: 控制 Via 浏览器打开
+                # URL: 统一走手机 App 的 open_url 通道，手机端记录历史并唤起浏览器
                 url = self._normalize_url(text)
                 try:
-                    self.manager.adb_command('shell', 'am', 'start', '-a', 'android.intent.action.VIEW',
-                                             '-d', url, 'mark.via.gp')
-                    self._add_history(text, "Via (ADB)", direction="out")
-                    self._update_last_send(text)
+                    self.manager.send_action("open_url", {"url": url})
+                    self._add_history(url, "Via (ADB)", direction="out")
+                    self._update_last_send(url)
                 except Exception as e:
                     self._show_message(QMessageBox.Warning, "失败", str(e))
             else:
@@ -341,9 +340,10 @@ class PushWebPage(QWidget):
             return
         menu = QMenu(self)
         c = _c()
+        flyout_color = c.get('flyout', c.get('surface_hover', '#323232'))
         menu.setStyleSheet(f"""
             QMenu {{
-                background-color: {c['flyout']};
+                background-color: {flyout_color};
                 color: {c['text']};
                 border: 1px solid {c['border']};
                 padding: 4px;

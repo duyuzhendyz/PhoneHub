@@ -16,75 +16,80 @@ from flask.logging import default_handler
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
 from collections import deque
 
-SECRET_TOKEN = "541881452418845"
-DEFAULT_PORT = 58627
-CHUNK_SIZE = 524288  # 512KB，减少文件传输的HTTP请求数量，降低延迟
-
-LOG_FILE = os.path.join(os.path.expanduser("~"), "PhoneHub", "log.txt")
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 logger = logging.getLogger('phonehub')
 logger.setLevel(logging.INFO)
 logger.propagate = False
 
-file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-file_handler.setLevel(logging.INFO)
-
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 
 log_format = logging.Formatter('%(asctime)s - %(message)s')
-file_handler.setFormatter(log_format)
 console_handler.setFormatter(log_format)
 
 if not logger.handlers:
-    logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
 
-def log(msg):
-    logger.info(msg)
-    print(msg)
+def _load_settings_from_file():
+    """从配置文件加载设置，返回字典"""
+    settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
+    if os.path.exists(settings_file):
+        try:
+            with open(settings_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
 
-def log_phone_request(action, detail=""):
-    msg = f"手机请求 {action}"
-    if detail:
-        msg += f" - {detail}"
-    logger.info(msg)
-    print(msg)
+def _save_settings_to_file(settings):
+    """保存设置到配置文件"""
+    settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
+    with open(settings_file, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2, ensure_ascii=False)
 
-
-def log_pc_send(action, detail=""):
-    msg = f"电脑发送 {action}"
-    if detail:
-        msg += f" - {detail}"
-    logger.info(msg)
-    print(msg)
-# PAW_URL = "https://duyuzhendyz.pythonanywhere.com"  # 【禁止删除】PAW 中转服务地址
-
-def load_settings():
-    """从配置文件加载设置（不再读取 paw_token，避免与对端 token 不匹配导致认证失败）"""
-    # SECRET_TOKEN 保持默认值，不从配置文件覆盖
-    pass
-
-load_settings()
 
 # 通道优先级
 CHANNEL_NONE = "none"
 CHANNEL_ADB = "adb"
 CHANNEL_WIFI = "wifi"
-# CHANNEL_PAW = "paw"  # 【禁止删除】PAW 中转通道
-CHANNEL_PRIORITY = {CHANNEL_ADB: 3, CHANNEL_WIFI: 2, CHANNEL_NONE: 0}
-
-# 升降级参数
-UPGRADE_CONFIRM_COUNT = 3
-DOWNGRADE_FAIL_COUNT = 3
-RECONNECT_RETRY = 3
-PROBE_INTERVAL = 5
+CHANNEL_PAW = "paw"  # PAW 中转通道
+CHANNEL_PRIORITY = {CHANNEL_ADB: 3, CHANNEL_WIFI: 2, CHANNEL_PAW: 1, CHANNEL_NONE: 0}
 
 
 class ConnectionManager(QObject):
+    # ==================== 类常量 ====================
+    DEFAULT_SECRET_TOKEN = "541881452418845"
+    DEFAULT_PORT = 58627
+    CHUNK_SIZE = 524288  # 512KB，减少文件传输的HTTP请求数量，降低延迟
+    LOG_DIR = os.path.join(os.path.expanduser("~"), "PhoneHub")
+    LOG_FILE = os.path.join(LOG_DIR, "log.txt")
+    UPGRADE_CONFIRM_COUNT = 3
+    DOWNGRADE_FAIL_COUNT = 3
+    RECONNECT_RETRY = 3
+    PROBE_INTERVAL = 5
+    FILE_TRANSFER_TIMEOUT = 300
+    WATCHDOG_INTERVAL = 5
+    MEDIA_MONITOR_INTERVAL = 1
+    STATUS_MONITOR_IDLE_THRESHOLD = 15
+    CLIPBOARD_MONITOR_INTERVAL = 0.5
+    PC_STREAM_FPS_DELAY = 0.016
+    VERIFY_SERVER_DELAY = 2
+    VERIFY_SERVER_TIMEOUT = 2
+    WAIT_FOR_CONNECTION_TIMEOUT = 10
+    ADB_FORWARD_TIMEOUT = 2
+    ADB_TCPID_TIMEOUT = 10
+    ADB_COMMAND_TIMEOUT = 15
+    PAW_REGISTER_TIMEOUT = 10
+    PAW_DISCONNECT_TIMEOUT = 5
+    PAW_LONG_POLL_TIMEOUT = 35
+    PAW_RECONNECT_WAIT = 2
+    RECONNECT_WAIT = 2
+    PROBE_WAIT = 5
+    MEDIA_KEY_DELAY = 0.05
+    DELAYED_MEDIA_CHECK_DELAY = 0.6
+    # ==================== 信号定义 ====================
     connection_status_changed = pyqtSignal(bool, str)
     connection_message_changed = pyqtSignal(str)
     cpu_usage_received = pyqtSignal(float)
@@ -112,18 +117,31 @@ class ConnectionManager(QObject):
     phone_frame_received = pyqtSignal(bytes)  # 手机投屏画面帧 (JPEG bytes)
     camera_frame_received = pyqtSignal(bytes)  # 手机摄像头画面帧 (JPEG bytes)
     phone_audio_received = pyqtSignal(bytes)  # 手机端音频数据
+    phone_volume_received = pyqtSignal(int)   # 手机端媒体音量变化
     clipboard_history_received = pyqtSignal(list)  # 手机端剪贴板历史同步（list of {content, source, timestamp, favorite}）
 
     def __init__(self):
         super().__init__()
+        # 日志目录确保存在
+        os.makedirs(self.LOG_DIR, exist_ok=True)
+        
+        # 缓存设置（避免每次读取文件）
+        self._settings_cache = {}
+        self._load_settings_cache()
+        self.secret_token = self._settings_cache.get("secret_token", self.DEFAULT_SECRET_TOKEN)
+        self.paw_url = self._settings_cache.get("paw_url", "")
+        
         self.app = Flask(__name__)
         self.app.logger.removeHandler(default_handler)
         werkzeug_logger = logging.getLogger('werkzeug')
         werkzeug_logger.removeHandler(default_handler)
-        werkzeug_logger.addHandler(file_handler)
+        werkzeug_fh = logging.FileHandler(self.LOG_FILE, encoding='utf-8')
+        werkzeug_fh.setLevel(logging.INFO)
+        werkzeug_fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        werkzeug_logger.addHandler(werkzeug_fh)
         self.server_thread = None
         self.is_running = False
-        self.port = DEFAULT_PORT
+        self.port = self.DEFAULT_PORT
         self.device_id = str(uuid.uuid4())
 
         self.phone_connected = False
@@ -147,6 +165,7 @@ class ConnectionManager(QObject):
 
         self.file_transfer_active = False
         self.current_file_id = None
+        self.last_transfer_progress_time = 0.0  # 最近一次进度信号时间（秒级时间戳）
         self.file_transfer_cancel = False
         self._transfer_paused = False
         # save.md：接收文件统一存到 F:\desk\手机上传
@@ -217,6 +236,43 @@ class ConnectionManager(QObject):
         self._media_monitor_thread = None
         self._start_media_monitor()
 
+    # ==================== 日志方法 ====================
+
+    def log(self, msg):
+        """统一的日志方法"""
+        logger.info(msg)
+        print(msg)
+
+    def log_phone_request(self, action, detail=""):
+        """记录手机请求日志"""
+        msg = f"手机请求 {action}"
+        if detail:
+            msg += f" - {detail}"
+        logger.info(msg)
+        print(msg)
+
+    def log_pc_send(self, action, detail=""):
+        """记录PC发送日志"""
+        msg = f"电脑发送 {action}"
+        if detail:
+            msg += f" - {detail}"
+        logger.info(msg)
+        print(msg)
+
+    # ==================== 设置缓存 ====================
+
+    def _load_settings_cache(self):
+        """加载并缓存设置文件"""
+        self._settings_cache = _load_settings_from_file()
+
+    def _save_settings_cache(self, paw_url=None, secret_token=None):
+        """保存设置到缓存和文件"""
+        if paw_url is not None:
+            self._settings_cache["paw_url"] = paw_url
+        if secret_token is not None:
+            self._settings_cache["secret_token"] = secret_token
+        _save_settings_to_file(self._settings_cache)
+
     def _get_local_ip(self):
         s = None
         try:
@@ -263,16 +319,16 @@ class ConnectionManager(QObject):
             if request.path == '/favicon.ico':
                 return None
             auth = request.headers.get('Authorization', '')
-            if auth != f'Bearer {SECRET_TOKEN}':
+            if auth != f'Bearer {self.secret_token}':
                 remote = request.remote_addr or 'unknown'
                 # 记录认证失败详情（显示完整token便于排查）
-                log(f"[AUTH FAIL] 来自 {remote} {request.method} {request.path} | 手机端发送='{auth}' | 电脑端期望='Bearer {SECRET_TOKEN}'")
+                self.log(f"[AUTH FAIL] 来自 {remote} {request.method} {request.path} | 手机端发送='{auth}' | 电脑端期望='Bearer {self.secret_token}'")
                 return jsonify({'error': 'unauthorized'}), 403
 
         @self.app.errorhandler(Exception)
         def handle_exception(e):
             """全局异常处理：防止请求处理异常导致服务器崩溃"""
-            log(f"Flask 请求处理异常: {e}")
+            self.log(f"Flask 请求处理异常: {e}")
             return jsonify({'error': str(e)}), 500
 
         def _update_phone_connection():
@@ -311,14 +367,14 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/status', methods=['GET'])
         def get_status():
-            log_phone_request("获取电脑状态")
+            self.log_phone_request("获取电脑状态")
             _update_phone_connection()
             return jsonify(_get_system_status())
 
         @self.app.route('/api/poll', methods=['GET'])
         def poll_all():
             """合并轮询端点：一次请求同时返回电脑状态和消息队列中的一条消息，减轻网络负担"""
-            log_phone_request("合并轮询(status+msg)")
+            self.log_phone_request("合并轮询(status+msg)")
             _update_phone_connection()
             status_info = _get_system_status()
             # 消息：取所有待发消息（减少多次轮询延迟，快捷控制等场景）
@@ -329,7 +385,7 @@ class ConnectionManager(QObject):
                     try:
                         for m in msgs:
                             _action = m.get('data', {}).get('action', '未知')
-                            log(f"[poll] 返回消息: action={_action}")
+                            self.log(f"[poll] 返回消息: action={_action}")
                     except Exception:
                         pass
                 else:
@@ -348,7 +404,7 @@ class ConnectionManager(QObject):
                 body = data.get('data', {})
                 action = body.get('action', '')
 
-            log_phone_request(action)
+            self.log_phone_request(action)
 
             # 更新手机 IP 和通道状态
             _update_phone_connection()
@@ -381,13 +437,13 @@ class ConnectionManager(QObject):
                 file_name = body.get('file_name', body.get('fileName', ''))
                 file_size = body.get('file_size', body.get('fileSize', 0))
                 file_id = body.get('file_id', body.get('fileId', ''))
-                log_phone_request("发送文件", f"name={file_name}, size={file_size}, id={file_id}")
+                self.log_phone_request("发送文件", f"name={file_name}, size={file_size}, id={file_id}")
                 self._start_file_receive(file_id, file_name, file_size)
                 self.file_receive_started.emit(file_name, file_size, file_id)
             elif action == 'transfer_control':
                 # 手机端发来的传输控制消息（暂停/继续/取消）
                 ctrl = body.get('ctrl', '')
-                log_phone_request("传输控制", f"ctrl={ctrl}")
+                self.log_phone_request("传输控制", f"ctrl={ctrl}")
                 if ctrl == 'cancel':
                     self.file_transfer_cancel = True
                     self._transfer_paused = False
@@ -491,6 +547,12 @@ class ConnectionManager(QObject):
             elif action == 'camera_switch':
                 # 手机端切换了摄像头，PC端无需额外操作
                 pass
+            elif action == 'volume_changed':
+                # 手机端当前媒体音量（滑块同步 + 实时变化）
+                try:
+                    self.phone_volume_received.emit(int(body.get('volume', 0)))
+                except Exception:
+                    pass
             elif action == 'url_history_sync':
                 # 手机端发来 URL 历史用于同步
                 history = body.get('history', [])
@@ -511,7 +573,7 @@ class ConnectionManager(QObject):
             file_name = request.headers.get('X-File-Name', '')
             file_size = int(request.headers.get('X-File-Size', '0'))
             resume_offset = int(request.headers.get('X-Resume-Offset', '0'))
-            log_phone_request("上传文件(流式)", f"file_id={file_id}, name={file_name}, size={file_size}, offset={resume_offset}")
+            self.log_phone_request("上传文件(流式)", f"file_id={file_id}, name={file_name}, size={file_size}, offset={resume_offset}")
             if not file_id or file_id != self.current_file_id:
                 return jsonify({'error': 'invalid file_id'}), 400
             if self.file_transfer_cancel:
@@ -539,6 +601,7 @@ class ConnectionManager(QObject):
                         f.write(chunk)
                         written += len(chunk)
                         self.current_receive_written = written
+                        self.last_transfer_progress_time = time.time()
                         self.file_transfer_progress.emit(file_id, written, file_size, time.time())
                 if self.file_transfer_cancel:
                     return jsonify({'status': 'cancelled', 'written': written}), 400
@@ -552,15 +615,15 @@ class ConnectionManager(QObject):
         @self.app.route('/api/download_file/<file_id>', methods=['GET'])
         def download_file(file_id):
             """PC→手机：流式发送整个文件（支持断点续传 Range 请求）"""
-            log_phone_request("下载文件(流式)", f"file_id={file_id}")
-            log(f"[download_file] 请求进入: file_id={file_id}, outgoing_file_id={self.outgoing_file_id}, outgoing_file_path={self.outgoing_file_path}, file_transfer_cancel={self.file_transfer_cancel}")
+            self.log_phone_request("下载文件(流式)", f"file_id={file_id}")
+            self.log(f"[download_file] 请求进入: file_id={file_id}, outgoing_file_id={self.outgoing_file_id}, outgoing_file_path={self.outgoing_file_path}, file_transfer_cancel={self.file_transfer_cancel}")
             if not self.outgoing_file_path or self.outgoing_file_id != file_id:
-                log(f"[download_file] 404: outgoing_file_path={self.outgoing_file_path}, outgoing_file_id={self.outgoing_file_id} != file_id={file_id}")
+                self.log(f"[download_file] 404: outgoing_file_path={self.outgoing_file_path}, outgoing_file_id={self.outgoing_file_id} != file_id={file_id}")
                 return jsonify({'error': 'not found'}), 404
             file_path = self.outgoing_file_path
             file_size = self.outgoing_file_size
             if not os.path.exists(file_path):
-                log(f"[download_file] 404: 文件不存在 {file_path}")
+                self.log(f"[download_file] 404: 文件不存在 {file_path}")
                 return jsonify({'error': 'file not found'}), 404
 
             # 解析 Range header 支持断点续传
@@ -577,7 +640,7 @@ class ConnectionManager(QObject):
             def generate():
                 """生成器流式读取文件并发送"""
                 sent = resume_offset
-                log(f"[download_file] generate() 开始: resume_offset={resume_offset}, file_size={file_size}, file_transfer_cancel={self.file_transfer_cancel}")
+                self.log(f"[download_file] generate() 开始: resume_offset={resume_offset}, file_size={file_size}, file_transfer_cancel={self.file_transfer_cancel}")
                 try:
                     with open(file_path, 'rb') as f:
                         if resume_offset > 0:
@@ -591,6 +654,7 @@ class ConnectionManager(QObject):
                                 break
                             yield data
                             sent += len(data)
+                            self.last_transfer_progress_time = time.time()
                             try:
                                 self.file_transfer_progress.emit(file_id, sent, file_size, time.time())
                             except Exception:
@@ -610,26 +674,27 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/upload_chunk/<file_id>/<int:part_num>', methods=['POST'])
         def upload_chunk(file_id, part_num):
-            log_phone_request("上传文件分块", f"file_id={file_id}, part={part_num}")
+            self.log_phone_request("上传文件分块", f"file_id={file_id}, part={part_num}")
             chunk_data = request.get_data()
             self._write_file_chunk(file_id, part_num, chunk_data)
             return jsonify({'status': 'ok'})
 
         @self.app.route('/api/download_chunk/<file_id>/<int:part_num>', methods=['GET'])
         def download_chunk(file_id, part_num):
-            log_phone_request("下载文件分块", f"file_id={file_id}, part={part_num}")
+            self.log_phone_request("下载文件分块", f"file_id={file_id}, part={part_num}")
             chunk_data = self._read_file_chunk(file_id, part_num)
             if chunk_data:
                 file_size = self.outgoing_file_size
                 if file_size > 0:
-                    sent_bytes = min((part_num + 1) * CHUNK_SIZE, file_size)
+                    sent_bytes = min((part_num + 1) * self.CHUNK_SIZE, file_size)
+                    self.last_transfer_progress_time = time.time()
                     self.file_transfer_progress.emit(file_id, sent_bytes, file_size, time.time())
                 return Response(chunk_data, mimetype='application/octet-stream')
             return jsonify({'error': 'not found'}), 404
 
         @self.app.route('/api/msg', methods=['GET'])
         def get_msg():
-            log_phone_request("获取消息")
+            self.log_phone_request("获取消息")
             with self.queue_lock:
                 if self.msg_queue:
                     msg = self.msg_queue.popleft()
@@ -638,7 +703,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/frame', methods=['GET'])
         def get_frame():
-            log_phone_request("获取电脑画面帧")
+            self.log_phone_request("获取电脑画面帧")
             """save.md 功能7：手机轮询拉取电脑画面 JPEG 帧，附带鼠标归一化坐标"""
             with self._frame_lock:
                 frame = self._latest_frame
@@ -664,7 +729,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/camera_frame', methods=['GET'])
         def get_camera_frame():
-            log_phone_request("获取电脑摄像头帧")
+            self.log_phone_request("获取电脑摄像头帧")
             """save.md 功能8：手机轮询拉取电脑摄像头 JPEG 帧"""
             with self._camera_lock:
                 frame = self._latest_camera_frame
@@ -675,7 +740,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/phone_frame', methods=['POST'])
         def receive_phone_frame():
-            log_phone_request("上传手机画面帧", f"type={request.args.get('type', 'mirror')}")
+            self.log_phone_request("上传手机画面帧", f"type={request.args.get('type', 'mirror')}")
             """手机投屏：接收手机端上传的 JPEG 帧，通过 ?type=camera 或 ?type=mirror 区分来源"""
             frame_data = request.get_data()
             frame_type = request.args.get('type', 'mirror')  # 区分投屏帧和摄像头帧
@@ -691,7 +756,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/phone_audio', methods=['POST'])
         def receive_phone_audio():
-            log_phone_request("上传手机音频")
+            self.log_phone_request("上传手机音频")
             """声音传输：接收手机端上传的音频数据"""
             audio_data = request.get_data()
             if audio_data and self._phone_audio_running:
@@ -700,7 +765,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/audio', methods=['GET'])
         def get_audio():
-            log_phone_request("获取电脑音频")
+            self.log_phone_request("获取电脑音频")
             """PC→手机声音传输：手机轮询拉取电脑音频 PCM 数据"""
             with self._pc_audio_lock:
                 chunk = self._latest_pc_audio
@@ -710,7 +775,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/pc_drives', methods=['GET'])
         def get_pc_drives():
-            log_phone_request("获取电脑驱动器列表")
+            self.log_phone_request("获取电脑驱动器列表")
             """返回电脑所有磁盘驱动器列表"""
             import string
             drives = []
@@ -740,7 +805,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/pc_files', methods=['POST'])
         def list_pc_files():
-            log_phone_request("获取电脑文件列表")
+            self.log_phone_request("获取电脑文件列表")
             """列出电脑指定目录的文件"""
             data = request.get_json(force=True)
             path = data.get('path', 'C:\\')
@@ -783,7 +848,7 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/pc_file_download', methods=['POST'])
         def download_pc_file():
-            log_phone_request("下载电脑文件")
+            self.log_phone_request("下载电脑文件")
             """手机端下载电脑文件（仅限文件，不支持文件夹）"""
             data = request.get_json(force=True)
             file_path = data.get('path', '')
@@ -817,7 +882,7 @@ class ConnectionManager(QObject):
             return
         if CHANNEL_PRIORITY.get(channel, 0) > CHANNEL_PRIORITY.get(old, 0):
             self.upgrade_confirm[channel] = self.upgrade_confirm.get(channel, 0) + 1
-            if self.upgrade_confirm[channel] >= UPGRADE_CONFIRM_COUNT:
+            if self.upgrade_confirm[channel] >= self.UPGRADE_CONFIRM_COUNT:
                 self.current_channel = channel
                 self.phone_connected = True
                 self.connection_status_changed.emit(True, channel)
@@ -843,12 +908,12 @@ class ConnectionManager(QObject):
             return  # 已注册
         try:
             resp = requests.post(
-                f"{PAW_URL}/api/register",
+                f"{self.paw_url}/api/register",
                 json={
                     "device_id": self.device_id,
                     "type": "pc",
                 },
-                headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+                headers={"Authorization": f"Bearer {self.secret_token}"},
                 timeout=10
             )
             if resp.status_code == 200:
@@ -865,9 +930,9 @@ class ConnectionManager(QObject):
         if self.paw_device_id:
             try:
                 requests.post(
-                    f"{PAW_URL}/api/disconnect",
+                    f"{self.paw_url}/api/disconnect",
                     json={"device_id": self.paw_device_id},
-                    headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+                    headers={"Authorization": f"Bearer {self.secret_token}"},
                     timeout=5
                 )
             except Exception:
@@ -920,7 +985,7 @@ class ConnectionManager(QObject):
         """启动时等待ADB连接10秒，超时后切换到WiFi等待模式"""
         start_time = time.time()
         elapsed = 0
-        while elapsed < 10 and self.is_running:
+        while elapsed < self.WAIT_FOR_CONNECTION_TIMEOUT and self.is_running:
             if self._check_adb():
                 self.connection_message_changed.emit(f"ADB已连接 ({self.adb_device_id})，等待手机响应...")
                 return
@@ -934,8 +999,8 @@ class ConnectionManager(QObject):
         """PAW 通道检测"""
         try:
             resp = requests.get(
-                f"{PAW_URL}/api/status",
-                headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+                f"{self.paw_url}/api/status",
+                headers={"Authorization": f"Bearer {self.secret_token}"},
                 timeout=5
             )
             return resp.status_code == 200
@@ -946,7 +1011,7 @@ class ConnectionManager(QObject):
         """探测线程：每5秒检测各通道可用性，自动升降级"""
         while self.is_running:
             if self.transfer_in_progress:
-                time.sleep(PROBE_INTERVAL)
+                time.sleep(self.PROBE_INTERVAL)
                 continue
 
             # 持续检测ADB设备并设置端口转发（手机启动后可立即连接）
@@ -955,7 +1020,7 @@ class ConnectionManager(QObject):
             # 通道升级逻辑：已连接时，ADB可用则尝试升级到ADB
             if self.phone_connected and adb_device_ok and self.current_channel == CHANNEL_WIFI:
                 self.upgrade_confirm[CHANNEL_ADB] = self.upgrade_confirm.get(CHANNEL_ADB, 0) + 1
-                if self.upgrade_confirm[CHANNEL_ADB] >= UPGRADE_CONFIRM_COUNT:
+                if self.upgrade_confirm[CHANNEL_ADB] >= self.UPGRADE_CONFIRM_COUNT:
                     self._set_channel(CHANNEL_ADB)
                     self.upgrade_confirm.clear()
             elif not adb_device_ok:
@@ -967,21 +1032,21 @@ class ConnectionManager(QObject):
             if self.phone_connected and self.current_channel == CHANNEL_PAW:
                 paw_ok = self._check_paw()
                 if not paw_ok:
-                    time.sleep(5)  # 等待一段时间确认 PAW 确实不可用
+                    time.sleep(self.PROBE_WAIT)  # 等待一段时间确认 PAW 确实不可用
 
-            time.sleep(PROBE_INTERVAL)
+            time.sleep(self.PROBE_INTERVAL)
 
     def _reconnect(self):
         """断线重连：重试原方式3次，失败降级"""
         channel = self.current_channel
-        for _ in range(RECONNECT_RETRY):
+        for _ in range(self.RECONNECT_RETRY):
             if channel == CHANNEL_ADB and self._check_adb():
                 return True
             elif channel == CHANNEL_WIFI:
                 return True
             elif channel == CHANNEL_PAW and self._check_paw():
                 return True
-            time.sleep(2)
+            time.sleep(self.RECONNECT_WAIT)
         # 降级
         if channel == CHANNEL_ADB:
             self._set_channel(CHANNEL_WIFI)
@@ -1018,13 +1083,13 @@ class ConnectionManager(QObject):
 
     def _run_server(self):
         try:
-            log(f"Flask 服务器启动中... 监听 0.0.0.0:{self.port}")
+            self.log(f"Flask 服务器启动中... 监听 0.0.0.0:{self.port}")
             self.app.run(host='0.0.0.0', port=self.port, debug=False, use_reloader=False, threaded=True)
         except OSError as e:
-            log(f"Flask 服务器启动失败（端口 {self.port} 可能被占用）: {e}")
+            self.log(f"Flask 服务器启动失败（端口 {self.port} 可能被占用）: {e}")
             self.connection_message_changed.emit(f"服务器启动失败: 端口 {self.port} 被占用")
         except Exception as e:
-            log(f"Flask 服务器异常: {e}")
+            self.log(f"Flask 服务器异常: {e}")
 
     def _verify_server(self):
         """延迟验证服务器是否正常监听
@@ -1033,7 +1098,7 @@ class ConnectionManager(QObject):
         改用 socket 检测端口是否监听。
         """
         import socket
-        time.sleep(2)
+        time.sleep(self.VERIFY_SERVER_DELAY)
         if not self.is_running:
             return
         try:
@@ -1041,9 +1106,9 @@ class ConnectionManager(QObject):
             s.settimeout(2)
             s.connect(("127.0.0.1", self.port))
             s.close()
-            log(f"Flask 服务器自检通过: 127.0.0.1:{self.port} 端口监听正常")
+            self.log(f"Flask 服务器自检通过: 127.0.0.1:{self.port} 端口监听正常")
         except Exception as e:
-            log(f"Flask 服务器自检失败: {e}")
+            self.log(f"Flask 服务器自检失败: {e}")
             self.connection_message_changed.emit(f"服务器自检失败，请检查防火墙是否放行端口 {self.port}")
 
     def _start_monitoring(self):
@@ -1074,7 +1139,7 @@ class ConnectionManager(QObject):
                             self.send_clipboard(current)
                 except Exception:
                     pass
-                time.sleep(0.5)
+                time.sleep(self.CLIPBOARD_MONITOR_INTERVAL)
         except ImportError:
             pass
 
@@ -1090,9 +1155,9 @@ class ConnectionManager(QObject):
     #         while self.is_running:
     #             try:
     #                 requests.post(
-    #                     f"{PAW_URL}/api/update_ip",
+    #                     f"{self.paw_url}/api/update_ip",
     #                     json={"ip": self.local_ip, "port": self.port},
-    #                     headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+    #                     headers={"Authorization": f"Bearer {self.secret_token}"},
     #                     timeout=5
     #                 )
     #                 self.paw_connected = True
@@ -1113,8 +1178,8 @@ class ConnectionManager(QObject):
         while self.paw_running:
             try:
                 resp = requests.get(
-                    f"{PAW_URL}/api/get_cmd",
-                    headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+                    f"{self.paw_url}/api/get_cmd",
+                    headers={"Authorization": f"Bearer {self.secret_token}"},
                     stream=True,
                     timeout=35,
                     params={"device_id": self.paw_device_id}
@@ -1135,13 +1200,13 @@ class ConnectionManager(QObject):
                             continue  # SSE 心跳
                 # 长轮询超时
                 fail_count += 1
-                if fail_count >= RECONNECT_RETRY:
+                if fail_count >= self.RECONNECT_RETRY:
                     self.paw_connected = False
                     fail_count = 0
                 time.sleep(2)
             except Exception:
                 fail_count += 1
-                if fail_count >= RECONNECT_RETRY:
+                if fail_count >= self.RECONNECT_RETRY:
                     self.paw_connected = False
                     fail_count = 0
                 time.sleep(2)
@@ -1172,6 +1237,11 @@ class ConnectionManager(QObject):
             self.phone_cpu_received.emit(float(msg_data.get('cpu', 0)))
         elif action == 'phone_status':
             self.phone_status_received.emit(msg_data)
+        elif action == 'status':
+            # PAW通道手机状态上报（与WiFi/ADB通道保持一致）
+            self.phone_status_received.emit(msg_data)
+            # 更新最后心跳时间，维持连接状态
+            self.last_phone_seen = time.time()
         elif action == 'notification':
             self.notification_received.emit(msg_data)
         elif action == 'location_batch':
@@ -1203,6 +1273,11 @@ class ConnectionManager(QObject):
             items = msg_data.get('items', [])
             if items:
                 self.clipboard_history_received.emit(items)
+        elif action == 'volume_changed':
+            try:
+                self.phone_volume_received.emit(int(msg_data.get('volume', 0)))
+            except Exception:
+                pass
         elif action == 'url_history_sync':
             history = msg_data.get('history', [])
             if history:
@@ -1241,14 +1316,15 @@ class ConnectionManager(QObject):
         # 使用seek定位写入，支持乱序到达
         try:
             with open(self.current_receive_file, 'r+b' if os.path.exists(self.current_receive_file) else 'wb') as f:
-                f.seek(part_num * CHUNK_SIZE)
+                f.seek(part_num * self.CHUNK_SIZE)
                 f.write(data)
         except Exception as e:
             print(f"[file] 写入 chunk 失败: {e}")
             return
-        self.current_receive_written = max(self.current_receive_written, (part_num + 1) * CHUNK_SIZE)
+        self.current_receive_written = max(self.current_receive_written, (part_num + 1) * self.CHUNK_SIZE)
         with open(self.current_receive_file + '.progress', 'w') as f:
             f.write(str(self.current_receive_written))
+        self.last_transfer_progress_time = time.time()
         self.file_transfer_progress.emit(file_id, self.current_receive_written, self.current_receive_size, time.time())
 
     def _complete_file_receive(self, file_id):
@@ -1289,8 +1365,8 @@ class ConnectionManager(QObject):
     #     while not self.file_transfer_cancel and part_num < total_parts and self.is_running:
     #         try:
     #             resp = requests.get(
-    #                 f"{PAW_URL}/api/download_chunk/{file_id}/{part_num}",
-    #                 headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+    #                 f"{self.paw_url}/api/download_chunk/{file_id}/{part_num}",
+    #                 headers={"Authorization": f"Bearer {self.secret_token}"},
     #                 timeout=10
     #             )
     #             if resp.status_code == 200:
@@ -1306,58 +1382,58 @@ class ConnectionManager(QObject):
             return None
         try:
             with open(self.outgoing_file_path, 'rb') as f:
-                f.seek(part_num * CHUNK_SIZE)
-                return f.read(CHUNK_SIZE)
+                f.seek(part_num * self.CHUNK_SIZE)
+                return f.read(self.CHUNK_SIZE)
         except Exception:
             return None
 
     def _send_ack(self, file_id):
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "file_complete", "file_id": file_id}}
         self._send_to_phone(msg)
 
     def send_file_accept(self, file_id, resolved_name=""):
         """PC端确认接收文件（手机发送前等待此确认）"""
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "file_accept", "file_id": file_id, "resolved_name": resolved_name}}
         self._send_to_phone(msg)
-        log(f"[PC→手机] 发送 file_accept: file_id={file_id}, resolved_name={resolved_name}")
+        self.log(f"[PC→手机] 发送 file_accept: file_id={file_id}, resolved_name={resolved_name}")
 
     def send_file_reject(self, file_id, reason=""):
         """PC端拒绝接收文件（重名跳过等）"""
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "file_reject", "file_id": file_id, "reason": reason}}
         self._send_to_phone(msg)
-        log(f"[PC→手机] 发送 file_reject: file_id={file_id}, reason={reason}")
+        self.log(f"[PC→手机] 发送 file_reject: file_id={file_id}, reason={reason}")
 
     def send_transfer_control(self, ctrl, file_id=""):
         """向对端发送传输控制消息（pause/resume/cancel）"""
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "transfer_control", "ctrl": ctrl, "file_id": file_id}}
         self._send_to_phone(msg)
-        log(f"[PC→手机] 发送传输控制: ctrl={ctrl}, file_id={file_id}")
+        self.log(f"[PC→手机] 发送传输控制: ctrl={ctrl}, file_id={file_id}")
 
     # ==================== 发送消息 ====================
 
     def _send_to_phone(self, msg):
         """统一发送方法：根据当前通道选择发送方式"""
         action = msg.get('data', {}).get('action', '未知')
-        log_pc_send(action)
+        self.log_pc_send(action)
 
         if self.current_channel == CHANNEL_PAW and self.paw_device_id:
             # PAW 通道：通过中转服务器发送
             try:
                 requests.post(
-                    f"{PAW_URL}/api/send",
+                    f"{self.paw_url}/api/send",
                     json={
-                        "token": SECRET_TOKEN,
+                        "token": self.secret_token,
                         "activate": "send",
                         "source": "pc",
                         "sender_id": self.paw_device_id,
                         "target_id": self.paw_phone_id if hasattr(self, 'paw_phone_id') else "",
                         "data": msg.get('data', {}),
                     },
-                    headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+                    headers={"Authorization": f"Bearer {self.secret_token}"},
                     timeout=10
                 )
             except Exception as e:
@@ -1374,7 +1450,7 @@ class ConnectionManager(QObject):
             return
         self.last_pc_clipboard = text
         ts = int(time.time() * 1000)
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "clipboard", "txt": text, "timestamp": ts}}
         self._send_to_phone(msg)
         self.clipboard_sent.emit()
@@ -1382,7 +1458,7 @@ class ConnectionManager(QObject):
     def send_text(self, text, filename=None):
         if not filename:
             filename = f"text_{int(time.time())}.txt"
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "txt", "txt": text, "filename": filename}}
         self._send_to_phone(msg)
 
@@ -1390,7 +1466,7 @@ class ConnectionManager(QObject):
         data = {"action": "cmd", "cmd": cmd}
         if extra:
             data.update(extra)
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc", "data": data}
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc", "data": data}
         self._send_to_phone(msg)
 
     def send_action(self, action, extra=None):
@@ -1398,7 +1474,7 @@ class ConnectionManager(QObject):
         data = {"action": action}
         if extra:
             data.update(extra)
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc", "data": data}
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc", "data": data}
         self._send_to_phone(msg)
 
     def send_phone_status(self):
@@ -1411,7 +1487,7 @@ class ConnectionManager(QObject):
         except Exception:
             disk = psutil.disk_usage('C:\\')
         net = psutil.net_io_counters()
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "pc_status", "cpu": cpu, "memory": mem.percent,
                         "disk": disk.percent, "net_sent": net.bytes_sent, "net_recv": net.bytes_recv}}
         self._send_to_phone(msg)
@@ -1423,6 +1499,13 @@ class ConnectionManager(QObject):
                 print("[file] file_transfer_active 卡死但无实际传输，自动重置")
                 self.file_transfer_active = False
                 self.transfer_in_progress = False
+            elif time.time() - self.last_transfer_progress_time > 15:
+                print("[file] file_transfer_active 卡死且长时间无进度，自动重置")
+                self.file_transfer_active = False
+                self.transfer_in_progress = False
+                self.outgoing_file_id = None
+                self.outgoing_file_path = None
+                self.current_file_id = None
             else:
                 return False
         if not os.path.exists(file_path):
@@ -1452,7 +1535,7 @@ class ConnectionManager(QObject):
             pass
 
         head_msg = {
-            "token": SECRET_TOKEN, "activate": "send", "source": "pc",
+            "token": self.secret_token, "activate": "send", "source": "pc",
             "data": {
                 "action": "send_file_head",
                 "file_name": file_name,
@@ -1470,13 +1553,13 @@ class ConnectionManager(QObject):
             # PAW 模式：通过中转服务器发送文件头消息
             try:
                 requests.post(
-                    f"{PAW_URL}/api/send_msg",
+                    f"{self.paw_url}/api/send_msg",
                     json={
                         "sender_id": self.paw_device_id,
                         "target_id": self.paw_phone_id if hasattr(self, 'paw_phone_id') else "",
                         "message": head_msg
                     },
-                    headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+                    headers={"Authorization": f"Bearer {self.secret_token}"},
                     timeout=10
                 )
             except Exception as e:
@@ -1491,8 +1574,8 @@ class ConnectionManager(QObject):
     def _file_transfer_watchdog(self, file_id):
         """300秒后如果传输仍未完成，强制重置状态（防止卡死）；暂停期间不计入超时"""
         elapsed = 0
-        while elapsed < 300:
-            time.sleep(5)
+        while elapsed < self.FILE_TRANSFER_TIMEOUT:
+            time.sleep(self.WATCHDOG_INTERVAL)
             # 暂停期间不累计超时
             if getattr(self, '_transfer_paused', False):
                 continue
@@ -1511,13 +1594,13 @@ class ConnectionManager(QObject):
             self.outgoing_file_path = file_path
             self.outgoing_file_id = file_id
             self.outgoing_file_size = file_size
-            log(f"[PC→手机] 发送文件头到消息队列: file_id={file_id}, name={os.path.basename(file_path)}, size={file_size}")
+            self.log(f"[PC→手机] 发送文件头到消息队列: file_id={file_id}, name={os.path.basename(file_path)}, size={file_size}")
             # 发送文件头到消息队列，手机轮询 /api/poll 获取后主动下载
             self._send_to_phone(head_msg)
-            log(f"[PC→手机] 文件头已加入队列，等待手机下载...")
+            self.log(f"[PC→手机] 文件头已加入队列，等待手机下载...")
             # 手机下载完成后会发 file_complete，届时由 /api/cmd handler 清理状态
         except Exception as e:
-            log(f"[PC→手机] 发送文件头失败: {e}")
+            self.log(f"[PC→手机] 发送文件头失败: {e}")
             self.outgoing_file_path = None
             self.outgoing_file_id = None
             self.transfer_in_progress = False
@@ -1527,9 +1610,9 @@ class ConnectionManager(QObject):
     #     try:
     #         # 发送文件头
     #         requests.post(
-    #             f"{PAW_URL}/api/send",
+    #             f"{self.paw_url}/api/send",
     #             json=head_msg,
-    #             headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+    #             headers={"Authorization": f"Bearer {self.secret_token}"},
     #             timeout=10
     #         )
     #         # 上传分块（使用upload_chunk二进制接口）
@@ -1540,21 +1623,21 @@ class ConnectionManager(QObject):
     #                 if not chunk:
     #                     break
     #                 resp = requests.post(
-    #                     f"{PAW_URL}/api/upload_chunk",
+    #                     f"{self.paw_url}/api/upload_chunk",
     #                     data=chunk,
     #                     params={"file_id": file_id, "part_num": part_num},
-    #                     headers={"Authorization": f"Bearer {SECRET_TOKEN}", "Content-Type": "application/octet-stream"},
+    #                     headers={"Authorization": f"Bearer {self.secret_token}", "Content-Type": "application/octet-stream"},
     #                     timeout=15
     #                 )
-    #                 sent = min((part_num + 1) * CHUNK_SIZE, file_size)
+    #                 sent = min((part_num + 1) * self.CHUNK_SIZE, file_size)
     #                 self.file_transfer_progress.emit(file_id, sent, file_size, time.time())
     #                 part_num += 1
     #         # 发送完成通知
-    #         complete_msg = {"token": SECRET_TOKEN, "activate": "send", "data": {"action": "file_complete", "file_id": file_id, "total_parts": part_num}}
+    #         complete_msg = {"token": self.secret_token, "activate": "send", "data": {"action": "file_complete", "file_id": file_id, "total_parts": part_num}}
     #         requests.post(
-    #             f"{PAW_URL}/api/send",
+    #             f"{self.paw_url}/api/send",
     #             json=complete_msg,
-    #             headers={"Authorization": f"Bearer {SECRET_TOKEN}"},
+    #             headers={"Authorization": f"Bearer {self.secret_token}"},
     #             timeout=10
     #         )
     #     except Exception as e:
@@ -1688,7 +1771,7 @@ class ConnectionManager(QObject):
             result = "started"
         except Exception as e:
             result = f"error: {e}"
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "run_as_admin_result", "program": program, "result": result}}
         self._send_to_phone(msg)
 
@@ -1710,7 +1793,12 @@ class ConnectionManager(QObject):
             elif cmd == 'vol_down':
                 self._send_media_key(0xAE)  # VK_VOLUME_DOWN
             elif cmd == 'vol_mute':
-                self._send_media_key(0xAD)  # VK_VOLUME_MUTE
+                self._send_media_key(0xB2)  # VK_VOLUME_MUTE
+            elif cmd == 'get_volume':
+                volume = 7  # PC 音量无法跨端直接查询，默认居中；手机当前值会通过 status 上报同步回来
+                msg = {"token": self.secret_token, "activate": "send", "source": "pc",
+                       "data": {"action": "phone_volume_sync", "volume": volume}}
+                self._send_to_phone(msg)
             elif cmd == 'lock':
                 subprocess.Popen('rundll32.exe user32.dll,LockWorkStation', shell=True)
             elif cmd == 'get_media_info':
@@ -1773,7 +1861,7 @@ class ConnectionManager(QObject):
             ret1 = ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
             if ret1 == 0:
                 print(f"[media_key] SendInput down failed, vk=0x{vk_code:X}, err={ctypes.windll.kernel32.GetLastError()}")
-            time.sleep(0.05)
+            time.sleep(self.MEDIA_KEY_DELAY)
             # 释放
             inp2 = Input(type=1)
             inp2.ii.ki.wVk = vk_code
@@ -1832,7 +1920,7 @@ class ConnectionManager(QObject):
                 inp.ii.ki.wVk = vk
                 inp.ii.ki.dwFlags = 0
                 ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
-            time.sleep(0.05)
+            time.sleep(self.MEDIA_KEY_DELAY)
             # 释放所有键（反序）
             for vk in reversed(vk_codes):
                 inp = Input(type=1)
@@ -1880,12 +1968,12 @@ class ConnectionManager(QObject):
 
             info = asyncio.run(_get_info())
             if info:
-                msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+                msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                        "data": {"action": "media_info", "title": info['title'],
                                 "artist": info['artist'], "album": info['album'],
                                 "thumbnail": info['thumbnail']}}
             else:
-                msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+                msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                        "data": {"action": "media_info", "title": "未检测到媒体播放",
                                 "artist": "", "album": "", "thumbnail": ""}}
             self._send_to_phone(msg)
@@ -1893,7 +1981,7 @@ class ConnectionManager(QObject):
             print(f"Get media info failed: {e}")
             # 回退：发送无媒体信息
             try:
-                msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+                msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                        "data": {"action": "media_info", "title": "未检测到媒体播放",
                                 "artist": "", "album": "", "thumbnail": ""}}
                 self._send_to_phone(msg)
@@ -1914,10 +2002,10 @@ class ConnectionManager(QObject):
                 self._check_and_send_media_info()
             except Exception as e:
                 print(f"[media_monitor] error: {e}")
-            time.sleep(2)
+            time.sleep(self.MEDIA_MONITOR_INTERVAL)
 
     def _check_and_send_media_info(self):
-        """获取当前媒体信息，与上次比较（只比歌曲名+作者），变化时主动推送"""
+        """获取当前媒体信息并低延迟推送，封面/作者等变化由手机端 Flow 自动刷新。"""
         try:
             import asyncio
             import winsdk.windows.media.control as wmc
@@ -1928,28 +2016,48 @@ class ConnectionManager(QObject):
                 if not session:
                     return None
                 props = await session.try_get_media_properties_async()
+                thumbnail_b64 = ""
+                if props.thumbnail:
+                    try:
+                        from winsdk.windows.storage.streams import DataReader
+                        stream = await props.thumbnail.open_read_async()
+                        if stream.size > 0:
+                            reader = DataReader(stream)
+                            await reader.load_async(stream.size)
+                            data = bytearray(stream.size)
+                            reader.read_bytes(data)
+                            thumbnail_b64 = base64.b64encode(bytes(data)).decode('ascii')
+                            reader.detach_stream()
+                            reader.close()
+                        stream.close()
+                    except Exception:
+                        pass
                 return {
                     'title': props.title or "",
                     'artist': props.artist or "",
+                    'album': props.album_title or "",
+                    'thumbnail': thumbnail_b64,
                 }
 
             info = asyncio.run(_get_info())
             if info is None:
-                title, artist = "", ""
+                title, artist, album, thumbnail = "", "", "", ""
             else:
                 title, artist = info['title'], info['artist']
+                album = info.get('album', '') or ''
+                thumbnail = info.get('thumbnail', '') or ''
 
-            if title != self._last_media_title or artist != self._last_media_artist:
-                self._last_media_title = title
-                self._last_media_artist = artist
-                self._send_media_info()
+            # 仅用歌名+作者判断冗余，但每次轮询都推送封面/专辑等完整字段
+            self._last_media_title = title
+            self._last_media_artist = artist
+            self._send_media_info()
         except Exception as e:
             print(f"[check_media_info] error: {e}")
 
     def _delay_check_media_info(self):
         """按键后延迟检测并推送媒体信息"""
         def _delayed():
-            time.sleep(0.6)
+            time.sleep(self.DELAYED_MEDIA_CHECK_DELAY)
             self._check_and_send_media_info()
         threading.Thread(target=_delayed, daemon=True).start()
 
@@ -1961,10 +2069,21 @@ class ConnectionManager(QObject):
             ImageGrab.grab().save(path)
             self.send_file(path)
             # 通知手机截图成功（触发 Toast 提示）
-            self.send_action("screenshot_saved", extra={"message": "电脑截图已保存并发送"})
+            self._send_screenshot_saved("电脑截图已保存并发送")
         except Exception as e:
             print(f"Screenshot failed: {e}")
-            self.send_action("screenshot_saved", extra={"message": f"电脑截图失败: {e}"})
+            self._send_screenshot_saved(f"电脑截图失败: {e}")
+
+    def _send_screenshot_saved(self, message):
+        """手机端截图通知防抖：同一条消息 3 秒内只发送一次，避免 Toast 闪烁。"""
+        now = time.time()
+        last = getattr(self, '_last_screenshot_saved_at', 0)
+        last_msg = getattr(self, '_last_screenshot_saved_msg', '')
+        if message == last_msg and now - last < 3.0:
+            return
+        self._last_screenshot_saved_at = now
+        self._last_screenshot_saved_msg = message
+        self.send_action("screenshot_saved", extra={"message": message})
 
     def _open_url_on_pc(self, url, use_edge=True):
         """在电脑端打开URL（use_edge=True用Edge，use_edge=False用默认浏览器）"""
@@ -1983,7 +2102,7 @@ class ConnectionManager(QObject):
 
     def send_url_history(self, history):
         """发送 URL 历史给手机端同步"""
-        msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+        msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                "data": {"action": "url_history_sync", "history": history}}
         self._send_to_phone(msg)
 
@@ -2034,7 +2153,7 @@ class ConnectionManager(QObject):
                     self._latest_frame = frame_data
             except Exception as e:
                 print(f"PC stream frame failed: {e}")
-            time.sleep(0.016)  # 60fps
+            time.sleep(self.PC_STREAM_FPS_DELAY)  # 60fps
         sct.close()
 
     # ==================== 电脑摄像头推流（save.md 功能8）====================
@@ -2379,7 +2498,7 @@ class ConnectionManager(QObject):
                 self._last_touch_y = y
             else:
                 # WiFi 通道：通过 msg_queue 发送 touch 命令给手机
-                msg = {"token": SECRET_TOKEN, "activate": "send", "source": "pc",
+                msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                        "data": {"action": "screen_touch", "op": op, "x": norm_x, "y": norm_y}}
                 self._send_to_phone(msg)
         except Exception as e:

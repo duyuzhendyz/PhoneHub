@@ -192,11 +192,16 @@ class ScreenshotActivity : AppCompatActivity() {
 
     private fun saveToGallery(bmp: Bitmap, fileName: String) {
         try {
+            // 确保 Pictures/Computer 目录存在
+            val computerDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Computer")
+            if (!computerDir.exists()) {
+                computerDir.mkdirs()
+            }
             val resolver = contentResolver
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/PhoneHub")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Computer")
             }
             val uri: Uri? = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
             uri?.let {

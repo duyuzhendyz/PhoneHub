@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                                QFrame, QLabel, QListWidgetItem,
                                QMessageBox, QDialog,
                                QMenu, QTabWidget)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from styles import get_theme, _c, set_item_text_color, apply_dark_title_bar, dark_dialog_style, dark_msg_box
 from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel, SubtitleLabel,
@@ -63,6 +63,27 @@ class NotificationPopupDialog(QDialog):
             self._manager = parent.manager
         self.setStyleSheet(dark_dialog_style())
         self._setup_ui()
+
+    def _poll_active_notifications(self):
+        """1s 周期拉取活动通知；仅内容变化时刷新UI。"""
+        try:
+            if getattr(self.manager, "phone_connected", False):
+                self.manager.send_action("get_active_notifications")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _notif_signature(notif):
+        key = notif.get("key") or notif.get("id") or ""
+        title = notif.get("title", "") or ""
+        text_val = notif.get("text", "") or ""
+        package = notif.get("package", "") or ""
+        summary = notif.get("summary", "") or ""
+        actions = sorted(a.get("title", "") for a in (notif.get("actions") or []))
+        return "|".join([key, package, title, text_val, summary, ",".join(actions)])
+
+    def _active_snapshot_signature(self):
+        return frozenset(f"{k}:{self._notif_signature(n)}" for k, n in self.active_notifs.items())
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -222,7 +243,18 @@ class NotificationsPage(QWidget):
         self._setup_ui()
         self._connect_signals()
         self._refresh_history_list()
+        # 1s 周期拉取活动通知，内容变化时再刷新/分发
+        self._batch_notifications = {}
+        self._batch_refresh_pending = False
+        self._last_poll_signature = None
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(1000)
+        self._poll_timer.timeout.connect(self._poll_active_notifications)
+        self._poll_timer.start()
+        # 通知权限完全由手机端用户手动点击按钮开启，PC 端不再发送 request_notif_permission
         self._refresh_active_list()
+        # 1s 周期拉取活动通知，内容变化时再刷新/分发
+        # 通知权限完全由手机端用户手动点击按钮开启，PC 端不再发送 request_notif_permission
         # 通知权限完全由手机端用户手动点击按钮开启，PC 端不再发送 request_notif_permission
 
     def showEvent(self, event):
@@ -361,14 +393,8 @@ class NotificationsPage(QWidget):
 
         key = self._notif_key(notif)
 
-        # 判断是活动通知批量上报还是单条新通知推送
-        is_batch = notif.get('_batch', False)
-        if is_batch:
-            # 批量上报：替换整个活动通知列表
-            # 由调用方在循环外处理
-            pass
-
-        # 更新活动通知字典
+        # 批量上报标记：逐条覆盖 active_notifs，循环结束后统一与快照比对，避免每条都刷新UI
+        is_batch = bool(notif.get('_batch', False))
         is_cleared = notif.get('cleared', False)
         if is_cleared and key in self.active_notifs:
             del self.active_notifs[key]
@@ -382,6 +408,46 @@ class NotificationsPage(QWidget):
             self.history = self.history[:HISTORY_LIMIT]
         self._save_history()
 
+        if not is_batch:
+            self._refresh_active_list()
+            self._refresh_history_list()
+            return
+
+        # 批量上报：累计窗口内的通知，等 burst 结束后统一裁剪/刷新
+        self._batch_notifications[key] = notif
+        if self._batch_refresh_pending:
+            return
+        self._batch_refresh_pending = True
+        QTimer.singleShot(150, self._maybe_refresh_after_batch)
+
+    def _maybe_refresh_after_batch(self):
+        """批量上报去重：只保留本次上报中的活跃通知，避免残留已清除项。"""
+        self._batch_refresh_pending = False
+        snapshot = dict(self._batch_notifications)
+        self._batch_notifications.clear()
+        changed_keys = set(snapshot.keys())
+
+        # 移除本次批量快照中不再存在的旧通知
+        stale = [k for k in self.active_notifs if k not in changed_keys]
+        for k in stale:
+            self.active_notifs.pop(k, None)
+        self.active_notifs.update(snapshot)
+
+        sig = self._active_snapshot_signature()
+        if sig == getattr(self, '_last_poll_signature', None):
+            return
+        self._last_poll_signature = sig
+        # 历史记录仅追加本批次新增的条目（不重复）
+        appended = False
+        for notif in snapshot.values():
+            key = self._notif_key(notif)
+            if not any(self._notif_key(n) == key for n in self.history):
+                self.history.insert(0, notif)
+                appended = True
+        if appended:
+            if len(self.history) > HISTORY_LIMIT:
+                self.history = self.history[:HISTORY_LIMIT]
+            self._save_history()
         self._refresh_active_list()
         self._refresh_history_list()
 

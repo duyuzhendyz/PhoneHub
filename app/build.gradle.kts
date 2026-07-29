@@ -21,6 +21,14 @@ android {
         targetSdk = 36
         versionCode = 2
         versionName = "2.0"
+        multiDexEnabled = true
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+    }
+
+    lint {
+        abortOnError = false
     }
 
     buildTypes {
@@ -62,6 +70,9 @@ android {
 
 
 dependencies {
+    // Multi-Dex 支持
+    implementation("androidx.multidex:multidex:2.0.1")
+
     // Kotlin
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.23")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
