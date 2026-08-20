@@ -20,6 +20,7 @@ class SettingsPage(QWidget):
         super().__init__()
         self.manager = manager
         self.settings_data = {}
+        self._last_connected = False  # 跟踪连接状态，用于 phone_status_label
         self._load_settings()
         self._setup_ui()
 
@@ -42,7 +43,7 @@ class SettingsPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(16)
 
         title = TitleLabel("设置")
@@ -60,12 +61,12 @@ class SettingsPage(QWidget):
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_layout.setSpacing(16)
+        scroll_layout.setSpacing(12)
 
         # ===== 主题设置（Fluent Design）=====
         theme_card = CardWidget()
         theme_layout = QVBoxLayout(theme_card)
-        theme_layout.setContentsMargins(16, 18, 16, 16)
+        theme_layout.setContentsMargins(16, 16, 16, 16)
         theme_layout.setSpacing(12)
 
         theme_title = SubtitleLabel("外观")
@@ -99,8 +100,8 @@ class SettingsPage(QWidget):
         # ===== 连接设置 =====
         conn_card = CardWidget()
         conn_layout = QVBoxLayout(conn_card)
-        conn_layout.setContentsMargins(16, 18, 16, 16)
-        conn_layout.setSpacing(14)
+        conn_layout.setContentsMargins(16, 16, 16, 16)
+        conn_layout.setSpacing(12)
 
         conn_title = SubtitleLabel("连接设置")
         conn_layout.addWidget(conn_title)
@@ -157,10 +158,10 @@ class SettingsPage(QWidget):
         # ===== 手机端设置 =====
         phone_card = CardWidget()
         phone_layout = QVBoxLayout(phone_card)
-        phone_layout.setContentsMargins(16, 18, 16, 16)
+        phone_layout.setContentsMargins(16, 16, 16, 16)
         phone_layout.setSpacing(12)
 
-        phone_title = SubtitleLabel("手机端设置 (PC显示状态)")
+        phone_title = SubtitleLabel("手机端设置")
         phone_layout.addWidget(phone_title)
 
         self.never_sleep_cb = CheckBox("永不休眠 (发送到手机)")
@@ -168,7 +169,7 @@ class SettingsPage(QWidget):
         self.never_sleep_cb.toggled.connect(self._on_never_sleep_toggled)
         phone_layout.addWidget(self.never_sleep_cb)
 
-        self.phone_status_label = BodyLabel("(等待手机上报状态)")
+        self.phone_status_label = BodyLabel("")
         phone_layout.addWidget(self.phone_status_label)
 
         scroll_layout.addWidget(phone_card)
@@ -176,7 +177,7 @@ class SettingsPage(QWidget):
         # ===== 剪贴板设置 =====
         clip_card = CardWidget()
         clip_layout = QVBoxLayout(clip_card)
-        clip_layout.setContentsMargins(16, 18, 16, 16)
+        clip_layout.setContentsMargins(16, 16, 16, 16)
         clip_layout.setSpacing(12)
 
         clip_title = SubtitleLabel("剪贴板设置")
@@ -200,7 +201,7 @@ class SettingsPage(QWidget):
         # ===== 接收设置 =====
         recv_card = CardWidget()
         recv_layout = QVBoxLayout(recv_card)
-        recv_layout.setContentsMargins(16, 18, 16, 16)
+        recv_layout.setContentsMargins(16, 16, 16, 16)
         recv_layout.setSpacing(12)
 
         recv_title = SubtitleLabel("接收设置")
@@ -226,8 +227,8 @@ class SettingsPage(QWidget):
         # ===== 关于 =====
         about_card = CardWidget()
         about_layout = QVBoxLayout(about_card)
-        about_layout.setContentsMargins(16, 18, 16, 16)
-        about_layout.setSpacing(8)
+        about_layout.setContentsMargins(16, 16, 16, 16)
+        about_layout.setSpacing(12)
 
         about_title = SubtitleLabel("关于")
         about_layout.addWidget(about_title)
@@ -247,6 +248,20 @@ class SettingsPage(QWidget):
         # 连接手机状态信号以更新显示
         try:
             self.manager.phone_status_received.connect(self._on_phone_status)
+            self.manager.connection_status_changed.connect(self._on_connection_changed)
+        except Exception:
+            pass
+    
+    def _on_connection_changed(self, connected, channel):
+        """根据连接状态更新手机状态标签显示"""
+        self._last_connected = connected
+        try:
+            if not connected:
+                self.phone_status_label.setText("未连接")
+            else:
+                # 如果已连接但尚未收到状态，显示等待中
+                if self.phone_status_label.text() == "" or self.phone_status_label.text() == "(未知)":
+                    self.phone_status_label.setText("等待状态...")
         except Exception:
             pass
 
@@ -307,9 +322,16 @@ class SettingsPage(QWidget):
             pass
 
     def _on_phone_status(self, status):
+        """手机端上报的状态数据"""
         try:
+            # 首先检查连接状态，如果未连接则显示未知
+            if not getattr(self, '_last_connected', False):
+                self.phone_status_label.setText("(未知)")
+                return
+                
             never = status.get("never_sleep")
             if never is None:
+                # 无休眠设置信息，显示默认状态
                 self.phone_status_label.setText("(未知)")
             elif never:
                 self.phone_status_label.setText("永不休眠 (已启用)")

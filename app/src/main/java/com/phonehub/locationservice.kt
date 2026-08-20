@@ -78,6 +78,8 @@ class LocationService : Service() {
 
         override fun onProviderEnabled(provider: String) {}
         override fun onProviderDisabled(provider: String) {}
+        @Suppress("DEPRECATION")
+        @Deprecated("Deprecated in Java", ReplaceWith(""))
         override fun onStatusChanged(provider: String, status: Int, extras: Bundle?) {}
     }
 
@@ -148,6 +150,7 @@ class LocationService : Service() {
             } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
                 LocationManager.NETWORK_PROVIDER
             } else return
+            @Suppress("DEPRECATION")
             lm.requestSingleUpdate(provider, locationListener, android.os.Looper.getMainLooper())
         } catch (e: Exception) {
             Log.e(TAG, "requestSingleLocation failed", e)

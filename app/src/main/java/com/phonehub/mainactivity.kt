@@ -45,6 +45,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var isKeyboardFullscreen = false
     private var savedTab = 0   // Remember previous tab before entering keyboard fullscreen
     private var currentTab = 0
+    private var volumeReceiver: BroadcastReceiver? = null  // 音量变化广播接收器（onDestroy 注销防泄漏）
     private val pageCache = HashMap<Int, View>()
     private var mirrorImageView: android.widget.ImageView? = null  // save.md 功能7 电脑画面显示
     private var cameraImageView: android.widget.ImageView? = null  // save.md 功能8 电脑摄像头显示
@@ -163,6 +167,17 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) Toast.makeText(this, "摄像头权限已授予", Toast.LENGTH_SHORT).show()
+    }
+
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            Toast.makeText(this, "录音权限已授予", Toast.LENGTH_SHORT).show()
+            startPhoneAudioCapture()
+        } else {
+            Toast.makeText(this, "录音权限被拒绝，声音传输功能不可用", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private val locationPermissionLauncher = registerForActivityResult(
@@ -325,15 +340,20 @@ class MainActivity : AppCompatActivity() {
         handleFileTransferNotificationIntent(intent)
 
         // 实时同步手机媒体音量变化到电脑端
-        registerReceiver(object : BroadcastReceiver() {
+        volumeReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 try {
                     val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     val vol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    ConnectionManager.sendAction("volume_changed", mapOf("volume" to vol))
+                    ConnectionManager.sendVolumeChanged(vol)
                 } catch (_: Exception) {}
             }
-        }, IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
+        }
+        // 防止 Activity 重建时残留旧注册导致重复注册：先尝试注销再注册
+        try {
+            unregisterReceiver(volumeReceiver)
+        } catch (_: Exception) {}
+        registerReceiver(volumeReceiver, IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
 
         // 使用 OnBackPressedDispatcher 替代已废弃的 onBackPressed()
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
@@ -354,6 +374,15 @@ class MainActivity : AppCompatActivity() {
                 onBackPressedDispatcher.onBackPressed()
             }
         })
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // 注销音量广播接收器，防止 Activity 内存泄漏
+        try {
+            volumeReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {}
+        volumeReceiver = null
     }
 
     private fun enterMirrorFullscreen(mirrorFrame: FrameLayout?, allUiComponents: List<View?>) {
@@ -410,19 +439,16 @@ class MainActivity : AppCompatActivity() {
             findViewById<FrameLayout>(R.id.pageContainer).layoutParams = it
         }
         mirrorOriginalLp?.let { lp ->
-            // 恢复 mirrorFrame 布局并隐藏（退出全屏后不再显示竖屏预览）
+            // 恢复 mirrorFrame 布局，退出全屏后保留竖屏画面区（不停止投屏）
             pageCache[8]?.findViewById<FrameLayout>(R.id.mirrorFrame)?.let { frame ->
                 frame.layoutParams = lp
-                frame.visibility = View.GONE
+                frame.visibility = View.VISIBLE
             }
         }
         mirrorOriginalLp = null
         mirrorOriginalPageContainerLp = null
-        // 停止电脑投屏
-        ConnectionManager.sendMediaCommand("pc_stream_stop")
-        ConnectionManager.stopPcFramePolling()
-        mirrorImageView?.setImageBitmap(null)
-        pageCache[8]?.findViewById<TextView>(R.id.mirrorStatus)?.text = "未启动"
+        // 保留电脑投屏：退出全屏不停止投屏、不清空画面，仅切换回竖屏布局
+        pageCache[8]?.findViewById<TextView>(R.id.mirrorStatus)?.text = "已连接 - 正在查看电脑画面..."
         // 隐藏全屏退出按钮
         pageCache[8]?.findViewById<Button>(R.id.btnMirrorFullscreenExit)?.visibility = View.GONE
     }
@@ -932,6 +958,16 @@ class MainActivity : AppCompatActivity() {
 
     /** 追加一条文件传输历史并保存 */
     private fun addFileHistory(text: String, direction: String) {
+        // 避免重复记录：检查整个列表中是否已存在相同条目（S1）
+        val existing = fileHistory.indexOfFirst { it.text == text && it.direction == direction }
+        if (existing >= 0) {
+            // 已存在相同记录：移到顶部（最近使用），不重复添加
+            val item = fileHistory.removeAt(existing)
+            fileHistory.add(0, item.copy(time = System.currentTimeMillis()))
+            saveFileHistory()
+            refreshFileHistoryList()
+            return
+        }
         fileHistory.add(0, FileHistoryItem(System.currentTimeMillis(), text, direction))
         if (fileHistory.size > 500) fileHistory.subList(500, fileHistory.size).clear()
         saveFileHistory()
@@ -979,6 +1015,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 重置文件传输界面到初始空闲状态 */
+    private fun resetFileTransferUi(v: View) {
+        v.findViewById<TextView>(R.id.fileNameText)?.text = "等待传输..."
+        v.findViewById<ProgressBar>(R.id.fileProgress)?.progress = 0
+        v.findViewById<TextView>(R.id.fileProgressText)?.text = ""
+        v.findViewById<TextView>(R.id.fileSpeedText)?.text = ""
+        v.findViewById<Button>(R.id.cancelFileBtn)?.isEnabled = false
+        v.findViewById<Button>(R.id.pauseFileBtn)?.isEnabled = false
+        v.findViewById<Button>(R.id.pauseFileBtn)?.text = "暂停"
+        v.findViewById<Button>(R.id.selectFileBtn)?.isEnabled = true
+        v.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = false
+        v.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.GONE
+        v.findViewById<Button>(R.id.doneFileBtn)?.text = "完成"
+        v.findViewById<LinearLayout>(R.id.fileProgressContainer)?.visibility = View.GONE
+        v.findViewById<LinearLayout>(R.id.fileTransferBtnContainer)?.visibility = View.GONE
+    }
+
     @Suppress("DEPRECATION")
     private fun getFilesView(): View {
         val v = LayoutInflater.from(this).inflate(R.layout.page_files, null)
@@ -1016,18 +1069,8 @@ class MainActivity : AppCompatActivity() {
             ConnectionManager.cancelTransfer()
             // Toast 提示用户
             android.widget.Toast.makeText(this@MainActivity, "文件传输已取消", android.widget.Toast.LENGTH_SHORT).show()
-            // 重置界面到初始空闲状态，隐藏进度条和按钮容器
+            resetFileTransferUi(v)
             v.findViewById<TextView>(R.id.fileNameText)?.text = "已取消"
-            v.findViewById<ProgressBar>(R.id.fileProgress)?.progress = 0
-            v.findViewById<TextView>(R.id.fileProgressText)?.text = ""
-            v.findViewById<TextView>(R.id.fileSpeedText)?.text = ""
-            v.findViewById<Button>(R.id.cancelFileBtn)?.isEnabled = false
-            v.findViewById<Button>(R.id.pauseFileBtn)?.isEnabled = false
-            v.findViewById<Button>(R.id.pauseFileBtn)?.text = "暂停"
-            v.findViewById<Button>(R.id.selectFileBtn)?.isEnabled = true
-            v.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.GONE
-            v.findViewById<LinearLayout>(R.id.fileProgressContainer)?.visibility = View.GONE
-            v.findViewById<LinearLayout>(R.id.fileTransferBtnContainer)?.visibility = View.GONE
         }
 
         v.findViewById<Button>(R.id.doneFileBtn)?.setOnClickListener {
@@ -1039,19 +1082,7 @@ class MainActivity : AppCompatActivity() {
                 val record = name.removePrefix("发送中: ").removePrefix("接收中: ")
                 addFileHistory(record, direction)
             }
-            // 重置界面
-            v2.findViewById<TextView>(R.id.fileNameText)?.text = "等待传输..."
-            v2.findViewById<ProgressBar>(R.id.fileProgress)?.progress = 0
-            v2.findViewById<TextView>(R.id.fileProgressText)?.text = ""
-            v2.findViewById<TextView>(R.id.fileSpeedText)?.text = ""
-            v2.findViewById<Button>(R.id.cancelFileBtn)?.isEnabled = false
-            v2.findViewById<Button>(R.id.pauseFileBtn)?.isEnabled = false
-            v2.findViewById<Button>(R.id.pauseFileBtn)?.text = "暂停"
-            v2.findViewById<Button>(R.id.selectFileBtn)?.isEnabled = true
-            v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = false
-            v2.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.GONE
-            v2.findViewById<LinearLayout>(R.id.fileProgressContainer)?.visibility = View.GONE
-            v2.findViewById<LinearLayout>(R.id.fileTransferBtnContainer)?.visibility = View.GONE
+            resetFileTransferUi(v2)
         }
 
         // 页面创建时恢复当前传输状态（用户可能在其他页面时传输已开始）
@@ -1086,6 +1117,39 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // S4: 监听待用户确认接收的文件，显示"开始下载"按钮
+        lifecycleScope.launch {
+            ConnectionManager.pendingFileReceive.collect { pending ->
+                val v2 = pageCache[1] ?: return@collect
+                v2.findViewById<TextView>(R.id.fileNameText)?.text = pending.fileName
+                v2.findViewById<LinearLayout>(R.id.fileProgressContainer)?.visibility = View.VISIBLE
+                v2.findViewById<LinearLayout>(R.id.fileTransferBtnContainer)?.visibility = View.VISIBLE
+                v2.findViewById<ProgressBar>(R.id.fileProgress)?.progress = 0
+                v2.findViewById<TextView>(R.id.fileProgressText)?.text = "待确认下载"
+                v2.findViewById<TextView>(R.id.fileSpeedText)?.text = ""
+                v2.findViewById<Button>(R.id.selectFileBtn)?.isEnabled = false
+                v2.findViewById<Button>(R.id.pauseFileBtn)?.isEnabled = false
+                v2.findViewById<Button>(R.id.cancelFileBtn)?.isEnabled = true
+                v2.findViewById<Button>(R.id.cancelFileBtn)?.text = "取消"
+                // 将"完成"按钮改为"开始下载"
+                v2.findViewById<Button>(R.id.doneFileBtn)?.text = "开始下载"
+                v2.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.VISIBLE
+                v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = true
+                // 重新绑定"开始下载"按钮点击事件
+                v2.findViewById<Button>(R.id.doneFileBtn)?.setOnClickListener {
+                    ConnectionManager.startFileDownloadFromNotification(pending.fileId, pending.fileName, pending.fileSize)
+                    v2.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.GONE
+                    v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = false
+                    v2.findViewById<TextView>(R.id.fileProgressText)?.text = "下载中..."
+                }
+                // "取消"按钮点击：取消待接收
+                v2.findViewById<Button>(R.id.cancelFileBtn)?.setOnClickListener {
+                    ConnectionManager.cancelFileTransferNotification()
+                    resetFileTransferUi(v2)
+                }
+            }
+        }
+
         return v
     }
 
@@ -1107,6 +1171,24 @@ class MainActivity : AppCompatActivity() {
             v.findViewById<Button>(id)?.applyDarkTheme(primary = (cmd == "media_play_pause"))
             v.findViewById<Button>(id)?.setOnClickListener {
                 ConnectionManager.sendMediaCommand(cmd)
+            }
+        }
+        
+        // Update mute button based on initial mute state
+        val btnMute = v.findViewById<Button>(R.id.btnMute)
+        // Observe muted state and update button icon
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ConnectionManager.mutedState.collect { muted ->
+                    if (btnMute != null) {
+                        btnMute.text = if (muted) "🔇 (已静音)" else "🔊"
+                        if (muted) {
+                            btnMute.applyDarkTheme(primary = true)
+                        } else {
+                            btnMute.applyDarkTheme()
+                        }
+                    }
+                }
             }
         }
         // 截图按钮：请求电脑端截图当前界面并传回手机（静默，无提示）
@@ -1254,7 +1336,6 @@ class MainActivity : AppCompatActivity() {
         }
         supportActionBar?.show()
 
-        val setupScreen = findViewById<LinearLayout>(R.id.setupScreen)
         val pageContainer = findViewById<FrameLayout>(R.id.pageContainer)
         
         // Restore tab UI and setup screen visibility
@@ -1265,7 +1346,7 @@ class MainActivity : AppCompatActivity() {
         restoreHomeScreen()
     }
 
-    private fun getFullKeyboardView(landscapeMode: Boolean = false): View {
+    private fun getFullKeyboardView(@Suppress("UNUSED_PARAMETER") landscapeMode: Boolean = false): View {
         val v: View
         val layoutResId: Int
         // Simple: always use page_full_keyboard (works in both orientations)
@@ -1278,7 +1359,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun restoreHomeScreen() {
         // 退出键盘全屏后，恢复首页导航网格
-        val setupScreen = findViewById<LinearLayout>(R.id.setupScreen)
         val pageContainer = findViewById<FrameLayout>(R.id.pageContainer)
         
         // 清理当前页面容器
@@ -1842,78 +1922,43 @@ class MainActivity : AppCompatActivity() {
 
     private fun getMirrorView(): View {
         val v = LayoutInflater.from(this).inflate(R.layout.page_screen_mirror, null)
-        val btnMirrorToggle = v.findViewById<Button>(R.id.btnMirrorToggle)
-        btnMirrorToggle?.applyDarkTheme(primary = true)
-        v.findViewById<Button>(R.id.btnAudio)?.applyDarkTheme()
+        // Buttons removed per S5/S6: auto-start on page load instead
+        
+        // Find UI components
         val fullscreenBtn = v.findViewById<Button>(R.id.btnFullscreen)
-        fullscreenBtn?.applyDarkTheme()
-
+        // 全屏按钮：恢复显示，点击进入全屏投屏（Task 18.5）
+        fullscreenBtn?.visibility = View.VISIBLE
+        
         val status = v.findViewById<TextView>(R.id.mirrorStatus)
         val mirrorFrame = v.findViewById<FrameLayout>(R.id.mirrorFrame)
 
-        // ===== 手机→电脑投屏：启动/停止 推流（合并为一个按钮） =====
-        var mirrorRunning = false
-        btnMirrorToggle?.setOnClickListener {
-            if (!mirrorRunning) {
-                status.text = "正在推流（手机画面推送到电脑）..."
-                ConnectionManager.sendMediaCommand("mirror_start")
-                startPhoneScreenCapture()
-                btnMirrorToggle.text = "停止推流"
-                mirrorRunning = true
-            } else {
-                status.text = "已停止"
-                ConnectionManager.sendMediaCommand("mirror_stop")
-                ConnectionManager.sendMediaCommand("pc_stream_stop")
-                stopPhoneScreenCapture()
-                ConnectionManager.stopPcFramePolling()
-                mirrorImageView?.setImageBitmap(null)
-                btnMirrorToggle.text = "启动推流"
-                mirrorRunning = false
-            }
-        }
+        // ===== 手机→电脑投屏：自动启动（S5）=====
+        // Auto-start screen capture when page is loaded
+        status.text = "正在初始化..."
+        // Directly request screen capture permission (shows system dialog if not granted)
+        startPhoneScreenCapture()
 
-        // 声音传输按钮：手机→电脑（手机录音推送到电脑播放）
-        val btnAudio = v.findViewById<Button>(R.id.btnAudio)
-        var audioRunning = false
-        btnAudio?.setOnClickListener {
-            if (!audioRunning) {
-                // 通知电脑端开始接收手机音频
-                ConnectionManager.sendMediaCommand("audio_start")
-                // 手机 → 电脑：麦克风录音
-                startPhoneAudioCapture()
-                btnAudio.text = "停止声音"
-                audioRunning = true
-            } else {
-                stopPhoneAudioCapture()
-                // 通知电脑端停止接收手机音频
-                ConnectionManager.sendMediaCommand("audio_stop")
-                btnAudio.text = "声音传输"
-                audioRunning = false
-            }
-        }
+        // 声音传输：自动启动（S6），无需用户点击按钮
+        // Per S6: auto-start sound transmission after permission granted, no button needed
+        // Audio handling integrated with screen capture (needs MediaProjection for system audio)
+        
+        // ===== 电脑→手机投屏：自动启动（S7）=====
+        // Auto-start PC screen mirroring when page is loaded, removing redundant btnFullscreen button per S7
+        status.text = "正在连接电脑画面..."
+        ConnectionManager.startPcFramePolling(controlMode = true)
+        mirrorFrame.visibility = View.VISIBLE
+        status.text = "已连接 - 正在查看电脑画面..."
 
-        // 全屏按钮：查看电脑画面并全屏
-        val titleText = v.findViewById<TextView>(R.id.mirrorTitle)
-        val topButtons = v.findViewById<LinearLayout>(R.id.topButtons)
-        val btnStopPcStream = v.findViewById<Button>(R.id.btnStopPcStream)
-        btnStopPcStream?.applyDarkTheme()
-
-        val allUiComponents = listOf<View?>(
-            titleText,
-            topButtons,
-            status,
-            fullscreenBtn,
-            btnStopPcStream
-        )
-
+        // 全屏：点击最大化投屏区域，隐藏页面其他组件
         fullscreenBtn?.setOnClickListener {
-            // 启动电脑画面推流到手机
-            ConnectionManager.sendMediaCommand("pc_stream_start")
-            ConnectionManager.startPcFramePolling(controlMode = true)
-            status.text = "正在查看电脑画面..."
-            // 显示画面区域并进入全屏
-            mirrorFrame.visibility = View.VISIBLE
-            enterMirrorFullscreen(mirrorFrame, allUiComponents)
+            val hideViews = ArrayList<View>()
+            (v as? android.view.ViewGroup)?.let { rg ->
+                for (i in 0 until rg.childCount) {
+                    val child = rg.getChildAt(i)
+                    if (child !== mirrorFrame) hideViews.add(child)
+                }
+            }
+            enterMirrorFullscreen(mirrorFrame, hideViews)
         }
 
         // 全屏退出按钮（Task 18.5：角落半透明退出按钮）
@@ -2021,78 +2066,122 @@ class MainActivity : AppCompatActivity() {
         val v = LayoutInflater.from(this).inflate(R.layout.page_camera, null)
         val btnStart = v.findViewById<Button>(R.id.btnCameraStart)
         val btnSwitch = v.findViewById<Button>(R.id.btnCameraSwitch)
-        val btnPcCam = v.findViewById<Button>(R.id.btnCameraStop)
+        // btnPcCam was removed per M12/S8c
         btnStart?.applyDarkTheme()
         btnSwitch?.applyDarkTheme()
-        btnPcCam?.applyDarkTheme()
 
         val status = v.findViewById<TextView>(R.id.cameraStatus)
         val previewView = v.findViewById<androidx.camera.view.PreviewView>(R.id.cameraPreview)
         cameraPreviewView = previewView
+        
+        // 设置按钮初始文本 per S8c
+        btnStart?.text = "启动推流"
 
-        var isStreaming = false
+        // S8b: 初始化摄像头ImageView用于显示电脑摄像头画面
+        val pcCameraImg = android.widget.ImageView(this)
+        pcCameraImg.id = View.generateViewId()
+        pcCameraImg.layoutParams = android.view.ViewGroup.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        pcCameraImg.visibility = android.view.View.GONE
+        // 添加到根布局
+        if (v is android.view.ViewGroup) {
+            v.addView(pcCameraImg)
+        }
+        cameraImageView = pcCameraImg
 
         btnStart?.setOnClickListener {
-            if (!isStreaming) {
-                try {
-                    status.text = "正在启动摄像头..."
-                    startCameraPreview(1920, 1080, previewView)
-                    ConnectionManager.sendMediaCommand("mirror_start")
-                    status.text = "推流中（本地预览 + 推送给电脑）"
-                    btnStart.text = "停止推流"
-                    isStreaming = true
-                } catch (e: Exception) {
-                    Toast.makeText(this, "无法启动摄像头: ${e.message}", Toast.LENGTH_LONG).show()
-                    status.text = "启动失败"
-                }
+            if (cameraPreviewRunning) {
+                stopCameraPush()
             } else {
-                stopCameraPreview()
-                ConnectionManager.sendMediaCommand("mirror_stop")
-                status.text = "已停止"
-                btnStart.text = "启动推流"
-                isStreaming = false
+                startCameraPush()
+            }
+        }
+
+        // S8c: 长按按钮弹出菜单，包含电脑摄像头控制选项
+        btnStart?.setOnLongClickListener {
+            showCameraControlPopup()
+            true
+        }
+
+        // S8a: 收集摄像头推送命令（启动/停止推流），用于处理电脑端请求
+        CoroutineScope(Dispatchers.Main).launch {
+            ConnectionManager.cameraPushCommand.collect { command ->
+                when (command.action) {
+                    "start" -> startCameraPush()
+                    "stop" -> stopCameraPush()
+                    else -> {}
+                }
             }
         }
 
         // 本地切换摄像头
         fun doSwitchCamera() {
-            performCameraSwitch(isStreaming)
+            cameraLensFacing = when (cameraLensFacing) {
+                androidx.camera.core.CameraSelector.LENS_FACING_BACK ->
+                    androidx.camera.core.CameraSelector.LENS_FACING_FRONT
+                else -> androidx.camera.core.CameraSelector.LENS_FACING_BACK
+            }
+            // Restart preview to apply new lens facing
+            if (cameraPreviewRunning && cameraInstance != null) {
+                stopCameraPreview()
+                startCameraPreview(1920, 1080, previewView)
+            }
+            status.text = "镜头已切换: ${if (cameraLensFacing == androidx.camera.core.CameraSelector.LENS_FACING_BACK) "后置" else "前置"}"
         }
 
         btnSwitch?.setOnClickListener { doSwitchCamera() }
 
-        btnPcCam?.setOnClickListener {
-            if (ConnectionManager.isPcCameraPolling()) {
-                ConnectionManager.stopPcCameraPolling()
-                ConnectionManager.sendMediaCommand("pc_camera_stop")
-                btnPcCam.text = "查看电脑摄像头"
-                cameraImageView?.setImageBitmap(null)
-                cameraImageView?.visibility = android.view.View.GONE
-                status.text = if (isStreaming) "推流中（本地预览 + 推送给电脑）" else "已停止"
-            } else {
-                ConnectionManager.sendMediaCommand("pc_camera_start")
-                ConnectionManager.startPcCameraPolling()
-                btnPcCam.text = "停止拉取"
-                cameraImageView?.visibility = android.view.View.VISIBLE
-                status.text = "正在拉取电脑摄像头..."
+        // Removed btnCameraStop (分享相机画面 button) per M12/S8c
+
+        // S8b: 收集电脑摄像头推流帧（收到PC发送的画面后显示）
+        CoroutineScope(Dispatchers.Main).launch {
+            ConnectionManager.pcCameraFrame.collect { frameData ->
+                if (frameData.isNotEmpty() && cameraImageView != null) {
+                    val bmp = android.graphics.BitmapFactory.decodeByteArray(frameData, 0, frameData.size)
+                    if (bmp != null) {
+                        cameraImageView?.setImageBitmap(bmp)
+                        cameraImageView?.visibility = View.VISIBLE
+                    } else {
+                        cameraImageView?.visibility = View.GONE
+                    }
+                } else {
+                    cameraImageView?.visibility = View.GONE
+                }
             }
         }
 
-        // 电脑摄像头画面显示（独立 ImageView，不遮挡手机摄像头预览）
-        val pcCameraImg = android.widget.ImageView(this).apply {
-            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(0xFF000000.toInt())
-            minimumHeight = 400
-            visibility = android.view.View.GONE  // 默认隐藏，拉取电脑摄像头时显示
-        }
-        cameraImageView = pcCameraImg
-        val parent = status.parent as? android.view.ViewGroup
-        val statusIndex = parent?.indexOfChild(status) ?: -1
-        if (parent != null && statusIndex >= 0) {
-            parent.addView(pcCameraImg, statusIndex + 1)
+        return v
+
+    }
+
+    // ============================== S8c: 摄像头控制弹窗 ==============================
+
+    /**
+     * S8c: 弹出摄像头控制对话框，包含电脑摄像头启动/停止选项
+     */
+    private fun showCameraControlPopup() {
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
+        builder.setTitle("摄像头选项")
+        builder.setNegativeButton("取消", null)
+
+        // 动态创建列表项：电脑摄像头推流 启动/停止（按当前状态显示）
+        val pcCamRunning = ConnectionManager.isPcCameraPolling()
+        val options = arrayOf(
+            if (pcCamRunning) "🛑 停止电脑摄像头推流" else "📷 启动电脑摄像头推流"
+        )
+        
+        builder.setItems(options) { _, which ->
+            when (which) {
+                0 -> if (pcCamRunning) stopPcCameraPush() else startPcCameraPush()
+            }
         }
 
-        return v
+        val dialog = builder.create()
+        // 设置深色主题
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0xFF2d2d2d.toInt()))
+        dialog.show()
     }
 
     /**
@@ -2254,10 +2343,59 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * S8a: 启动手机摄像头推流（持续发送画面给电脑）
+     */
+    private fun startCameraPush() {
+        if (cameraPreviewRunning) return
+        // CameraX 预览视图存在于页面中
+        cameraPreviewView?.let { startCameraPreview(1920, 1080, it) }
+        runOnUiThread { 
+            pageCache[9]?.findViewById<Button>(R.id.btnCameraStart)?.text = "停止推流"
+            pageCache[9]?.findViewById<TextView>(R.id.cameraStatus)?.text = "摄像头推流中..."
+        }
+    }
+
+    /**
+     * S8a: 停止摄像头推流
+     */
+    private fun stopCameraPush() {
+        if (!cameraPreviewRunning) return
+        stopCameraPreview()
+        runOnUiThread { 
+            pageCache[9]?.findViewById<Button>(R.id.btnCameraStart)?.text = "启动推流"
+            pageCache[9]?.findViewById<TextView>(R.id.cameraStatus)?.text = "摄像头已停止"
+        }
+        ConnectionManager.sendMediaCommand("camera_stop")
+    }
+
+    /**
+     * S8b: 启动电脑摄像头推流（请求PC开始推送摄像头画面到手机）
+     */
+    private fun startPcCameraPush() {
+        ConnectionManager.startPcCameraPush()
+        ConnectionManager.startPcCameraPolling()
+        runOnUiThread { 
+            pageCache[9]?.findViewById<TextView>(R.id.cameraStatus)?.text = "电脑摄像头连接中..."
+        }
+    }
+
+    /**
+     * S8b: 停止电脑摄像头推流
+     */
+    private fun stopPcCameraPush() {
+        ConnectionManager.stopPcCameraPush()
+        ConnectionManager.stopPcCameraPolling()
+        runOnUiThread { 
+            pageCache[9]?.findViewById<TextView>(R.id.cameraStatus)?.text = "电脑摄像头已停止"
+            cameraImageView?.visibility = View.GONE
+        }
+    }
+
+    /**
      * 执行摄像头切换（类级方法，可供全局 cameraSwitchRequest 收集器调用）
      * @param isStreaming 当前是否正在推流
      */
-    private fun performCameraSwitch(isStreaming: Boolean) {
+    private fun performCameraSwitch(@Suppress("UNUSED_PARAMETER") isStreaming: Boolean) {
         // 无论当前是否在推流，都切换镜头方向
         switchCameraLens()
         if (cameraPreviewRunning) {
@@ -2476,9 +2614,38 @@ class MainActivity : AppCompatActivity() {
 
     // ============================== 文件管理 ==============================
 
-    private var fmMode = "phone" // phone / pc
     private var pcCurPath = "C:\\"
     private var pcInDrives = true
+    private var currentPcDrives = listOf<ConnectionManager.PcDriveInfo>()
+
+    private fun showConfirmDialog(title: String, message: String, onConfirm: () -> Unit) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("确定") { _, _ -> onConfirm() }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showInputDialog(title: String, hint: String, initial: String, onConfirm: (String) -> Unit) {
+        val input = EditText(this)
+        input.setText(initial)
+        input.hint = hint
+        android.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(input)
+            .setPositiveButton("确定") { _, _ -> onConfirm(input.text.toString()) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showInfoDialog(title: String, message: String) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("确定", null)
+            .show()
+    }
 
     private fun getFileManagerView(): View {
         val root = LinearLayout(this).apply {
@@ -2497,27 +2664,10 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(title)
 
-        // 模式切换行
-        val modeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xFF2d2d2d.toInt())
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-        }
-        val btnPhone = Button(this).apply {
-            text = "手机文件"
-            applyDarkTheme(primary = true)
-        }
-        val btnPc = Button(this).apply {
-            text = "电脑文件"
-            applyDarkTheme()
-        }
-        modeRow.addView(btnPhone, LinearLayout.LayoutParams(0, dp(44), 1f).apply { rightMargin = dp(4) })
-        modeRow.addView(btnPc, LinearLayout.LayoutParams(0, dp(44), 1f))
-        root.addView(modeRow, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(8) })
+        // 汇总当前文件列表供操作菜单使用（磁盘视图时不适用）
+        var currentPcFiles = mutableListOf<ConnectionManager.PcFileInfo>()
 
-        // 路径栏（手机/电脑共用）
+        // 路径栏：上级 / 刷新 / 排序 / 操作（默认禁用）
         val pathRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(0xFF2d2d2d.toInt())
@@ -2529,11 +2679,20 @@ class MainActivity : AppCompatActivity() {
         }
         val btnRefresh = Button(this).apply {
             text = "刷新"
+            applyDarkTheme()
+        }
+        val btnSort = Button(this).apply {
+            text = "排序"
+            applyDarkTheme()
+        }
+        val btnOp = Button(this).apply {
+            text = "操作"
             applyDarkTheme(primary = true)
+            isEnabled = false
         }
         val pathTv = TextView(this).apply {
             id = R.id.fmPath
-            text = if (fmMode == "phone") (Environment.getExternalStorageDirectory()?.absolutePath ?: "/") else pcCurPath
+            text = pcCurPath
             setTextColor(0xFFb0b0b0.toInt())
             textSize = 12f
             setPadding(dp(8), 0, dp(8), 0)
@@ -2541,13 +2700,16 @@ class MainActivity : AppCompatActivity() {
         }
         pathRow.addView(btnUp, LinearLayout.LayoutParams(dp(60), dp(40)))
         pathRow.addView(btnRefresh, LinearLayout.LayoutParams(dp(60), dp(40)))
+        pathRow.addView(btnSort, LinearLayout.LayoutParams(dp(60), dp(40)))
+        pathRow.addView(btnOp, LinearLayout.LayoutParams(dp(60), dp(40)))
         pathRow.addView(pathTv, LinearLayout.LayoutParams(0, dp(40), 1f))
         root.addView(pathRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(8) })
 
-        // 文件列表
+        // 文件列表（使用可多选的 ListView）
         val list = ListView(this)
+        list.choiceMode = ListView.CHOICE_MODE_MULTIPLE
         val empty = TextView(this).apply {
             id = R.id.fmEmpty
             text = "暂无内容"
@@ -2561,37 +2723,41 @@ class MainActivity : AppCompatActivity() {
         ).apply { weight = 1f })
         root.addView(empty)
 
-        // 手机文件浏览逻辑
-        var phoneCurPath = Environment.getExternalStorageDirectory()?.absolutePath ?: "/"
+        val selectedIds = linkedSetOf<Int>() // 多选索引集合
+        var sortMode = 0 // 0=名称, 1=大小, 2=修改时间
 
-        fun refreshPhoneFiles() {
-            pathTv.text = phoneCurPath
-            val dir = File(phoneCurPath)
-            // 排序：目录优先，然后按名称
-            val files = dir.listFiles()?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }) ?: emptyList()
+        fun applySort(): List<ConnectionManager.PcFileInfo> {
+            val cmp = when (sortMode) {
+                1 -> compareBy<ConnectionManager.PcFileInfo> { !it.isDir }.thenByDescending { it.size }
+                2 -> compareBy<ConnectionManager.PcFileInfo> { !it.isDir }.thenByDescending { it.modified }
+                else -> compareBy<ConnectionManager.PcFileInfo> { !it.isDir }.thenBy { it.name.lowercase() }
+            }
+            return currentPcFiles.sortedWith(cmp)
+        }
+
+        fun refreshOpBtn() {
+            btnOp.isEnabled = selectedIds.isNotEmpty()
+            btnOp.text = if (selectedIds.isNotEmpty()) "操作(${selectedIds.size})" else "操作"
+        }
+
+        fun renderPcList(files: List<ConnectionManager.PcFileInfo>) {
+            selectedIds.clear()
+            refreshOpBtn()
             if (files.isEmpty()) {
                 empty.visibility = View.VISIBLE
                 empty.text = "空目录"
                 list.adapter = null
-            } else {
-                empty.visibility = View.GONE
-                val displays = files.map { f ->
-                    val icon = if (f.isDirectory) "\uD83D\uDCC1 " else fileIcon(f.name)
-                    val sz = if (f.isDirectory) "[目录]" else formatSize(f.length())
-                    "${icon}${f.name}\n$sz"
-                }
-                list.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, displays)
-                list.onItemClickListener = android.widget.AdapterView.OnItemClickListener { _, _, pos, _ ->
-                    val f = files[pos]
-                    if (f.isDirectory) {
-                        phoneCurPath = f.absolutePath
-                        refreshPhoneFiles()
-                    } else {
-                        ConnectionManager.sendFile(f)
-                        Toast.makeText(this, "开始发送: ${f.name}", Toast.LENGTH_SHORT).show()
-                    }
-                }
+                return
             }
+            empty.visibility = View.GONE
+            val displays = files.map { f ->
+                val icon = if (f.isDir) "\uD83D\uDCC1 " else fileIcon(f.name)
+                val sz = if (f.isDir) "[目录]" else formatSize(f.size)
+                val name = if (f.isDir) "${f.name}/" else f.name
+                "${icon}${name}\n$sz"
+            }
+            list.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_multiple_choice, displays)
+            refreshOpBtn()
         }
 
         // 电脑文件浏览逻辑
@@ -2601,44 +2767,21 @@ class MainActivity : AppCompatActivity() {
             empty.visibility = View.VISIBLE
             empty.text = "正在加载..."
             list.adapter = null
-            ConnectionManager.fetchPcFiles(pcCurPath) { files, path ->
-                // 排序：目录优先，然后按名称
-                val sorted = files.sortedWith(compareBy<ConnectionManager.PcFileInfo> { !it.isDir }.thenBy { it.name.lowercase() })
-                if (sorted.isEmpty()) {
-                    empty.visibility = View.VISIBLE
-                    empty.text = "空目录"
-                    list.adapter = null
-                } else {
-                    empty.visibility = View.GONE
-                    val displays = sorted.map { f ->
-                        val icon = if (f.isDir) "\uD83D\uDCC1 " else fileIcon(f.name)
-                        val sz = if (f.isDir) "[目录]" else formatSize(f.size)
-                        val name = if (f.isDir) "${f.name}/" else f.name
-                        "${icon}${name}\n$sz"
-                    }
-                    list.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, displays)
-                    list.onItemClickListener = android.widget.AdapterView.OnItemClickListener { _, _, pos, _ ->
-                        val f = sorted[pos]
-                        if (f.isDir) {
-                            pcCurPath = pcCurPath.trimEnd('\\') + "\\" + f.name
-                            refreshPcFiles()
-                        } else {
-                            // 下载电脑文件到手机
-                            val filePath = pcCurPath.trimEnd('\\') + "\\" + f.name
-                            downloadPcFile(filePath, f.name)
-                        }
-                    }
-                }
+            ConnectionManager.fetchPcFiles(pcCurPath) { files, _ ->
+                currentPcFiles = files.toMutableList()
+                renderPcList(applySort())
             }
         }
 
         fun refreshPcDrives() {
             pcInDrives = true
             pathTv.text = "我的电脑"
+            currentPcFiles = mutableListOf<ConnectionManager.PcFileInfo>()
             empty.visibility = View.VISIBLE
             empty.text = "正在加载磁盘列表..."
             list.adapter = null
             ConnectionManager.fetchPcDrives { drives ->
+                currentPcDrives = drives
                 if (drives.isEmpty()) {
                     empty.visibility = View.VISIBLE
                     empty.text = "未获取到磁盘信息"
@@ -2660,75 +2803,171 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 按钮事件
-        btnPhone.setOnClickListener {
-            fmMode = "phone"
-            btnPhone.applyDarkTheme(primary = true)
-            btnPc.applyDarkTheme()
-            refreshPhoneFiles()
-        }
-        btnPc.setOnClickListener {
-            fmMode = "pc"
-            btnPc.applyDarkTheme(primary = true)
-            btnPhone.applyDarkTheme()
-            refreshPcDrives()
-        }
-
-        btnUp.setOnClickListener {
-            if (fmMode == "phone") {
-                val cur = File(phoneCurPath)
-                // 限制在 /sdcard 范围内，避免跳到不可读的根目录
-                val sdRoot = Environment.getExternalStorageDirectory()?.absolutePath ?: "/sdcard"
-                if (cur.absolutePath == sdRoot || cur.absolutePath == "/") {
-                    return@setOnClickListener
+        // 列表点击 / 长按多选
+        list.onItemClickListener = android.widget.AdapterView.OnItemClickListener { _, _, pos, _ ->
+            if (pcInDrives) {
+                if (currentPcDrives.isNotEmpty() && pos < currentPcDrives.size) {
+                    pcCurPath = currentPcDrives[pos].name
+                    pcInDrives = false
+                    refreshPcFiles()
                 }
-                val parent = cur.parentFile
-                if (parent != null && parent.canRead()) {
-                    phoneCurPath = parent.absolutePath
-                    refreshPhoneFiles()
-                } else if (parent != null) {
-                    // canRead() 可能为 false 但仍可列出（部分 Android 10 目录），尝试进入
-                    phoneCurPath = parent.absolutePath
-                    refreshPhoneFiles()
-                }
+                return@OnItemClickListener
+            }
+            if (selectedIds.isNotEmpty()) {
+                // 已进入多选模式：点击切换选中状态
+                if (!selectedIds.add(pos)) selectedIds.remove(pos)
+                refreshOpBtn()
             } else {
-                if (pcInDrives) return@setOnClickListener
-                // Windows 路径处理：手动按反斜杠分割（Android 的 File 不识别 \ 为分隔符）
-                val trimmed = pcCurPath.trimEnd('\\', '/')
-                // 检查是否为驱动器根目录（如 C:\）
-                if (trimmed.length <= 3 && trimmed.isNotEmpty() && trimmed[1] == ':') {
-                    refreshPcDrives()
-                } else {
-                    val lastSlash = trimmed.lastIndexOf('\\')
-                    val parent = if (lastSlash > 2) {
-                        // 例如 C:\Users\admin\Desktop → C:\Users\admin
-                        trimmed.substring(0, lastSlash)
-                    } else if (lastSlash == 2) {
-                        // 例如 C:\Users → C:\
-                        trimmed.substring(0, 3)
-                    } else {
-                        null
-                    }
-                    if (parent != null) {
-                        pcCurPath = parent
+                // 普通模式：进入目录
+                val sorted = applySort()
+                if (pos < sorted.size) {
+                    val f = sorted[pos]
+                    if (f.isDir) {
+                        pcCurPath = pcCurPath.trimEnd('\\') + "\\" + f.name
                         refreshPcFiles()
-                    } else {
-                        refreshPcDrives()
                     }
                 }
             }
         }
+        list.onItemLongClickListener = android.widget.AdapterView.OnItemLongClickListener { _, _, pos, _ ->
+            if (pcInDrives) return@OnItemLongClickListener true
+            if (!selectedIds.add(pos)) selectedIds.remove(pos)
+            refreshOpBtn()
+            true
+        }
 
-        btnRefresh.setOnClickListener {
-            if (fmMode == "phone") {
-                refreshPhoneFiles()
-            } else {
-                if (pcInDrives) refreshPcDrives() else refreshPcFiles()
+        // 排序菜单
+        btnSort.setOnClickListener {
+            val sorted = applySort()
+            renderPcList(sorted)
+            sortMode = (sortMode + 1) % 3
+            val label = when (sortMode) { 1 -> "按大小" 2 -> "按修改时间" else -> "按名称" }
+            Toast.makeText(this, "排序: $label", Toast.LENGTH_SHORT).show()
+        }
+
+        // 操作菜单
+        btnOp.setOnClickListener {
+            if (selectedIds.isEmpty()) return@setOnClickListener
+            val sorted = applySort()
+            val sel = selectedIds.sorted().mapNotNull { if (it < sorted.size) sorted[it] else null }
+            if (sel.isEmpty()) return@setOnClickListener
+            val destDir = pcCurPath
+
+            val popup = android.widget.PopupMenu(this, btnOp)
+            popup.menu.add("打开（下载后自动打开）")
+            popup.menu.add("下载")
+            popup.menu.add("删除")
+            popup.menu.add("重命名")
+            popup.menu.add("属性")
+            popup.menu.add("复制到")
+            popup.setOnMenuItemClickListener { item ->
+                val label = item.title.toString()
+                when (label) {
+                    "打开（下载后自动打开）" -> {
+                        val f = sel.firstOrNull() ?: return@setOnMenuItemClickListener true
+                        val filePath = pcCurPath.trimEnd('\\') + "\\" + f.name
+                        downloadPcFile(filePath, f.name, openAfter = true)
+                        selectedIds.clear(); refreshOpBtn()
+                    }
+                    "下载" -> {
+                        sel.forEach { downloadPcFile(pcCurPath.trimEnd('\\') + "\\" + it.name, it.name) }
+                        selectedIds.clear(); refreshOpBtn()
+                    }
+                    "删除" -> {
+                        val names = sel.joinToString("、") { it.name }
+                        showConfirmDialog("删除", "确定删除选中的 ${sel.size} 项？\n$names") {
+                            sel.forEach {
+                                ConnectionManager.pcFileDelete(pcCurPath.trimEnd('\\') + "\\" + it.name) { ok, msg ->
+                                    runOnUiThread {
+                                        if (!ok) Toast.makeText(this@MainActivity, "删除失败: $msg", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                            refreshPcFiles()
+                            selectedIds.clear(); refreshOpBtn()
+                        }
+                    }
+                    "重命名" -> {
+                        val f = sel.firstOrNull() ?: return@setOnMenuItemClickListener true
+                        showInputDialog("重命名", "输入新名称", f.name) { newName ->
+                            if (newName.isNotBlank() && newName != f.name) {
+                                ConnectionManager.pcFileRename(pcCurPath.trimEnd('\\') + "\\" + f.name, newName) { ok, msg ->
+                                    runOnUiThread {
+                                        Toast.makeText(this@MainActivity, if (ok) "重命名成功" else "重命名失败: $msg", Toast.LENGTH_SHORT).show()
+                                        refreshPcFiles()
+                                    }
+                                }
+                            }
+                        }
+                        selectedIds.clear(); refreshOpBtn()
+                    }
+                    "属性" -> {
+                        val f = sel.firstOrNull() ?: return@setOnMenuItemClickListener true
+                        ConnectionManager.pcFileInfo(pcCurPath.trimEnd('\\') + "\\" + f.name) { info ->
+                            runOnUiThread {
+                                if (info == null) {
+                                    Toast.makeText(this@MainActivity, "获取属性失败", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val type = if (info["is_dir"] == "true") "文件夹" else (if (info["ext"].isNullOrEmpty()) "文件" else info["ext"] + " 文件")
+                                    val sizeStr = if (info["is_dir"] == "true") "-" else formatSize(info["size"]?.toLongOrNull() ?: 0L)
+                                    val ctime = info["created"]?.toLongOrNull()?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(it * 1000)) } ?: "-"
+                                    val mtime = info["modified"]?.toLongOrNull()?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(it * 1000)) } ?: "-"
+                                    val content = "名称: ${info["name"]}\n类型: $type\n大小: $sizeStr\n创建时间: $ctime\n修改时间: $mtime"
+                                    showInfoDialog("属性", content)
+                                }
+                            }
+                        }
+                        selectedIds.clear(); refreshOpBtn()
+                    }
+                    "复制到" -> {
+                        // 弹出目录输入（以当前目录为默认目标）
+                        showInputDialog("复制到", "输入目标目录", destDir) { input ->
+                            val target = input.ifBlank { destDir }
+                            sel.forEach {
+                                ConnectionManager.pcFileCopy(pcCurPath.trimEnd('\\') + "\\" + it.name, target) { ok, msg ->
+                                    runOnUiThread {
+                                        if (!ok) Toast.makeText(this@MainActivity, "复制失败: $msg", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                            selectedIds.clear(); refreshOpBtn()
+                        }
+                    }
+                }
+                true
             }
+            popup.show()
+        }
+
+        // 上级
+        btnUp.setOnClickListener {
+            if (pcInDrives) return@setOnClickListener
+            val trimmed = pcCurPath.trimEnd('\\', '/')
+            if (trimmed.length <= 3 && trimmed.isNotEmpty() && trimmed[1] == ':') {
+                refreshPcDrives()
+            } else {
+                val lastSlash = trimmed.lastIndexOf('\\')
+                val parent = when {
+                    lastSlash > 2 -> trimmed.substring(0, lastSlash)
+                    lastSlash == 2 -> trimmed.substring(0, 3)
+                    else -> null
+                }
+                if (parent != null) {
+                    pcCurPath = parent
+                    refreshPcFiles()
+                } else {
+                    refreshPcDrives()
+                }
+            }
+        }
+
+        // 刷新
+        btnRefresh.setOnClickListener {
+            if (pcInDrives) refreshPcDrives() else refreshPcFiles()
         }
 
         // 初始加载
-        list.post { refreshPhoneFiles() }
+        list.post { refreshPcDrives() }
         return root
     }
 
@@ -2757,7 +2996,7 @@ class MainActivity : AppCompatActivity() {
     /**
      * 下载电脑文件到手机 Download 目录（使用 MediaStore 兼容 Android 10+ Scoped Storage）
      */
-    private fun downloadPcFile(filePath: String, fileName: String) {
+    private fun downloadPcFile(filePath: String, fileName: String, openAfter: Boolean = false) {
         Thread {
             try {
                 val baseUrl = ConnectionManager.getBaseUrlPublic()
@@ -2791,6 +3030,19 @@ class MainActivity : AppCompatActivity() {
                         }
                         runOnUiThread {
                             Toast.makeText(this, "已下载到 Download: $fileName", Toast.LENGTH_SHORT).show()
+                        }
+                        if (openAfter) {
+                            runOnUiThread {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(uri, resolver.getType(uri))
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    startActivity(intent)
+                                } catch (e: Exception) {
+                                    Toast.makeText(this, "无法打开文件: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                     } else {
                         runOnUiThread {
@@ -3300,6 +3552,34 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 全局监听电脑端发来的投屏命令（S5）
+        CoroutineScope(Dispatchers.Main).launch {
+            ConnectionManager.mirrorCommand.collect { cmd ->
+                when (cmd.action) {
+                    "start" -> {
+                        // 电脑端请求开始投屏：自动触发屏幕录制权限请求
+                        if (!screenCaptureRunning) {
+                            // S5: 检查无障碍服务是否开启，未开启则引导进入设置
+                            if (PhoneHubAccessibilityService.instance == null) {
+                                Toast.makeText(this@MainActivity, "无障碍服务未开启，正在引导开启...", Toast.LENGTH_LONG).show()
+                                try {
+                                    startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                } catch (_: Exception) {}
+                            }
+                            // 启动屏幕录制权限请求
+                            startPhoneScreenCapture()
+                        }
+                    }
+                    "stop" -> {
+                        // 电脑端请求停止投屏
+                        if (screenCaptureRunning) {
+                            stopPhoneScreenCapture()
+                        }
+                    }
+                }
+            }
+        }
+
         CoroutineScope(Dispatchers.Main).launch {
             ConnectionManager.currentChannel.collect { channel ->
                 val channelName = when (channel) {
@@ -3314,8 +3594,26 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // S6: 全局监听电脑端发来的声音传输控制指令（开始/停止声音传输）
         CoroutineScope(Dispatchers.Main).launch {
-            ConnectionManager.phoneMemUsage.collect { mem ->
+            ConnectionManager.audioControl.collect { cmd ->
+                when (cmd.action) {
+                    "start" -> {
+                        startPhoneAudioCapture()
+                        ConnectionManager.startPcAudioPolling()
+                        ConnectionManager.sendMediaCommand("audio_start")
+                    }
+                    "stop" -> {
+                        stopPhoneAudioCapture()
+                        ConnectionManager.stopPcAudioPolling()
+                        ConnectionManager.sendMediaCommand("audio_stop")
+                    }
+                }
+            }
+        }
+
+        CoroutineScope(Dispatchers.Main).launch {
+            ConnectionManager.phoneMemUsage.collect { _ ->
                 // 手机内存数据可用于其他页面
             }
         }
@@ -3468,7 +3766,7 @@ class MainActivity : AppCompatActivity() {
 
         // 订阅 PC 发来的取消事件，重置手机端界面并提示用户
         CoroutineScope(Dispatchers.Main).launch {
-            ConnectionManager.transferCancelledFromPc.collect { fileId ->
+            ConnectionManager.transferCancelledFromPc.collect { _ ->
                 val v = pageCache[1] ?: return@collect
                 v.findViewById<TextView>(R.id.fileNameText)?.text = "对端已取消"
                 v.findViewById<ProgressBar>(R.id.fileProgress)?.progress = 0
@@ -3531,10 +3829,7 @@ class MainActivity : AppCompatActivity() {
                         cameraFrameTimeoutRunnable = Runnable {
                             cameraImageView?.setImageBitmap(null)
                             cameraImageView?.visibility = android.view.View.GONE
-                            ConnectionManager.sendMediaCommand("pc_camera_stop")
-                            ConnectionManager.stopPcCameraPolling()
-                            // 更新按钮文字
-                            pageCache[9]?.findViewById<Button>(R.id.btnCameraStop)?.text = "查看电脑摄像头"
+                            ConnectionManager.stopPcCameraPush()
                             pageCache[9]?.findViewById<TextView>(R.id.cameraStatus)?.text = "电脑摄像头已断开"
                         }.also { frameTimeoutHandler.postDelayed(it, 2000) }
                     }
@@ -3809,8 +4104,6 @@ class MainActivity : AppCompatActivity() {
         screenCaptureThread = Thread {
             val conn = ConnectionManager
             // 预分配复用缓冲区，避免每帧GC
-            val rowPixelSize = screenWidth * 4
-
             while (screenCaptureRunning) {
                 try {
                     val image = imageReader?.acquireLatestImage()
@@ -3899,6 +4192,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun startPhoneAudioCapture() {
         if (audioCaptureRunning) return
+        
+        // Check RECORD_AUDIO permission before starting audio capture
+        val hasPermission = ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        if (!hasPermission) {
+            audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        
         val sampleRate = 44100
         val minBufferSize = android.media.AudioRecord.getMinBufferSize(
             sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO,

@@ -1,7 +1,18 @@
 import sys
 import os
+from PyQt5.QtCore import Qt, qInstallMessageHandler  # 使用 qInstallMessageHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def message_handler(msgtype, msgcontext, msg):
+    """过滤 Qt 输出的特定警告信息"""
+    # msgtype 是整数：0=Debug, 1=Log, 2=Warning, 3=Critical, 4=Fatal
+    # 只过滤警告级别的消息（2），并检查是否包含特定字符串
+    if msgtype == 2:
+        if "QWindowsFontEngine" in str(msg) and "GetTextMetrics" in str(msg):
+            return  # 不返回值（None），直接返回即可阻止消息输出
+    # 其他消息正常返回 None，会让它们正常输出
 
 
 def main():
@@ -11,6 +22,10 @@ def main():
 
     # 必须在导入任何 qfluentwidgets 模块之前创建 QApplication
     app = QApplication(sys.argv)
+    
+    # ⭐ 添加：设置消息过滤器，屏蔽不需要的 Qt 警告输出
+    qInstallMessageHandler(message_handler)
+    
     app.setApplicationName("PhoneHub")
     app.setOrganizationName("PhoneHub")
     app.setFont(QFont("Segoe UI Variable", 9))

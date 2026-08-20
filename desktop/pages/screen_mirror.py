@@ -243,14 +243,15 @@ class ScreenMirrorPage(QWidget):
         super().__init__()
         self.manager = manager
         self._mirror_window = None
+        self._is_phone_muted = False  # 初始状态：未静音
         self._setup_ui()
         self._connect_signals()
         self._update_button_states()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("投屏与反向控制")
         title.setObjectName("titleLabel")
@@ -262,6 +263,8 @@ class ScreenMirrorPage(QWidget):
 
         ctrl_frame = CardWidget()
         ctrl_layout = QHBoxLayout(ctrl_frame)
+        ctrl_layout.setContentsMargins(16, 12, 16, 12)
+        ctrl_layout.setSpacing(12)
 
         # 电脑画面推流到手机
         self.pc_stream_btn = PrimaryPushButton("推流电脑画面到手机")
@@ -271,9 +274,7 @@ class ScreenMirrorPage(QWidget):
         self.phone_to_pc_btn = PrimaryPushButton("手机投屏到电脑")
         ctrl_layout.addWidget(self.phone_to_pc_btn)
 
-        # 打开投屏查看窗口
-        self.open_window_btn = PushButton("打开投屏窗口")
-        ctrl_layout.addWidget(self.open_window_btn)
+
 
         # 声音传输
         self.audio_btn = PushButton("开始声音传输")
@@ -285,6 +286,7 @@ class ScreenMirrorPage(QWidget):
         # ==================== 快捷控制面板 ====================
         control_frame = CardWidget()
         control_layout = QVBoxLayout(control_frame)
+        control_layout.setContentsMargins(16, 12, 16, 12)
         control_layout.setSpacing(8)
 
         ctrl_title = SubtitleLabel("快捷控制")
@@ -305,6 +307,11 @@ class ScreenMirrorPage(QWidget):
         vol_row.addWidget(self.vol_value_label)
         self.vol_mute_btn = PushButton("静音")
         vol_row.addWidget(self.vol_mute_btn)
+        # 添加静音状态指示器
+        self.mute_indicator = BodyLabel("未静音")
+        self.mute_indicator.setObjectName("muteIndicator")
+        self.mute_indicator.setStyleSheet("color: #FF6B6B; font-weight: bold;")
+        vol_row.addWidget(self.mute_indicator)
         vol_row.addStretch()
         control_layout.addLayout(vol_row)
 
@@ -330,7 +337,7 @@ class ScreenMirrorPage(QWidget):
         layout.addWidget(control_frame)
 
         # 提示文本
-        self.hint_label = BodyLabel("手机投屏开始后，投屏画面将在独立窗口中显示。点击「打开投屏窗口」可手动打开。")
+        self.hint_label = BodyLabel("手机投屏开始后，投屏画面将在独立窗口中自动显示。")
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
         layout.addStretch()
@@ -338,7 +345,6 @@ class ScreenMirrorPage(QWidget):
     def _connect_signals(self):
         self.pc_stream_btn.clicked.connect(self._toggle_pc_stream)
         self.phone_to_pc_btn.clicked.connect(self._toggle_phone_mirror)
-        self.open_window_btn.clicked.connect(self._open_mirror_window)
         self.audio_btn.clicked.connect(self._toggle_audio)
 
         # 快捷控制面板信号
@@ -347,7 +353,7 @@ class ScreenMirrorPage(QWidget):
         self.vol_slider.sliderPressed.connect(self._on_vol_pressed)
         self.vol_slider.valueChanged.connect(self._on_vol_changed)
         self.vol_slider.sliderReleased.connect(self._on_vol_released)
-        self.vol_mute_btn.clicked.connect(lambda: self.manager.send_command("vol_mute"))
+        self.vol_mute_btn.clicked.connect(self._toggle_phone_mute)
         self.btn_lock.clicked.connect(lambda: self.manager.send_command("lock"))
         self.btn_back.clicked.connect(lambda: self.manager.send_command("back"))
         self.btn_home.clicked.connect(lambda: self.manager.send_command("home"))
@@ -359,6 +365,7 @@ class ScreenMirrorPage(QWidget):
         try:
             self.manager.connection_status_changed.connect(lambda c, ch: (self._update_button_states(), self._request_phone_volume()))
             self.manager.phone_volume_received.connect(self._on_phone_volume_changed)
+            self.manager.phone_mute_received.connect(self._on_phone_mute_changed)
         except Exception:
             pass
         try:
@@ -384,25 +391,44 @@ class ScreenMirrorPage(QWidget):
             pass
 
     def _on_phone_volume_changed(self, volume):
-        """手机端媒体音量变化同步到滑块（电脑拖动期间不覆盖用户操作）"""
+        """手机端媒体音量变化同步到滑块（电脑拖动期间不覆盖用户操作，且不在静音状态下覆盖）"""
+        # 如果手机处于静音状态，收到非零音量时先取消静音
+        if volume > 0 and getattr(self, '_is_phone_muted', False):
+            self._is_phone_muted = False
+            self.mute_indicator.setText("未静音")
+            self.vol_mute_btn.setText("静音")
+        
         if not getattr(self, '_vol_sync_enabled', True):
             return
         try:
             clamped = int(max(0, min(15, volume)))
-            self.vol_slider.setValue(clamped)
+            # 只在当前不是静音操作时更新滑块（避免用户手动调节后被手机覆盖）
+            if not getattr(self, '_vol_during_drag', False):
+                # Set flag to ignore valueChanged signal from this programmatic update
+                self._ignore_volume_update = True
+                self.vol_slider.setValue(clamped)
+                self.vol_value_label.setText(str(clamped))
+                self._ignore_volume_update = False
         except Exception:
+            # Ensure flag is cleared even on error
+            self._ignore_volume_update = False
             pass
 
     def _on_vol_pressed(self):
         """首次触碰滑块时立即发送当前值并短暂关闭来自手机的同步，避免回弹。"""
         self._vol_sync_enabled = False
+        self._vol_during_drag = True
         value = self.vol_slider.value()
         self.manager.send_command("set_volume", extra={"volume": value})
         self._last_vol_send = time.time()
         QTimer.singleShot(300, lambda: setattr(self, '_vol_sync_enabled', True))
+        QTimer.singleShot(100, lambda: setattr(self, '_vol_during_drag', False))
 
     def _on_vol_changed(self, value):
         """拖动中 50ms 节流发送"""
+        # Skip if this update is from phone volume sync (avoid oscillation loop)
+        if getattr(self, '_ignore_volume_update', False):
+            return
         now = time.time()
         if now - getattr(self, '_last_vol_send', 0) >= 0.05:
             self.manager.send_command("set_volume", extra={"volume": value})
@@ -413,6 +439,40 @@ class ScreenMirrorPage(QWidget):
         value = self.vol_slider.value()
         self.manager.send_command("set_volume", extra={"volume": value})
         self._last_vol_send = time.time()
+
+    def _on_phone_mute_changed(self, muted: bool):
+        """手机静音状态变化，更新UI指示器"""
+        try:
+            self._is_phone_muted = muted
+            if muted:
+                self.mute_indicator.setText("🔇 静音")
+                self.vol_mute_btn.setText("取消静音")
+                # 音量滑块置为0但显示特殊状态
+            else:
+                self.mute_indicator.setText("未静音")
+                self.vol_mute_btn.setText("静音")
+        except Exception:
+            pass
+
+    def _toggle_phone_mute(self):
+        """切换手机静音状态"""
+        try:
+            # 如果当前处于静音状态，先取消静音再发送；否则直接发送静音命令
+            if getattr(self, '_is_phone_muted', False):
+                # 先恢复音量（如果之前有记录的音量）
+                current_vol = self.vol_slider.value() if self.vol_slider.value() > 0 else 7
+                self.manager.send_command("vol_mute")
+                # 稍后恢复音量（需要两次操作：先取消静音，然后恢复原音量）
+                QTimer.singleShot(100, lambda: self.manager.send_command("set_volume", extra={"volume": current_vol}))
+                self._is_phone_muted = False
+            else:
+                self.manager.send_command("vol_mute")
+                self._is_phone_muted = True
+                # 立即将本地滑块置为0以反映静音状态
+                self.vol_slider.setValue(0)
+                self.vol_value_label.setText("0")
+        except Exception as e:
+            pass
 
     def _phone_screenshot(self):
         """手机截图：ADB模式直接截图，WiFi模式发送截图请求"""
@@ -457,7 +517,7 @@ class ScreenMirrorPage(QWidget):
         """打开独立投屏查看窗口"""
         try:
             if self._mirror_window is None or not self._mirror_window.isVisible():
-                self._mirror_window = MirrorWindow(self.manager, self)
+                self._mirror_window = MirrorWindow(self.manager)
             self._mirror_window.show()
             self._mirror_window.raise_()
             self._mirror_window.activateWindow()
@@ -479,28 +539,37 @@ class ScreenMirrorPage(QWidget):
             dark_msg_box(self, QMessageBox.Warning, "操作失败", f"推流操作出错: {e}")
 
     def _toggle_phone_mirror(self):
-        """手机投屏到电脑：启停切换"""
+        """手机投屏到电脑：自动发起权限请求→自动开始投屏→自动开窗口（S5）"""
         try:
             if self.manager._phone_mirror_running:
+                # 停止投屏
                 self.manager.send_action("mirror_stop")
                 self.manager.stop_phone_mirror()
                 self.phone_to_pc_btn.setText("手机投屏到电脑")
             else:
+                # S5：直接发起投屏请求，手机端会自动处理权限并启动
+                # 手机端收到 mirror_start 后会进入权限授予界面（如已授权则直接开始）
                 self.manager.send_action("mirror_start")
                 self.phone_to_pc_btn.setText("停止手机投屏")
-                # 自动打开投屏窗口
+                # 自动打开投屏窗口（无论是否已授权，先打开，有帧再显示）
                 self._open_mirror_window()
         except Exception as e:
             dark_msg_box(self, QMessageBox.Warning, "操作失败", f"手机投屏操作出错: {e}")
 
     def _toggle_audio(self):
-        """声音传输 启停切换（电脑音频 → 手机）"""
+        """声音传输 启停切换（双向：手机→电脑上传播放 + 电脑音频→手机播放）"""
         try:
             if self.manager._pc_audio_running:
                 self.manager.stop_pc_audio()
+                self.manager.send_action("audio_stop")
                 self.audio_btn.setText("开始声音传输")
             else:
                 self.manager.start_pc_audio()
+                self.manager.send_action("audio_start")
                 self.audio_btn.setText("停止声音传输")
+        except RuntimeError as e:
+            # 显示具体的音频错误信息
+            dark_msg_box(self, QMessageBox.Warning, "音频启动失败", f"{str(e)}\n\n请检查:\n1. 是否已安装pyaudio (pip install pyaudio)\n2. 音频设备是否被其他程序占用\n3. 是否需要以管理员身份运行")
         except Exception as e:
             dark_msg_box(self, QMessageBox.Warning, "操作失败", f"声音传输操作出错: {e}")
+

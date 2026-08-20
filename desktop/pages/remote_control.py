@@ -26,8 +26,8 @@ class RemoteControlPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("远程控制")
         title.setObjectName("titleLabel")

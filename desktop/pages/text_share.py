@@ -14,6 +14,7 @@ from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel,
                             setFont, FluentIcon as FIF,
                             InfoBar, InfoBarPosition)
 from styles import get_theme, _c, set_item_text_color, dark_dialog_style, dark_msg_box
+from pages.receive_popup import ReceivePopupWindow
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), "PhoneHub", "data")
 HISTORY_FILE = os.path.join(DATA_DIR, "text_history.json")
@@ -35,8 +36,8 @@ class TextSharePage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("文字互传")
         setFont(title, 28, QFont.Bold)
@@ -44,7 +45,7 @@ class TextSharePage(QWidget):
 
         send_frame = CardWidget()
         send_layout = QVBoxLayout(send_frame)
-        send_layout.setContentsMargins(14, 14, 14, 14)
+        send_layout.setContentsMargins(16, 14, 16, 14)
         send_layout.setSpacing(10)
 
         name_row = QHBoxLayout()
@@ -75,7 +76,7 @@ class TextSharePage(QWidget):
 
         recv_frame = CardWidget()
         recv_layout = QVBoxLayout(recv_frame)
-        recv_layout.setContentsMargins(14, 14, 14, 14)
+        recv_layout.setContentsMargins(16, 14, 16, 14)
         recv_layout.setSpacing(10)
 
         recv_label = BodyLabel("收到的文字:")
@@ -99,13 +100,15 @@ class TextSharePage(QWidget):
 
         history_frame = CardWidget()
         history_layout = QVBoxLayout(history_frame)
-        history_layout.setContentsMargins(14, 14, 14, 14)
+        history_layout.setContentsMargins(16, 14, 16, 14)
         history_layout.setSpacing(10)
         hist_header = QHBoxLayout()
-        hist_header.addWidget(BodyLabel("历史记录"))
+        hist_title = BodyLabel("历史记录")
+        setFont(hist_title, 14, QFont.Bold)
+        hist_header.addWidget(hist_title)
         self.search_input = LineEdit()
         self.search_input.setPlaceholderText("搜索历史...")
-        self.search_input.setMaximumWidth(250)
+        self.search_input.setMaximumWidth(320)
         hist_header.addStretch()
         hist_header.addWidget(self.search_input)
         history_layout.addLayout(hist_header)
@@ -145,8 +148,8 @@ class TextSharePage(QWidget):
         """保留原文件名后缀，无后缀时才补 .txt"""
         if not name:
             return f"text_{int(time.time())}.txt"
-        # 如果已有后缀（如 .md .json），直接使用；否则补 .txt
-        if '.' in name and not name.endswith('.') and name.rsplit('.', 1)[-1].isalnum():
+        # 如果文件名中包含点（.），说明有扩展名，直接使用；否则补 .txt
+        if '.' in name:
             return name
         return name + '.txt'
 
@@ -172,6 +175,13 @@ class TextSharePage(QWidget):
         self._last_recv_filename = filename
         # filename 随历史记录一起保存
         self._add_history(text, filename, "手机")
+        # 收到文字：弹出独立提示框（页面内显示保留）
+        try:
+            if not hasattr(self, '_receive_popup') or self._receive_popup is None:
+                self._receive_popup = ReceivePopupWindow(parent=None)
+            self._receive_popup.show_text(text, filename)
+        except Exception:
+            pass
 
     def _add_history(self, text, filename, source):
         entry = {'text': text, 'filename': filename, 'source': source, 'time': time.time()}

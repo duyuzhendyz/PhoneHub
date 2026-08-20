@@ -32,7 +32,7 @@ class MainWindow(FluentWindow):
         super().__init__()
         self.setWindowTitle("PhoneHub")
         self.resize(1000, 680)
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(960, 640)
 
         # 替换默认的弹出动画为更流畅的滑入滑出过渡动画
         # 注意：必须在 _create_pages 之前调用，这样 addSubInterface 会使用新的 view
@@ -145,18 +145,20 @@ class MainWindow(FluentWindow):
         self.manager.power_action_received.connect(self._on_power_action)
 
     def _on_connection_changed(self, connected, channel):
+        c = _c()
         if connected:
             channel_names = {"wifi": "WiFi直连", "paw": "PAW中转", "adb": "USB数据线"}
             self.status_label.setText(f"已连接 — {channel_names.get(channel, channel)}")
-            self.status_label.setStyleSheet("color: #6CCB5F; font-size: 12px; font-weight: 500;")
+            self.status_label.setStyleSheet(f"color:{c['success']}; font-size: 12px; font-weight: 500;")
         else:
             self.status_label.setText("未连接")
-            self.status_label.setStyleSheet("color: #FF99A4; font-size: 12px;")
+            self.status_label.setStyleSheet(f"color:{c['error']}; font-size: 12px;")
 
     def _on_connection_message(self, message):
+        c = _c()
         if not self.manager.phone_connected:
             self.status_label.setText(message)
-            self.status_label.setStyleSheet("color: #FCE100; font-size: 12px;")
+            self.status_label.setStyleSheet(f"color:{c['warning']}; font-size: 12px;")
 
     def _on_power_action(self, action_type):
         if action_type in ('shutdown', 'reboot'):
@@ -191,6 +193,7 @@ class MainWindow(FluentWindow):
                 if remaining[0] <= 0:
                     timer.stop()
                     dlg.accept()
+                    self._release_power_dlg(dlg)
                 else:
                     countdown_label.setText(str(remaining[0]))
                     progress.setValue(remaining[0])
@@ -207,9 +210,19 @@ class MainWindow(FluentWindow):
                 except Exception:
                     pass
                 dlg.reject()
+                self._release_power_dlg(dlg)
 
             cancel_btn.clicked.connect(on_cancel)
-            dlg.exec_()
+            # 非阻塞显示，避免 exec_() 阻塞主事件循环（30s 倒计时期间 UI 仍可响应）
+            self._power_dlg = dlg
+            dlg.setWindowModality(Qt.ApplicationModal)
+            dlg.show()
+
+    def _release_power_dlg(self, dlg):
+        """关闭后释放电源弹窗，避免 self._power_dlg 持有引用造成内存泄漏"""
+        if getattr(self, '_power_dlg', None) is dlg:
+            self._power_dlg = None
+            dlg.deleteLater()
 
     def _start_f3_listener(self):
         """启动 F3 全局热键监听线程"""

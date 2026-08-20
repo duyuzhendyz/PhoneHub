@@ -36,8 +36,8 @@ class ApkInstallPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("APK 安装")
         title.setObjectName("titleLabel")
@@ -52,33 +52,33 @@ class ApkInstallPage(QWidget):
         c = _c()
         drop_frame.setStyleSheet(
             f"QFrame {{ background-color: {c['surface']}; "
-            f"border: 2px dashed {c['accent']}; border-radius: 8px; }}"
+            f"border: 2px dashed {c['accent']}; border-radius: 8px; cursor: pointer; }}"
         )
         drop_layout = QVBoxLayout(drop_frame)
         drop_layout.setContentsMargins(20, 20, 20, 20)
         drop_layout.setSpacing(6)
         drop_layout.setAlignment(Qt.AlignCenter)
 
-        hint = QLabel("拖入 .apk 文件到此处")
+        hint = QLabel("拖入 .apk 文件到此处或点击此处选择")
         hint.setAlignment(Qt.AlignCenter)
         c = _c()
         hint.setStyleSheet(f"color: {c['text']}; font-size: 16px; background-color: transparent; border: none;")
         drop_layout.addWidget(hint)
 
-        hint2 = BodyLabel("或点击下方按钮选择文件")
+        hint2 = BodyLabel(".apk 格式，仅支持 ADB 通道")
         hint2.setAlignment(Qt.AlignCenter)
+        hint2.setStyleSheet(f"color: {c['text_secondary']}; font-size: 14px; background-color: transparent; border: none;")
         drop_layout.addWidget(hint2)
-
-        hint3 = BodyLabel("仅支持 ADB 通道安装（WiFi 模式不可用）")
-        hint3.setAlignment(Qt.AlignCenter)
-        drop_layout.addWidget(hint3)
+        
+        drop_frame.mousePressEvent = lambda event: self._on_drop_frame_click()  # 添加点击事件
         layout.addWidget(drop_frame)
 
         actions_frame = CardWidget()
         actions_layout = QHBoxLayout(actions_frame)
 
-        self.select_btn = PrimaryPushButton("选择 APK 安装")
-        actions_layout.addWidget(self.select_btn)
+        # 合并后，选择按钮不再需要，因为点击拖放区域即可
+        # self.select_btn = PrimaryPushButton("选择 APK 安装")
+        # actions_layout.addWidget(self.select_btn)
 
         self.cancel_btn = PushButton("取消")
         self.cancel_btn.setEnabled(False)
@@ -105,7 +105,7 @@ class ApkInstallPage(QWidget):
         layout.addWidget(history_frame)
 
     def _connect_signals(self):
-        self.select_btn.clicked.connect(self._select_apk)
+        # self.select_btn.clicked.connect(self._select_apk)  # 合并后不再需要
         self.cancel_btn.clicked.connect(self._cancel)
         self.install_progress.connect(self._on_progress)
         self.install_done.connect(self._on_done)
@@ -127,11 +127,15 @@ class ApkInstallPage(QWidget):
                 self.channel_label.setText(f"当前通道: {ch} (WiFi 模式不支持 APK 安装，请使用 ADB)")
             else:
                 self.channel_label.setText(f"当前通道: {ch} (未连接)")
-            # 仅 ADB 通道且未在安装中时启用选择按钮
-            self.select_btn.setEnabled(ch == "adb" and not self._installing)
-            self.cancel_btn.setEnabled(self._installing)
+            # 仅 ADB 通道且未在安装中时启用拖放区域（视觉上通过样式变化提示）
+            # 由于 select_btn 已合并到拖放区，不再需要单独控制其状态
         except Exception:
             pass
+
+    def _on_drop_frame_click(self):
+        """点击拖放区域等同于点击选择按钮"""
+        if not self._installing and self.manager.current_channel == "adb":
+            self._select_apk()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -166,7 +170,6 @@ class ApkInstallPage(QWidget):
             self._show_message(QMessageBox.Warning, "文件不存在", apk_path)
             return
         self._installing = True
-        self.select_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress_bar.setValue(0)
         self._pending_apk_path = apk_path

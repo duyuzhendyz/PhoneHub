@@ -41,8 +41,8 @@ class AppManagerPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         # 标题行：标题在左，同步时间在右
         title_row = QHBoxLayout()
@@ -59,6 +59,8 @@ class AppManagerPage(QWidget):
 
         ctrl_frame = CardWidget()
         ctrl_layout = QHBoxLayout(ctrl_frame)
+        ctrl_layout.setContentsMargins(16, 12, 16, 12)
+        ctrl_layout.setSpacing(10)
 
         self.refresh_btn = PrimaryPushButton("加载应用列表")
         ctrl_layout.addWidget(self.refresh_btn)
@@ -76,12 +78,14 @@ class AppManagerPage(QWidget):
 
         self.search_input = LineEdit()
         self.search_input.setPlaceholderText("搜索应用名/包名...")
-        self.search_input.setMaximumWidth(250)
+        self.search_input.setMaximumWidth(300)
         ctrl_layout.addWidget(self.search_input)
         layout.addWidget(ctrl_frame)
 
         progress_frame = CardWidget()
         progress_layout = QVBoxLayout(progress_frame)
+        progress_layout.setContentsMargins(16, 12, 16, 12)
+        progress_layout.setSpacing(8)
         self.status_label = BodyLabel("等待操作...")
         progress_layout.addWidget(self.status_label)
         self.progress_bar = ProgressBar()
@@ -92,7 +96,7 @@ class AppManagerPage(QWidget):
         # 使用 TableWidget 显示应用列表
         list_frame = CardWidget()
         list_layout = QVBoxLayout(list_frame)
-        list_layout.setContentsMargins(2, 2, 2, 2)
+        list_layout.setContentsMargins(8, 8, 8, 8)
         self.table = TableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["应用名", "包名", "版本", "大小", "安装时间"])

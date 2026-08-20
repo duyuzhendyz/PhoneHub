@@ -118,6 +118,7 @@ class ConnectionManager(QObject):
     camera_frame_received = pyqtSignal(bytes)  # 手机摄像头画面帧 (JPEG bytes)
     phone_audio_received = pyqtSignal(bytes)  # 手机端音频数据
     phone_volume_received = pyqtSignal(int)   # 手机端媒体音量变化
+    phone_mute_received = pyqtSignal(bool)    # 手机静音状态变化
     clipboard_history_received = pyqtSignal(list)  # 手机端剪贴板历史同步（list of {content, source, timestamp, favorite}）
 
     def __init__(self):
@@ -135,14 +136,17 @@ class ConnectionManager(QObject):
         self.app.logger.removeHandler(default_handler)
         werkzeug_logger = logging.getLogger('werkzeug')
         werkzeug_logger.removeHandler(default_handler)
-        werkzeug_fh = logging.FileHandler(self.LOG_FILE, encoding='utf-8')
-        werkzeug_fh.setLevel(logging.INFO)
-        werkzeug_fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-        werkzeug_logger.addHandler(werkzeug_fh)
+        # 仅首次实例化添加文件 handler，避免多次 __init__ 造成句柄累积
+        if not werkzeug_logger.handlers:
+            self._werkzeug_fh = logging.FileHandler(self.LOG_FILE, encoding='utf-8')
+            self._werkzeug_fh.setLevel(logging.INFO)
+            self._werkzeug_fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+            werkzeug_logger.addHandler(self._werkzeug_fh)
         self.server_thread = None
         self.is_running = False
         self.port = self.DEFAULT_PORT
         self.device_id = str(uuid.uuid4())
+        self._last_power_cmd_time = 0.0  # 危险电源命令频率限制（30s 内一次）
 
         self.phone_connected = False
         self.current_channel = CHANNEL_NONE
@@ -166,15 +170,21 @@ class ConnectionManager(QObject):
         self.file_transfer_active = False
         self.current_file_id = None
         self.last_transfer_progress_time = 0.0  # 最近一次进度信号时间（秒级时间戳）
+        self._last_upload_emit_time = 0.0  # 上传进度信号 0.1s 节流
+        self._last_download_emit_time = 0.0  # 下载进度信号 0.1s 节流
         self.file_transfer_cancel = False
         self._transfer_paused = False
         # save.md：接收文件统一存到 F:\desk\手机上传
         self.receive_dir = r"F:\desk\手机上传"
         try:
             os.makedirs(self.receive_dir, exist_ok=True)
-        except Exception:
+        except Exception as e:
+            logger.warning("默认接收目录不可用(%s)，回退到用户目录: %s", e, self.receive_dir)
             self.receive_dir = os.path.expanduser("~/PhoneHub/Received")
-            os.makedirs(self.receive_dir, exist_ok=True)
+            try:
+                os.makedirs(self.receive_dir, exist_ok=True)
+            except Exception as e2:
+                logger.warning("回退接收目录创建失败: %s", e2)
 
         self.cmd_queue = deque()
         self.msg_queue = deque()
@@ -211,6 +221,12 @@ class ConnectionManager(QObject):
         self.outgoing_file_path = None
         self.outgoing_file_id = None
         self.outgoing_file_size = 0
+
+        # 文件冲突等待处理（PC→手机方向的文件下载冲突）
+        self._pending_conflict = {}
+        self._conflict_lock = threading.Lock()
+        # 标志：是否正在等待UI处理冲突解析（用于避免重复弹窗）
+        self._awaiting_conflict_resolution = False
 
         # 升降级计数器
         self.upgrade_confirm = {}  # channel -> count
@@ -409,6 +425,11 @@ class ConnectionManager(QObject):
             # 更新手机 IP 和通道状态
             _update_phone_connection()
 
+            def delete_pending_conflict(file_id):
+                with self._conflict_lock:
+                    if file_id in self._pending_conflict:
+                        del self._pending_conflict[file_id]
+
             with self.queue_lock:
                 self.cmd_queue.append(data)
 
@@ -438,8 +459,38 @@ class ConnectionManager(QObject):
                 file_size = body.get('file_size', body.get('fileSize', 0))
                 file_id = body.get('file_id', body.get('fileId', ''))
                 self.log_phone_request("发送文件", f"name={file_name}, size={file_size}, id={file_id}")
-                self._start_file_receive(file_id, file_name, file_size)
-                self.file_receive_started.emit(file_name, file_size, file_id)
+                
+                # Check for file conflict before starting receive
+                conflict_target = os.path.join(self.receive_dir, file_name)
+                if os.path.exists(conflict_target):
+                    # File exists - send conflict notification to phone instead of proceeding
+                    self.log_phone_request("文件冲突", f"{file_name} 已存在，等待手机决策")
+                    # Store conflict info temporarily
+                    with self._conflict_lock:
+                        self._pending_conflict[file_id] = {
+                            'file_name': file_name,
+                            'file_size': file_size,
+                            'target_path': conflict_target,
+                            'timestamp': time.time()
+                        }
+                    # Send conflict notification to phone
+                    conflict_msg = {
+                        "token": self.secret_token,
+                        "activate": "send",
+                        "source": "pc",
+                        "data": {
+                            "action": "file_conflict",
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "file_size": file_size,
+                            "existing_file": os.path.basename(conflict_target)
+                        }
+                    }
+                    self._send_to_phone(conflict_msg)
+                    # Do NOT emit file_receive_started yet; wait for phone's response
+                else:
+                    self._start_file_receive(file_id, file_name, file_size)
+                    self.file_receive_started.emit(file_name, file_size, file_id)
             elif action == 'transfer_control':
                 # 手机端发来的传输控制消息（暂停/继续/取消）
                 ctrl = body.get('ctrl', '')
@@ -484,6 +535,9 @@ class ConnectionManager(QObject):
                 cpu_val = body.get('cpu', body.get('memory_usage', 0))
                 self.phone_cpu_received.emit(float(cpu_val))
                 self.phone_status_received.emit(body)
+                # 从状态报告中提取静音信息
+                if 'muted' in body:
+                    self.phone_mute_received.emit(bool(body['muted']))
             elif action == 'notification':
                 self.notification_received.emit(body)
             elif action == 'location':
@@ -550,7 +604,15 @@ class ConnectionManager(QObject):
             elif action == 'volume_changed':
                 # 手机端当前媒体音量（滑块同步 + 实时变化）
                 try:
-                    self.phone_volume_received.emit(int(body.get('volume', 0)))
+                    volume = int(body.get('volume', 0))
+                    muted = body.get('muted')
+                    self.phone_volume_received.emit(volume)
+                    # 如果显式提供了 muted 状态，则更新静音状态
+                    if muted is not None:
+                        self.phone_mute_received.emit(bool(muted))
+                    elif volume == 0:
+                        # 音量为 0 时视为静音（兼容旧版本）
+                        self.phone_mute_received.emit(True)
                 except Exception:
                     pass
             elif action == 'url_history_sync':
@@ -563,6 +625,66 @@ class ConnectionManager(QObject):
                 items = body.get('items', [])
                 if items:
                     self.clipboard_history_received.emit(items)
+            elif action == 'file_conflict_response':
+                # 手机对文件冲突的响应：overwrite/rename/skip + 新文件名（如重命名）
+                file_id = body.get('file_id', '')
+                choice = body.get('choice', '')  # "overwrite", "rename", "skip"
+                new_name = body.get('new_name', '')  # 仅当选择 rename 时有效
+                
+                self.log_phone_request("文件冲突响应", f"file_id={file_id}, choice={choice}, new_name={new_name}")
+                
+                with self._conflict_lock:
+                    conflict_info = self._pending_conflict.get(file_id)
+                if conflict_info is not None:
+                    
+                    if choice == "overwrite":
+                        # 删除旧文件，继续接收
+                        try:
+                            os.remove(conflict_info['target_path'])
+                        except Exception:
+                            pass
+                        # 使用原文件名
+                        resolved_file_name = conflict_info['file_name']
+                        # 设置标志告知UI已解决冲突，无需再次弹窗
+                        self._awaiting_conflict_resolution = True
+                        self._start_file_receive(file_id, resolved_file_name, conflict_info['file_size'])
+                        self.file_receive_started.emit(resolved_file_name, conflict_info['file_size'], file_id)
+                        # 清除标志（UI处理完后会自行恢复，但为保险起见在此重置）
+                        self._awaiting_conflict_resolution = False
+                        delete_pending_conflict(file_id)
+                    elif choice == "rename":
+                        # 使用新的文件名继续接收
+                        if new_name and new_name != conflict_info['file_name']:
+                            self._awaiting_conflict_resolution = True
+                            self._start_file_receive(file_id, new_name, conflict_info['file_size'])
+                            self.file_receive_started.emit(new_name, conflict_info['file_size'], file_id)
+                            self._awaiting_conflict_resolution = False
+                        else:
+                            # 如果没有提供新文件名，自动添加序号
+                            base, ext = os.path.splitext(conflict_info['file_name'])
+                            i = 1
+                            while True:
+                                new_name = f"{base}({i}){ext}"
+                                if not os.path.exists(os.path.join(self.receive_dir, new_name)):
+                                    break
+                                i += 1
+                            self._awaiting_conflict_resolution = True
+                            self._start_file_receive(file_id, new_name, conflict_info['file_size'])
+                            self.file_receive_started.emit(new_name, conflict_info['file_size'], file_id)
+                            self._awaiting_conflict_resolution = False
+                        delete_pending_conflict(file_id)
+                    elif choice == "skip":
+                        # 取消传输，发送拒绝消息给手机
+                        self.send_file_reject(file_id, "用户跳过")
+                        self.cancel_transfer()
+                        delete_pending_conflict(file_id)
+                    else:
+                        # 未知选择，跳过
+                        self.send_file_reject(file_id, "无效的选择")
+                        self.cancel_transfer()
+                        delete_pending_conflict(file_id)
+                else:
+                    self.log_phone_request("文件冲突响应", f"找不到冲突记录 file_id={file_id}")
 
             return jsonify({'status': 'ok', 'cpu': self._cached_cpu})
 
@@ -602,7 +724,13 @@ class ConnectionManager(QObject):
                         written += len(chunk)
                         self.current_receive_written = written
                         self.last_transfer_progress_time = time.time()
-                        self.file_transfer_progress.emit(file_id, written, file_size, time.time())
+                        # 进度信号节流：最多每 0.1s 发一次，仅更新计数不中断接收
+                        now = time.time()
+                        if file_size > 0 and written >= file_size:
+                            self.file_transfer_progress.emit(file_id, written, file_size, now)
+                        elif now - self._last_upload_emit_time >= 0.1:
+                            self._last_upload_emit_time = now
+                            self.file_transfer_progress.emit(file_id, written, file_size, now)
                 if self.file_transfer_cancel:
                     return jsonify({'status': 'cancelled', 'written': written}), 400
                 # 接收完成
@@ -655,10 +783,14 @@ class ConnectionManager(QObject):
                             yield data
                             sent += len(data)
                             self.last_transfer_progress_time = time.time()
-                            try:
-                                self.file_transfer_progress.emit(file_id, sent, file_size, time.time())
-                            except Exception:
-                                pass
+                            # 进度信号节流：最多每 0.1s 发一次，完成那次必发（与上传方向对称）
+                            now = time.time()
+                            if sent >= file_size or now - self._last_download_emit_time >= 0.1:
+                                self._last_download_emit_time = now
+                                try:
+                                    self.file_transfer_progress.emit(file_id, sent, file_size, now)
+                                except Exception:
+                                    pass
                 except Exception as e:
                     print(f"download_file generate error: {e}")
 
@@ -737,6 +869,18 @@ class ConnectionManager(QObject):
                 from flask import Response
                 return Response(frame, mimetype='image/jpeg')
             return ('', 204)
+
+        @self.app.route('/api/pc_camera_command', methods=['POST'])
+        def pc_camera_command():
+            """S8b: 手机端请求启动/停止电脑摄像头推流"""
+            data = request.get_json(force=True)
+            action = data.get('action', '')
+            self.log_phone_request("电脑摄像头控制", f"action={action}")
+            if action == 'start':
+                self.start_pc_camera()
+            elif action == 'stop':
+                self.stop_pc_camera()
+            return jsonify({'ok': True})
 
         @self.app.route('/api/phone_frame', methods=['POST'])
         def receive_phone_frame():
@@ -862,6 +1006,110 @@ class ConnectionManager(QObject):
                 return send_file(file_path, as_attachment=True, download_name=os.path.basename(file_path))
             except PermissionError:
                 return jsonify({'error': 'permission denied, file may be locked by system'}), 403
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/pc_file_info', methods=['POST'])
+        def pc_file_info():
+            """获取电脑文件/目录属性（大小、创建/修改时间、类型）"""
+            self.log_phone_request("获取电脑文件属性")
+            data = request.get_json(force=True)
+            path = data.get('path', '')
+            if not path or not os.path.exists(path):
+                return jsonify({'error': 'not found'}), 404
+            try:
+                stat = os.stat(path)
+                is_dir = os.path.isdir(path)
+                size = 0 if is_dir else stat.st_size
+                return jsonify({
+                    'name': os.path.basename(path) or path,
+                    'path': path,
+                    'is_dir': is_dir,
+                    'size': size,
+                    'created': stat.st_ctime,
+                    'modified': stat.st_mtime,
+                    'ext': os.path.splitext(path)[1].lower().lstrip('.')
+                })
+            except PermissionError:
+                return jsonify({'error': 'permission denied'}), 403
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/pc_file_delete', methods=['POST'])
+        def pc_file_delete():
+            """删除电脑文件/目录（目录需递归删除）"""
+            self.log_phone_request("删除电脑文件")
+            data = request.get_json(force=True)
+            path = data.get('path', '')
+            if not path or not os.path.exists(path):
+                return jsonify({'error': 'not found'}), 404
+            basename = os.path.basename(path).lower()
+            if basename in ('desktop.ini', 'thumbs.db', '.ds_store'):
+                return jsonify({'error': 'system file, not deletable'}), 403
+            try:
+                if os.path.isdir(path):
+                    import shutil
+                    shutil.rmtree(path, ignore_errors=False)
+                else:
+                    os.remove(path)
+                return jsonify({'ok': True})
+            except PermissionError:
+                return jsonify({'error': 'permission denied'}), 403
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/pc_file_rename', methods=['POST'])
+        def pc_file_rename():
+            """重命名电脑文件/目录"""
+            self.log_phone_request("重命名电脑文件")
+            data = request.get_json(force=True)
+            old_path = data.get('path', '')
+            new_name = data.get('new_name', '')
+            if not old_path or not os.path.exists(old_path) or not new_name:
+                return jsonify({'error': 'not found or empty new_name'}), 404
+            # 防止移动到其它目录
+            if '/' in new_name or '\\' in new_name or ':' in new_name:
+                return jsonify({'error': 'invalid name'}), 400
+            parent = os.path.dirname(old_path)
+            new_path = os.path.join(parent, new_name)
+            if os.path.exists(new_path):
+                return jsonify({'error': 'target exists'}), 409
+            try:
+                os.rename(old_path, new_path)
+                return jsonify({'ok': True, 'path': new_path})
+            except PermissionError:
+                return jsonify({'error': 'permission denied'}), 403
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/pc_file_copy', methods=['POST'])
+        def pc_file_copy():
+            """复制电脑文件/目录到目标目录"""
+            self.log_phone_request("复制电脑文件")
+            data = request.get_json(force=True)
+            src = data.get('path', '')
+            dest_dir = data.get('dest_dir', '')
+            if not src or not os.path.exists(src) or not dest_dir or not os.path.isdir(dest_dir):
+                return jsonify({'error': 'source or destination invalid'}), 404
+            basename = os.path.basename(src).lower()
+            if os.path.isfile(src) and basename in ('desktop.ini', 'thumbs.db', '.ds_store'):
+                return jsonify({'error': 'system file, not copyable'}), 403
+            try:
+                import shutil
+                target = os.path.join(dest_dir, os.path.basename(src))
+                if os.path.exists(target):
+                    base, ext = os.path.splitext(os.path.basename(src))
+                    i = 1
+                    while os.path.exists(target):
+                        target = os.path.join(dest_dir, f"{base}_{i}{ext}")
+                        i += 1
+                if os.path.isdir(src):
+                    shutil.copytree(src, target)
+                else:
+                    shutil.copy2(src, target)
+                return jsonify({'ok': True, 'path': target})
+            except PermissionError:
+                return jsonify({'error': 'permission denied'}), 403
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
@@ -1237,9 +1485,15 @@ class ConnectionManager(QObject):
             self.phone_cpu_received.emit(float(msg_data.get('cpu', 0)))
         elif action == 'phone_status':
             self.phone_status_received.emit(msg_data)
+            # 从PAW状态中提取静音信息（注意：PAW消息中的msg_data即是body）
+            if 'muted' in msg_data:
+                self.phone_mute_received.emit(bool(msg_data['muted']))
         elif action == 'status':
             # PAW通道手机状态上报（与WiFi/ADB通道保持一致）
             self.phone_status_received.emit(msg_data)
+            # 从PAW状态中提取静音信息
+            if 'muted' in msg_data:
+                self.phone_mute_received.emit(bool(msg_data['muted']))
             # 更新最后心跳时间，维持连接状态
             self.last_phone_seen = time.time()
         elif action == 'notification':
@@ -1275,7 +1529,12 @@ class ConnectionManager(QObject):
                 self.clipboard_history_received.emit(items)
         elif action == 'volume_changed':
             try:
-                self.phone_volume_received.emit(int(msg_data.get('volume', 0)))
+                volume = int(msg_data.get('volume', 0))
+                self.phone_volume_received.emit(volume)
+                # 如果PAW消息中包含了静音状态，也更新
+                if msg_data.get('muted') is not None:
+                    self.phone_mute_received.emit(bool(msg_data['muted']))
+                # PAW通道不处理静音，由音量变化推断
             except Exception:
                 pass
         elif action == 'url_history_sync':
@@ -2257,6 +2516,16 @@ class ConnectionManager(QObject):
         """开始捕获电脑音频推流给手机"""
         if self._pc_audio_running:
             return
+        # 提前检查pyaudio是否可用
+        try:
+            import pyaudio
+            p = pyaudio.PyAudio()
+            p.terminate()
+        except ImportError:
+            raise RuntimeError("pyaudio未安装，请运行: pip install pyaudio")
+        except Exception as e:
+            raise RuntimeError(f"无法初始化音频设备: {e}")
+        
         self._pc_audio_running = True
         self._pc_audio_thread = threading.Thread(target=self._pc_audio_loop, daemon=True)
         self._pc_audio_thread.start()
@@ -2324,18 +2593,25 @@ class ConnectionManager(QObject):
                     if data:
                         with self._pc_audio_lock:
                             self._latest_pc_audio = data
-                except Exception:
+                except Exception as e:
+                    # 如果流因权限或设备被占用而失败，只记录一次错误
+                    if "stream" in str(e).lower() or "device" in str(e).lower():
+                        self.log(f"[audio] 音频捕获设备错误或权限不足: {e}")
+                        break
                     pass
                 time.sleep(0.01)
             stream.stop_stream()
             stream.close()
             p.terminate()
         except ImportError:
-            print("[audio] pyaudio 未安装，无法传输音频: pip install pyaudio")
-            self._pc_audio_running = False
+            raise RuntimeError("pyaudio未安装，无法进行声音传输。请运行: pip install pyaudio")
         except Exception as e:
-            print(f"[audio] 音频捕获失败: {e}")
-            self._pc_audio_running = False
+            # 捕获音频设备相关的错误，提供具体信息
+            error_msg = str(e)
+            if "winerror" in error_msg.lower() or "portaudio" in error_msg.lower() or "device" in error_msg.lower():
+                raise RuntimeError(f"音频设备访问失败:\n{error_msg}\n\n可能原因:\n1. 音频设备被其他程序占用\n2. 缺少loopback立体声混音设备权限\n3. 需要以管理员身份运行电脑端程序")
+            else:
+                raise RuntimeError(f"音频捕获出错: {error_msg}")
 
     def _kill_pc_process(self, pid):
         """结束电脑上的指定进程"""
@@ -2507,6 +2783,14 @@ class ConnectionManager(QObject):
     def _handle_power_action(self, action_type):
         """执行电脑电源管理指令（所有通道均可用）"""
         try:
+            # 危险操作（关机/重启/休眠/睡眠）加 30s 频率限制，防误触/滥用
+            destructive = ('shutdown', 'reboot', 'sleep', 'hibernate')
+            if action_type in destructive:
+                now = time.time()
+                if now - self._last_power_cmd_time < 30:
+                    self.log(f"[power] 拒绝执行 {action_type}：30 秒内已触发过电源操作")
+                    return
+                self._last_power_cmd_time = now
             if action_type == 'lock':
                 subprocess.Popen('rundll32.exe user32.dll,LockWorkStation', shell=True)
             elif action_type in ('sleep', 'hibernate'):

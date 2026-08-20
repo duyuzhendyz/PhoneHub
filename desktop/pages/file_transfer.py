@@ -12,6 +12,7 @@ from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel,
                             InfoBar, InfoBarPosition,
                             setFont, FluentIcon as FIF)
 from styles import get_theme, _c, set_item_text_color, dark_dialog_style, dark_msg_box
+from pages.receive_popup import ReceivePopupWindow
 
 
 class ConflictDialog(QDialog):
@@ -70,8 +71,6 @@ class ConflictDialog(QDialog):
 
 
 class FileTransferPage(QWidget):
-    RECEIVE_DIR = r"F:\desk\手机上传"
-
     def __init__(self, manager):
         super().__init__()
         self.manager = manager
@@ -93,8 +92,8 @@ class FileTransferPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("文件传输")
         setFont(title, 28, QFont.Bold)
@@ -102,6 +101,8 @@ class FileTransferPage(QWidget):
 
         actions_frame = CardWidget()
         actions_layout = QHBoxLayout(actions_frame)
+        actions_layout.setContentsMargins(16, 12, 16, 12)
+        actions_layout.setSpacing(10)
 
         self.send_file_btn = PrimaryPushButton("选择文件发送")
         actions_layout.addWidget(self.send_file_btn)
@@ -127,6 +128,8 @@ class FileTransferPage(QWidget):
 
         self.progress_frame = CardWidget()
         progress_layout = QVBoxLayout(self.progress_frame)
+        progress_layout.setContentsMargins(16, 14, 16, 14)
+        progress_layout.setSpacing(8)
 
         self.current_file_label = BodyLabel("等待传输...")
         progress_layout.addWidget(self.current_file_label)
@@ -149,7 +152,11 @@ class FileTransferPage(QWidget):
 
         history_frame = CardWidget()
         history_layout = QVBoxLayout(history_frame)
-        history_layout.addWidget(BodyLabel("传输历史"))
+        history_layout.setContentsMargins(16, 14, 16, 14)
+        history_layout.setSpacing(8)
+        hist_title = BodyLabel("传输历史")
+        setFont(hist_title, 14, QFont.Bold)
+        history_layout.addWidget(hist_title)
         self.history_list = ListWidget()
         history_layout.addWidget(self.history_list)
         layout.addWidget(history_frame)
@@ -624,6 +631,8 @@ class FileTransferPage(QWidget):
         record = f"[{time.strftime('%H:%M:%S')}] 已接收: {name}"
         self._completed_records.append(record)
         self._show_completion_ui()
+        # 接收完成：弹出独立接收提示框（页面内显示保留不动）
+        self._popup_file_received(name, file_path)
 
     def _on_receive_started(self, file_name, file_size, file_id):
         # 手机端发来的文件：弹出重名选择（非阻塞），选择后由回调接受/拒绝
@@ -669,3 +678,13 @@ class FileTransferPage(QWidget):
         self.cancel_btn.setEnabled(False)
         self.done_btn.setVisible(True)
         self.done_btn.setEnabled(True)
+
+    def _popup_file_received(self, name, file_path):
+        """收到文件时弹出独立提示框（页面内显示保留）"""
+        try:
+            if not hasattr(self, '_receive_popup') or self._receive_popup is None:
+                self._receive_popup = ReceivePopupWindow(parent=None)
+            recv_dir = getattr(self.manager, 'receive_dir', '')
+            self._receive_popup.show_file(name, self._current_file_size, file_path, fallback_dir=recv_dir)
+        except Exception:
+            pass

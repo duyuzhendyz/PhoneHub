@@ -112,8 +112,8 @@ class _LocationMapPageDisabled(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = QLabel("移动路线图")
         title.setObjectName("titleLabel")
@@ -407,8 +407,8 @@ class LocationMapPage(QWidget):
     def _setup_ui(self):
         """构建简单的提示页面"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
 
         # 标题
         title = TitleLabel("移动路线图")

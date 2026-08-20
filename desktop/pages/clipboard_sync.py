@@ -39,8 +39,8 @@ class ClipboardSyncPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("剪贴板同步")
         setFont(title, 28, QFont.Bold)
@@ -62,6 +62,7 @@ class ClipboardSyncPage(QWidget):
 
         self.search_input = LineEdit()
         self.search_input.setPlaceholderText("搜索剪贴板历史...")
+        self.search_input.setMaximumWidth(300)
         actions_layout.addWidget(self.search_input)
 
         actions_layout.addStretch()
@@ -77,7 +78,7 @@ class ClipboardSyncPage(QWidget):
 
         self.clip_content = TextEdit()
         self.clip_content.setReadOnly(True)
-        self.clip_content.setMaximumHeight(100)
+        self.clip_content.setMaximumHeight(140)
         content_layout.addWidget(self.clip_content)
 
         btn_row = QHBoxLayout()
@@ -101,7 +102,7 @@ class ClipboardSyncPage(QWidget):
         # Tab content (stacked, visibility controlled by tab bar)
         history_frame = CardWidget()
         history_layout = QVBoxLayout(history_frame)
-        history_layout.setContentsMargins(10, 10, 10, 10)
+        history_layout.setContentsMargins(16, 12, 16, 12)
         history_layout.setSpacing(8)
         filter_row = QHBoxLayout()
         self.fav_filter_cb = CheckBox("仅显示收藏")
@@ -115,7 +116,7 @@ class ClipboardSyncPage(QWidget):
 
         fav_frame = CardWidget()
         fav_layout = QVBoxLayout(fav_frame)
-        fav_layout.setContentsMargins(10, 10, 10, 10)
+        fav_layout.setContentsMargins(16, 12, 16, 12)
         fav_layout.setSpacing(8)
         self.favorites_list = ListWidget()
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)

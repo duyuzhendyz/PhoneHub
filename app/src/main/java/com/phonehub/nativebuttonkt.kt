@@ -31,11 +31,7 @@ fun Button.applyDarkTheme(primary: Boolean = false) {
             null
         )
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-            background = rippleDrawable
-        } else {
-            setBackgroundDrawable(rippleDrawable)
-        }
+        background = rippleDrawable
 
         setTextColor(Color.WHITE)
     } catch (e: Exception) {

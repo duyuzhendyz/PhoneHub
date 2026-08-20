@@ -70,10 +70,20 @@ class ScreenCaptureService : Service() {
         instance = this
         isRunning = true
         createNotificationChannel()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, buildNotification("屏幕截图服务运行中"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        val notification = buildNotification("屏幕截图服务运行中")
+        // Always use three-parameter startForeground on API 26+ to properly declare foreground service type
+        // This ensures MediaProjection works correctly across all Android versions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Get the foreground service type: use constant on API 29+, else use literal 64 (1 << 6)
+            val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            } else {
+                // For API 26-28, the integer value for MEDIA_PROJECTION type is 64
+                64
+            }
+            startForeground(NOTIFICATION_ID, notification, serviceType)
         } else {
-            startForeground(NOTIFICATION_ID, buildNotification("屏幕截图服务运行中"))
+            startForeground(NOTIFICATION_ID, notification)
         }
         LogUtil.scrI("ScreenCaptureService 创建")
         LogUtil.scrI("Android版本: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")

@@ -179,8 +179,8 @@ class CameraPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("共享摄像头")
         title.setObjectName("titleLabel")
@@ -192,11 +192,10 @@ class CameraPage(QWidget):
 
         ctrl_frame = CardWidget()
         ctrl_layout = QHBoxLayout(ctrl_frame)
+        ctrl_layout.setContentsMargins(16, 12, 16, 12)
+        ctrl_layout.setSpacing(12)
 
-        # 切换手机摄像头（前后置）
-        self.switch_btn = PushButton("切换手机摄像头")
-        self.switch_btn.clicked.connect(self._switch_camera)
-        ctrl_layout.addWidget(self.switch_btn)
+
 
         # 电脑摄像头推流给手机
         self.pc_camera_btn = PrimaryPushButton("电脑摄像头→手机")
@@ -206,26 +205,34 @@ class CameraPage(QWidget):
         self.view_phone_cam_btn = PushButton("查看手机摄像头")
         ctrl_layout.addWidget(self.view_phone_cam_btn)
 
-        # 查看电脑摄像头预览（独立窗口）
-        self.view_pc_cam_btn = PushButton("查看电脑摄像头")
-        ctrl_layout.addWidget(self.view_pc_cam_btn)
+        # 切换手机摄像头镜头（前置/后置）
+        self.switch_phone_cam_btn = PushButton("切换手机镜头")
+        ctrl_layout.addWidget(self.switch_phone_cam_btn)
+
 
         ctrl_layout.addStretch()
         layout.addWidget(ctrl_frame)
 
         # 提示文本
-        self.hint_label = BodyLabel("摄像头画面将在独立窗口中显示。点击「查看手机摄像头」或「查看电脑摄像头」打开预览窗口。")
+        self.hint_label = BodyLabel('"摄像头画面将在独立窗口中显示。点击"查看手机摄像头"或"电脑摄像头→手机"开始推送。')
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
         layout.addStretch()
 
     def _connect_signals(self):
+
         self.pc_camera_btn.clicked.connect(self._toggle_pc_camera)
+
         self.view_phone_cam_btn.clicked.connect(self._open_phone_cam_window)
-        self.view_pc_cam_btn.clicked.connect(self._open_pc_cam_window)
+
+        self.switch_phone_cam_btn.clicked.connect(self._switch_camera)
+
         try:
+
             self.manager.connection_status_changed.connect(lambda c, ch: self._update_button_states())
+
         except Exception:
+
             pass
 
     def _update_button_states(self):
@@ -246,7 +253,7 @@ class CameraPage(QWidget):
         """打开独立手机摄像头查看窗口"""
         try:
             if self._phone_cam_window is None or not self._phone_cam_window.isVisible():
-                self._phone_cam_window = CameraWindow(self.manager, mode="phone", parent=self)
+                self._phone_cam_window = CameraWindow(self.manager, mode="phone")
             self._phone_cam_window.show()
             self._phone_cam_window.raise_()
             self._phone_cam_window.activateWindow()
@@ -257,7 +264,7 @@ class CameraPage(QWidget):
         """打开独立电脑摄像头预览窗口"""
         try:
             if self._pc_cam_window is None or not self._pc_cam_window.isVisible():
-                self._pc_cam_window = CameraWindow(self.manager, mode="pc", parent=self)
+                self._pc_cam_window = CameraWindow(self.manager, mode="pc")
             self._pc_cam_window.show()
             self._pc_cam_window.raise_()
             self._pc_cam_window.activateWindow()
@@ -289,3 +296,5 @@ class CameraPage(QWidget):
             self._camera_active = True
             # 自动打开电脑摄像头预览窗口
             self._open_pc_cam_window()
+
+

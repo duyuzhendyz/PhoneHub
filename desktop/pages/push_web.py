@@ -45,8 +45,8 @@ class PushWebPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("推送网页")
         title.setObjectName("titleLabel")
@@ -56,11 +56,14 @@ class PushWebPage(QWidget):
         # 接收区
         recv_frame = CardWidget()
         recv_layout = QVBoxLayout(recv_frame)
+        recv_layout.setContentsMargins(16, 14, 16, 14)
+        recv_layout.setSpacing(10)
         recv_label = SubtitleLabel("接收手机推送的内容:")
+        setFont(recv_label, 14)
         recv_layout.addWidget(recv_label)
         self.recv_text = TextEdit()
         self.recv_text.setReadOnly(True)
-        self.recv_text.setMaximumHeight(80)
+        self.recv_text.setMaximumHeight(100)
         c = _c()
         self.recv_text.setStyleSheet(f"background-color: {c['bg']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 4px;")
         recv_layout.addWidget(self.recv_text)
@@ -76,7 +79,10 @@ class PushWebPage(QWidget):
         # 发送区
         send_frame = CardWidget()
         send_layout = QVBoxLayout(send_frame)
-        send_label = SubtitleLabel("向手机推送 (URL自动用浏览器打开, 文字通过文字互传发送):")
+        send_layout.setContentsMargins(16, 14, 16, 14)
+        send_layout.setSpacing(10)
+        send_label = SubtitleLabel("向手机推送")
+        setFont(send_label, 14)
         send_layout.addWidget(send_label)
         self.send_input = LineEdit()
         self.send_input.setPlaceholderText("输入URL或文字...")
@@ -94,7 +100,11 @@ class PushWebPage(QWidget):
         # 统一历史记录列表（发送和接收合并显示）
         history_frame = CardWidget()
         history_layout = QVBoxLayout(history_frame)
-        history_label = SubtitleLabel("推送历史 (电脑 -> 手机 表示发送, 电脑 <- 手机 表示接收)")
+        history_layout.setContentsMargins(16, 14, 16, 14)
+        history_layout.setSpacing(8)
+        history_label = SubtitleLabel("推送历史")
+        history_label.setToolTip("电脑 -> 手机 表示发送, 电脑 <- 手机 表示接收")
+        setFont(history_label, 14)
         history_layout.addWidget(history_label)
         self.history_list = ListWidget()
         self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)

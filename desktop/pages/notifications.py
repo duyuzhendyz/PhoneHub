@@ -263,6 +263,14 @@ class NotificationsPage(QWidget):
         # 用户进入通知页时刷新活动通知（不自动请求权限）
         self._request_active_notifications()
 
+    def _poll_active_notifications(self):
+        """1s 周期拉取活动通知；仅内容变化时刷新UI。"""
+        try:
+            if getattr(self.manager, "phone_connected", False):
+                self.manager.send_action("get_active_notifications")
+        except Exception:
+            pass
+
     def _request_active_notifications(self):
         """请求手机端所有活动通知（刷新时先清空旧列表，手机端会重新发送全部活动通知）"""
         try:
@@ -276,8 +284,8 @@ class NotificationsPage(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("通知读取")
         title.setObjectName("titleLabel")
@@ -287,7 +295,7 @@ class NotificationsPage(QWidget):
         # 控制栏
         ctrl_frame = CardWidget()
         ctrl_layout = QHBoxLayout(ctrl_frame)
-        ctrl_layout.setContentsMargins(14, 10, 14, 10)
+        ctrl_layout.setContentsMargins(16, 12, 16, 12)
         ctrl_layout.setSpacing(10)
 
         self.refresh_btn = PrimaryPushButton("刷新活动通知")
@@ -303,7 +311,7 @@ class NotificationsPage(QWidget):
 
         self.search_input = LineEdit()
         self.search_input.setPlaceholderText("搜索通知...")
-        self.search_input.setMaximumWidth(250)
+        self.search_input.setMaximumWidth(320)
         ctrl_layout.addWidget(self.search_input)
         layout.addWidget(ctrl_frame)
 
@@ -314,7 +322,7 @@ class NotificationsPage(QWidget):
         # Tab1: 当前活动通知
         active_tab = QWidget()
         active_layout = QVBoxLayout(active_tab)
-        active_layout.setContentsMargins(10, 10, 10, 10)
+        active_layout.setContentsMargins(16, 12, 16, 12)
         active_layout.setSpacing(8)
 
         active_hint = BodyLabel("当前手机端正在显示的通知，可远程操作按钮、删除通知")
@@ -329,7 +337,7 @@ class NotificationsPage(QWidget):
         # Tab2: 历史记录
         history_tab = QWidget()
         hist_layout = QVBoxLayout(history_tab)
-        hist_layout.setContentsMargins(10, 10, 10, 10)
+        hist_layout.setContentsMargins(16, 12, 16, 12)
         hist_layout.setSpacing(8)
 
         hist_hint = BodyLabel("所有收到过的通知历史（仅本地保存）")

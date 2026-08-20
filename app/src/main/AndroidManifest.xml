@@ -167,13 +167,16 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- 文件接收通知按钮点击接收器（开始下载 / 取消） -->
+        <!-- 文件接收通知按钮点击接收器（开始下载 / 取消 / 冲突处理） -->
         <receiver
             android:name=".FileTransferReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.phonehub.action.START_FILE_DOWNLOAD" />
                 <action android:name="com.phonehub.action.CANCEL_FILE_DOWNLOAD" />
+                <action android:name="com.phonehub.action.CONFLICT_OVERWRITE" />
+                <action android:name="com.phonehub.action.CONFLICT_RENAME" />
+                <action android:name="com.phonehub.action.CONFLICT_SKIP" />
             </intent-filter>
         </receiver>
 

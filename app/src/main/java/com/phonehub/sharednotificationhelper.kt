@@ -30,6 +30,7 @@ object SharedNotificationHelper {
     /**
      * 构建基础通知（点击打开 MainActivity）
      */
+    @Suppress("UNCHECKED_CAST")
     fun buildNotification(context: Context, channelId: String, text: String, priority: Int): Notification {
         val mainIntent = Intent(context, Class.forName(MAIN_ACTIVITY_CLASS) as Class<android.app.Activity>).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP

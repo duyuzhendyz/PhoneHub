@@ -241,7 +241,7 @@ class PhoneHubAccessibilityService : AccessibilityService() {
                 val root = rootInActiveWindow
                 if (root == null) {
                     LogUtil.inpW("rootInActiveWindow 为空，无法获取焦点")
-                    sendKeyEvent(KeyEvent.keyCodeFromString("KEYCODE_$k")?.takeIf { it != KeyEvent.KEYCODE_UNKNOWN } ?: -1)
+                    sendKeyEvent(KeyEvent.keyCodeFromString("KEYCODE_$k").takeIf { it != KeyEvent.KEYCODE_UNKNOWN } ?: -1)
                     return
                 }
                 val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)

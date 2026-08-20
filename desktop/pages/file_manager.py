@@ -4,7 +4,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                                QListWidgetItem,
                                QMessageBox, QMenu, QInputDialog,
                                QTreeWidgetItem, QHeaderView,
-                               QFileDialog, QProgressDialog)
+                               QFileDialog, QProgressDialog,
+                               QAbstractItemView)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel,
@@ -29,16 +30,16 @@ class FileManagerPage(QWidget):
     def __init__(self, manager):
         super().__init__()
         self.manager = manager
-        self.current_path = "/sdcard/"
+        self.current_path = "/storage/emulated/0/"  # More compatible path for modern Android
         self._setup_ui()
         self._connect_signals()
-        # 页面初始化时立即显示内容
+        # Page initialization immediately displays content
         self._refresh()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         title = TitleLabel("远程文件管理")
         setFont(title, 28, QFont.Bold)
@@ -78,11 +79,18 @@ class FileManagerPage(QWidget):
         # 文件列表
         list_frame = CardWidget()
         list_layout = QVBoxLayout(list_frame)
-        list_layout.setContentsMargins(2, 2, 2, 2)
+        list_layout.setContentsMargins(8, 8, 8, 8)
         self.tree = TreeWidget()
         self.tree.setHeaderLabels(["名称", "大小", "权限", "修改时间"])
         self.tree.setRootIsDecorated(False)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)  # 支持多选（Shift/Ctrl）
+        self.tree.header().setSortIndicator(0, Qt.AscendingOrder)  # 默认按名称升序
+        # 显示排序指示器（兼容不同 PyQt5 版本）
+        if hasattr(self.tree.header(), 'setSortIndicatorVisible'):
+            self.tree.header().setSortIndicatorVisible(True)
+        self.tree.header().setSectionsClickable(True)  # 允许点击标题栏排序
+        self.tree.header().sectionClicked.connect(self._on_header_section_clicked)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -114,6 +122,74 @@ class FileManagerPage(QWidget):
         except Exception:
             pass
         self._update_channel_label()
+
+    def _on_header_section_clicked(self, column):
+        """点击表头时进行排序"""
+        current_sort_column = self.tree.header().sortIndicatorSection()
+        current_sort_order = self.tree.header().sortIndicatorOrder()
+        
+        # 如果点击的是同一列，切换排序顺序；否则按名称升序排序
+        if current_sort_column == column:
+            new_order = Qt.DescendingOrder if current_sort_order == Qt.AscendingOrder else Qt.AscendingOrder
+        else:
+            new_order = Qt.AscendingOrder
+        
+        self.tree.header().setSortIndicator(column, new_order)
+        self._sort_tree_by_column(column, new_order)
+    
+    def _sort_tree_by_column(self, column: int, order: Qt.SortOrder):
+        """按指定列和排序方式排序树形控件"""
+        self.tree.setSortingEnabled(False)  # 临时禁用排序避免递归
+        
+        def sort_key(item):
+            if column == 0:  # 名称
+                key = item.text(0).replace('📁', '').replace('📎', '').lower()
+            elif column == 1:  # 大小
+                try:
+                    # 尝试解析大小为数字
+                    size_text = item.text(1)
+                    key = float(size_text) if size_text.replace('.', '').isdigit() else 0
+                except (ValueError, AttributeError):
+                    key = 0
+            elif column == 3:  # 修改时间
+                # 简单处理：按日期字符串排序（假设格式为 YYYY-MM-DD HH:MM）
+                key = item.text(3)
+            else:
+                key = item.text(column)
+            
+            return (not item.data(0, Qt.UserRole).get('is_dir', False), key) if column == 0 else key
+        
+        # 对顶级项目进行排序
+        items = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        
+        def custom_compare(a, b):
+            a_key = sort_key(a)
+            b_key = sort_key(b)
+            if isinstance(a_key, tuple) and isinstance(b_key, tuple):
+                # 目录优先排序
+                if a_key[0] != b_key[0]:
+                    return -1 if a_key[0] else 1
+                if a_key[1] < b_key[1]: return -1 if order == Qt.AscendingOrder else 1
+                if a_key[1] > b_key[1]: return 1 if order == Qt.AscendingOrder else -1
+                return 0
+            else:
+                if a_key < b_key: return -1 if order == Qt.AscendingOrder else 1
+                if a_key > b_key: return 1 if order == Qt.AscendingOrder else -1
+                return 0
+        
+        # 使用简单的冒泡排序（对于少量文件足够高效）
+        n = len(items)
+        for i in range(n):
+            for j in range(0, n - i - 1):
+                if custom_compare(items[j], items[j + 1]) > 0:
+                    items[i], items[j] = items[j], items[i]  # Swap
+        
+        # 重新添加排序后的项目
+        self.tree.clear()
+        for item in items:
+            self.tree.addTopLevelItem(item)
+        
+        self.tree.setSortingEnabled(True)  # 恢复排序功能
 
     def _update_channel_label(self):
         """更新通道标签，并根据通道禁用/启用操作按钮"""
@@ -234,25 +310,40 @@ class FileManagerPage(QWidget):
         self.tree.addTopLevelItem(item)
 
     def _refresh(self):
-        """刷新当前目录的文件列表"""
-        ch = getattr(self.manager, "current_channel", "none")
-        if ch == "adb":
-            # ADB 通道：直接调用 adb_list_files 列出目录
-            try:
-                output = self.manager.adb_list_files(self.current_path)
-                self._populate_from_ls(output)
-            except Exception as e:
-                self._show_placeholder(f"读取目录失败: {e}")
-        elif ch == "wifi":
-            # WiFi 通道：发送 file_list_request 给手机，等待 file_list_received 信号
-            self._show_placeholder("正在请求目录列表...")
-            try:
-                self.manager.send_action("file_list_request", {"path": self.current_path})
-            except Exception:
-                pass
-        else:
-            # 未连接：显示提示
-            self._show_placeholder("未连接手机，请先连接设备")
+        """Refresh current directory file list"""
+        try:
+            ch = getattr(self.manager, "current_channel", "none")
+            if ch == "adb":
+                # ADB channel: directly call adb_list_files to list directory
+                try:
+                    output = self.manager.adb_list_files(self.current_path)
+                    if not output:
+                        self._show_placeholder("Empty directory or cannot read")
+                        return
+                    self._populate_from_ls(output)
+                except Exception as e:
+                    self._show_message(
+                        QMessageBox.Warning,
+                        "ADB Error",
+                        f"Failed to list files via ADB:\n{str(e)}\n\nCheck device connection and permissions."
+                    )
+                    self._show_placeholder("Read directory failed: check error above")
+            elif ch == "wifi":
+                # WiFi channel: send file_list_request to phone, wait for file_list_received signal
+                self._show_placeholder("Requesting directory list...")
+                try:
+                    self.manager.send_action("file_list_request", {"path": self.current_path})
+                except Exception as e:
+                    self._show_message(
+                        QMessageBox.Warning,
+                        "Connection Error",
+                        f"Could not send file list request to phone:\n{str(e)}\n\nCheck WiFi connection and phone pairing."
+                    )
+            else:
+                # Not connected: display prompt
+                self._show_placeholder("Phone not connected, please connect device first")
+        except Exception as e:
+            self._show_message(QMessageBox.Warning, "Error", f"Unexpected error refreshing file list: {str(e)}")
 
     def _parse_ls_la(self, output):
         items = []
@@ -553,10 +644,24 @@ class FileManagerPage(QWidget):
         if not item:
             return
         self.tree.setCurrentItem(item)
-        data = item.data(0, Qt.UserRole)
-        if not data:
+        
+        # 获取所有选中的项
+        selected_items = self.tree.selectedItems()
+        if not selected_items:
+            selected_items = [item]
+        
+        data_list = [item.data(0, Qt.UserRole) for item in selected_items if item.data(0, Qt.UserRole)]
+        if not data_list:
             return
-
+        
+        is_dir_all = all(d.get('is_dir', False) for d in data_list)
+        is_file_all = all(not d.get('is_dir', False) for d in data_list)
+        # 检查是否有文本文件（仅当单选时适用）
+        has_text_files = False
+        if len(data_list) == 1:
+            ext = data_list[0]['name'].rsplit('.', 1)[-1].lower() if '.' in data_list[0]['name'] else ''
+            has_text_files = ext in TEXT_FILE_EXTS
+        
         menu = QMenu(self)
         c = _c()
         menu.setStyleSheet(f"""
@@ -576,30 +681,41 @@ class FileManagerPage(QWidget):
             }}
         """)
 
-        is_dir = data.get('is_dir', False)
-        ext = data['name'].rsplit('.', 1)[-1].lower() if '.' in data['name'] else ''
-
-        # "打开(进入)"：目录→进入，文本文件→打开，其他→不显示
+        # "打开(进入)"：目录→进入，文本文件→打开，其他→不显示（多选时禁用）
         act_open = None
-        if is_dir:
+        if is_dir_all and len(data_list) == 1:
             act_open = menu.addAction("打开(进入)")
-        elif ext in TEXT_FILE_EXTS:
+            act_open.setEnabled(True)
+        elif is_file_all and len(data_list) == 1 and has_text_files:
             act_open = menu.addAction("打开")
-
+            act_open.setEnabled(True)
+        else:
+            act_open = menu.addAction("打开(进入)")
+            act_open.setEnabled(False)  # 多选或混合类型时禁用
+        
+        # 下载、复制：仅当选中单个文件时启用
         act_download = menu.addAction("下载")
+        act_download.setEnabled(is_file_all and len(data_list) == 1)
+        
         act_copy = menu.addAction("复制到...")
+        act_copy.setEnabled(is_file_all and len(data_list) == 1)
+        
         menu.addSeparator()
+        
         act_rename = menu.addAction("重命名")
+        act_rename.setEnabled(len(data_list) >= 1)  # 至少选中一项
+        
         act_delete = menu.addAction("删除")
-
+        act_delete.setEnabled(True)  # 允许删除多选项目
+        
         action = menu.exec_(self.tree.mapToGlobal(pos))
         if action is None:
             return
         if action == act_open:
-            if is_dir:
-                self._on_item_double_clicked(item, 0)
-            else:
-                self._open_text_file(item)
+            if is_dir_all and len(data_list) == 1:
+                self._on_item_double_clicked(selected_items[0], 0)
+            elif is_file_all and len(data_list) == 1 and has_text_files:
+                self._open_text_file(selected_items[0])
         elif action == act_download:
             self._download_selected()
         elif action == act_copy:

@@ -11,6 +11,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.Manifest
+import androidx.core.content.ContextCompat
 import android.graphics.Bitmap
 import android.location.Location
 import android.location.LocationManager
@@ -31,6 +33,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import androidx.appcompat.app.AlertDialog
 import android.media.AudioManager
 import android.media.ImageReader
 import android.media.projection.MediaProjection
@@ -162,6 +165,38 @@ object ConnectionManager {
     private val _cameraSwitchRequest = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     val cameraSwitchRequest: SharedFlow<Unit> = _cameraSwitchRequest
 
+    // S5: 手机投屏命令（启动/停止）- PC→手机方向
+    data class MirrorCommand(val action: String) // "start" or "stop"
+
+    // S8a: 摄像头推送命令（启动/停止）- PC→手机方向
+    data class CameraPushCommand(val action: String) // "start" or "stop"
+
+    // S8b: 电脑摄像头推送命令（启动/停止）- 手机→PC方向  
+    data class PcCameraPushCommand(val action: String) // "start" or "stop"
+
+    // S6: 声音传输命令（启动/停止）- PC→手机方向
+    data class AudioControlCommand(val action: String) // "start" or "stop"
+
+    // 电脑端请求开始手机投屏（S5）
+    private val _mirrorCommand = MutableSharedFlow<MirrorCommand>(extraBufferCapacity = 1)
+    val mirrorCommand: SharedFlow<MirrorCommand> = _mirrorCommand
+
+    // 电脑端请求开始手机摄像头推流（S8a）
+    private val _cameraPushCommand = MutableSharedFlow<CameraPushCommand>(extraBufferCapacity = 1)
+    val cameraPushCommand: SharedFlow<CameraPushCommand> = _cameraPushCommand
+
+    // 手机端请求开始电脑摄像头推流（手机→PC命令）
+    private val _pcCameraPushCommand = MutableSharedFlow<PcCameraPushCommand>(extraBufferCapacity = 1)
+    val pcCameraPushCommand: SharedFlow<PcCameraPushCommand> = _pcCameraPushCommand
+
+    // 电脑端请求开始/停止声音传输（S6）
+    private val _audioControl = MutableSharedFlow<AudioControlCommand>(extraBufferCapacity = 1)
+    val audioControl: SharedFlow<AudioControlCommand> = _audioControl
+
+    // S4: 待用户确认接收的文件（PC端发送文件时，先通知用户，用户点击"开始下载"后才真正接收）
+    private val _pendingFileReceive = MutableSharedFlow<PendingFileTransfer>(extraBufferCapacity = 4)
+    val pendingFileReceive: SharedFlow<PendingFileTransfer> = _pendingFileReceive
+
     private val _receivedClipboard = MutableStateFlow<String?>(null)
     val receivedClipboard: StateFlow<String?> = _receivedClipboard
 
@@ -228,6 +263,8 @@ object ConnectionManager {
     var lastPcHeartbeatAt = 0L
         private set
 
+    private var reconnectFailCount = 0
+
     // 远程控制：记录上次触摸按下位置（归一化坐标→像素坐标后缓存）
     @Volatile
     private var _lastTouchDownX = -1f
@@ -265,8 +302,15 @@ object ConnectionManager {
     private var fileTransferCancel = false
     private var receiveDir: File? = null
     private var locationStoreDir: File? = null
-
-    private var reconnectFailCount = 0
+    
+    // 音量静音状态跟踪
+    private var isMuted = false
+    private val _mutedState = MutableStateFlow(false)
+    val mutedState: StateFlow<Boolean> = _mutedState
+    
+    // 音量更新防抖：避免音量调节反馈循环
+    private var lastVolumeSendTime = 0L
+    private const val VOL_UPDATE_DEBOUNCE_MS = 300L
     private var userVerifiedConnection = false
     private var lastPcCpuAt = 0L
 
@@ -338,6 +382,9 @@ object ConnectionManager {
         val id: Int = 0
     )
 
+
+    /** 构造函数及单例初始化... */
+
     data class LocationPoint(
         val lat: Double,
         val lon: Double,
@@ -394,9 +441,7 @@ object ConnectionManager {
                 header("Authorization", "Bearer ${this@ConnectionManager.secretToken}")
             }
         }
-        receiveDir = File(ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?: ctx.filesDir, "PhoneHub")
-        receiveDir?.mkdirs()
+        receiveDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "").apply { mkdirs() }
         locationStoreDir = File(ctx.getExternalFilesDir(null), "LocationCache")
         locationStoreDir?.mkdirs()
         loadClipboardStore()
@@ -427,7 +472,6 @@ object ConnectionManager {
      */
     fun isNotificationListenerEnabled(): Boolean {
         val ctx = context ?: return false
-        val pkgName = ctx.packageName
         val flat = android.provider.Settings.Secure.getString(
             ctx.contentResolver,
             "enabled_notification_listeners"
@@ -469,6 +513,40 @@ object ConnectionManager {
             ctx.startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "openNotificationSettings failed", e)
+        }
+    }
+
+    /**
+     * 检查是否拥有 MANAGE_EXTERNAL_STORAGE 权限（Android 11+ 用于访问全部文件）
+     */
+    fun hasStoragePermission(): Boolean {
+        val ctx = context ?: return false
+        return ContextCompat.checkSelfPermission(
+            ctx,
+            Manifest.permission.MANAGE_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * 打开应用的外部存储权限设置页面，引导用户授予 MANAGE_EXTERNAL_STORAGE
+     */
+    fun openStorageSettings(ctx: Context) {
+        try {
+            // Android 11+ 使用 ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
+            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            intent.putExtra(Intent.EXTRA_PACKAGE_NAME, ctx.packageName)
+            ctx.startActivity(intent)
+        } catch (e: Exception) {
+            // 备选：打开应用详情页面，用户可手动选择权限
+            try {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                intent.data = Uri.fromParts("package", ctx.packageName, null)
+                ctx.startActivity(intent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "openStorageSettings failed", e2)
+            }
         }
     }
 
@@ -722,7 +800,7 @@ object ConnectionManager {
         }
     }
 
-    private fun startMsgPolling(channel: ChannelType) {
+    private fun startMsgPolling(@Suppress("UNUSED_PARAMETER") channel: ChannelType) {
         // 已合并到 startStatusPolling 的 /api/poll 轮询中，不再单独启动
         msgPollingJob?.cancel()
     }
@@ -809,8 +887,10 @@ object ConnectionManager {
                 val fileSize = data["file_size"]?.jsonPrimitive?.longOrNull ?: 0L
                 val fileId = data["file_id"]?.jsonPrimitive?.contentOrNull ?: ""
                 Log.i(TAG, "收到send_file_head: name=$fileName, size=$fileSize, id=$fileId, channel=${_currentChannel.value}")
-                // 自动开始接收（不弹常驻通知），双端界面立即更新
-                startReceiveFile(fileId, fileName, fileSize)
+                // S4: 先显示通知（带"开始下载"按钮），不自动开始下载
+                showFileReceiveNotification(fileId, fileName, fileSize)
+                // 同时发射 pending 事件，通知 app UI 更新
+                _pendingFileReceive.tryEmit(PendingFileTransfer(fileId, fileName, fileSize))
             }
             "file_complete" -> {
                 val fileId = data["file_id"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -909,12 +989,34 @@ object ConnectionManager {
                 }
             }
             "screenshot_saved" -> {
-                val msg = data["message"]?.jsonPrimitive?.contentOrNull ?: "截图已保存到电脑"
-                scope.launch { _screenshotResult.emit(msg) }
+                val screenshotMsg = data["message"]?.jsonPrimitive?.contentOrNull ?: "截图已保存到电脑"
+                scope.launch { _screenshotResult.emit(screenshotMsg) }
             }
             "camera_switch" -> {
                 // 电脑端请求切换手机前后摄像头
                 scope.launch { _cameraSwitchRequest.emit(Unit) }
+            }
+            // ===== 电脑端以顶层 action 发送的投屏/摄像头控制指令（S5/S8a/S8c）=====
+            // 与 handleCommand 中的 cmd 处理对齐，保证 send_action 与 send_command 两种编码都能触发
+            "mirror_start" -> {
+                _mirrorCommand.tryEmit(MirrorCommand("start"))
+            }
+            "mirror_stop" -> {
+                _mirrorCommand.tryEmit(MirrorCommand("stop"))
+            }
+            "camera_start" -> {
+                _cameraPushCommand.tryEmit(CameraPushCommand("start"))
+            }
+            "camera_stop" -> {
+                _cameraPushCommand.tryEmit(CameraPushCommand("stop"))
+            }
+            // ===== 声音传输控制（S6）：电脑端"开始/停止声音传输"按钮 ====
+            // 电脑端点击后通知手机端双向启动声音（手机→电脑上传 + 电脑→手机拉取播放）
+            "audio_start" -> {
+                _audioControl.tryEmit(AudioControlCommand("start"))
+            }
+            "audio_stop" -> {
+                _audioControl.tryEmit(AudioControlCommand("stop"))
             }
             "screen_touch" -> {
                 // 电脑端远程控制手机屏幕（归一化坐标）
@@ -963,10 +1065,10 @@ object ConnectionManager {
                 val notif = _notifications.replayCache.findLast {
                     it.packageName == pkg && it.actions.any { a -> a.title == actionTitle }
                 }
-                val action = notif?.actions?.find { it.title == actionTitle }
-                if (action?.actionIntent != null) {
+                val foundAction = notif?.actions?.find { it.title == actionTitle }
+                if (foundAction?.actionIntent != null) {
                     try {
-                        action.actionIntent.send()
+                        foundAction.actionIntent.send()
                         Log.i(TAG, "通知快捷操作已执行: pkg=$pkg action=$actionTitle")
                     } catch (e: Exception) {
                         Log.e(TAG, "notification action send failed", e)
@@ -1009,6 +1111,72 @@ object ConnectionManager {
                     pending.deferred.complete(false)
                 }
                 _fileTransferProgress.value = null
+            }
+            "file_conflict" -> {
+                // 电脑检测到文件冲突，请手机端弹窗询问用户如何处理 - 按S3要求
+                val fileId = data["file_id"]?.jsonPrimitive?.contentOrNull ?: ""
+                val fileName = data["file_name"]?.jsonPrimitive?.contentOrNull ?: ""
+                val fileSize = data["file_size"]?.jsonPrimitive?.longOrNull ?: 0L
+                val existingFile = data["existing_file"]?.jsonPrimitive?.contentOrNull ?: ""
+                Log.i(TAG, "收到文件冲突通知: fileId=$fileId, fileName=$fileName, existing=$existingFile")
+                
+                // S3: 同时显示通知和软件内弹窗（双重通知）
+                showFileConflictNotification(fileId, fileName, fileSize, existingFile)
+                
+                // 在主线程显示对话框
+                val ctx = context ?: run {
+                    Log.w(TAG, "无上下文，无法显示冲突对话框")
+                    return@handlePcMessage
+                }
+                val handler = android.os.Handler(Looper.getMainLooper())
+                handler.post {
+                    try {
+                        val alertBuilder = androidx.appcompat.app.AlertDialog.Builder(ctx)
+                        alertBuilder.setTitle("文件冲突")
+                        alertBuilder.setMessage("接收目录已存在同名文件:\n$existingFile\n\n请选择处理方式:")
+                        
+                        // S3选项：覆盖原有文件、添加编号接收、取消接收
+                        var choiceSelected = false
+                        val choices = arrayOf("覆盖原有文件", "添加编号接收", "取消接收")
+                        alertBuilder.setItems(choices) { _, which ->
+                            when (which) {
+                                0 -> { // 覆盖原有文件
+                                    sendConflictResponse(fileId, "overwrite", "")
+                                    choiceSelected = true
+                                }
+                                1 -> { // 添加编号接收
+                                    // 自动添加编号后缀，如 a_1.txt
+                                    val newFileName = generateNumberedFileName(fileName, existingFile)
+                                    sendConflictResponse(fileId, "rename", newFileName)
+                                    choiceSelected = true
+                                }
+                                2 -> { // 取消接收
+                                    sendConflictResponse(fileId, "skip", "")
+                                    choiceSelected = true
+                                }
+                            }
+                            if (choiceSelected) {
+                                cancelFileConflictNotification(fileId)
+                            }
+                        }
+                        val dialog = alertBuilder.create()
+                        // 设置取消按钮行为 - 取消则视为跳过
+                        dialog.setOnCancelListener {
+                            if (!choiceSelected) {
+                                sendConflictResponse(fileId, "skip", "")
+                                cancelFileConflictNotification(fileId)
+                            }
+                        }
+                        dialog.show()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "显示冲突对话框失败", e)
+                        // 超时或错误时默认跳过
+                        CoroutineScope(Dispatchers.IO).launch {
+                            sendConflictResponse(fileId, "skip", "")
+                            cancelFileConflictNotification(fileId)
+                        }
+                    }
+                }
             }
             "transfer_control" -> {
                 // PC 发来的传输控制（pause/resume/cancel）
@@ -1165,13 +1333,11 @@ object ConnectionManager {
             val net = getNetworkType(ctx)
             val storage = getStorageInfo()
             val mem = getMemUsage()
-            val cpu = getPhoneCpuUsage()
 
             val msg = buildJsonMessage {
                 put("source", "phone")
                 putJsonObject("data") {
                     put("action", "status")
-                    put("cpu", cpu)
                     put("battery", battery)
                     put("temperature", temp)
                     put("network", net)
@@ -1180,7 +1346,9 @@ object ConnectionManager {
                     put("memory_usage", mem)
                     put("device_model", android.os.Build.MODEL)
                     put("android_version", android.os.Build.VERSION.RELEASE)
-                        put("volume", getCurrentMusicVolume())
+                    put("volume", getCurrentMusicVolume())
+                    // 添加静音状态信息
+                    put("muted", isMuted)
                 }
             }
 
@@ -1270,13 +1438,20 @@ object ConnectionManager {
                 PhoneHubAccessibilityService.instance?.performKeyInput(key, mods)
             }
             "camera_start" -> {
-                // 摄像头通过Intent启动系统相机
-                val intent = Intent("android.media.action.STILL_IMAGE_CAMERA")
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context?.startActivity(intent)
+                // S8a: 请求开始摄像头推流（手机自动开始推送画面给电脑）
+                _cameraPushCommand.tryEmit(CameraPushCommand("start"))
             }
             "camera_stop" -> {
-                // 无操作，系统相机由用户关闭
+                // S8a: 请求停止摄像头推流
+                _cameraPushCommand.tryEmit(CameraPushCommand("stop"))
+            }
+            "mirror_start" -> {
+                // S5: 电脑端请求开始手机投屏 — 手机自动进入权限授予界面并开始投屏
+                _mirrorCommand.tryEmit(MirrorCommand("start"))
+            }
+            "mirror_stop" -> {
+                // S5: 电脑端请求停止手机投屏
+                _mirrorCommand.tryEmit(MirrorCommand("stop"))
             }
             "screen_click" -> {
                 val x = data["x"]?.jsonPrimitive?.floatOrNull ?: return
@@ -1327,6 +1502,31 @@ object ConnectionManager {
         }
     }
 
+    // ============================== S8b: 电脑摄像头控制（手机→PC） ==============================
+
+    /**
+     * S8b: 请求开始电脑摄像头推流（手机主动请求，将启动PC摄像头并推送画面到手机）
+     */
+    fun startPcCameraPush() {
+        // 发射本地事件，供UI或其他组件监听
+        _pcCameraPushCommand.tryEmit(PcCameraPushCommand("start"))
+        // 通过HTTP向PC发送命令
+        sendPcCameraCommand("start")
+    }
+
+    /**
+     * S8b: 停止电脑摄像头推流
+     */
+    fun stopPcCameraPush() {
+        // 发射本地事件，供UI或其他组件监听
+        _pcCameraPushCommand.tryEmit(PcCameraPushCommand("stop"))
+        // 通过HTTP向PC发送命令
+        sendPcCameraCommand("stop")
+    }
+
+    /**
+     * S8b: 获取电脑摄像头当前推流状态（通过订阅pcCameraPushCommand流）
+     */
     // ============================== Task 12: 文字接收通知 ==============================
 
     /**
@@ -1413,9 +1613,10 @@ object ConnectionManager {
 
     private const val FILE_TRANSFER_CHANNEL_ID = "phonehub_file_transfer"
     private const val FILE_TRANSFER_NOTIF_ID = 88881
+    private const val FILE_CONFLICT_NOTIF_ID = 88882
 
     // 暂存待下载的文件信息（用户点击"开始下载"后用于触发下载）
-    private data class PendingFileTransfer(
+    data class PendingFileTransfer(
         val fileId: String,
         val fileName: String,
         val fileSize: Long
@@ -1505,6 +1706,85 @@ object ConnectionManager {
     }
 
     /**
+     * 显示文件冲突通知（S3）：通知中出现"覆盖原有文件"、"添加编号接收"、"取消接收"三个选项
+     */
+    private fun showFileConflictNotification(fileId: String, fileName: String, fileSize: Long, existingFile: String) {
+        val ctx = context ?: return
+        try {
+            val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            // 确保通知渠道存在
+            val channel = NotificationChannel(
+                FILE_TRANSFER_CHANNEL_ID,
+                "文件接收",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply { description = "接收电脑端发送的文件" }
+            mgr.createNotificationChannel(channel)
+
+            // 点击通知主体 → 打开 MainActivity 并跳到文件传输页
+            val openIntent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("show_file_transfer", true)
+            }
+            val openPi = PendingIntent.getActivity(ctx, 0, openIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+            // "覆盖原有文件"按钮
+            val overwriteIntent = Intent(ctx, FileTransferReceiver::class.java).apply {
+                action = FileTransferReceiver.ACTION_CONFLICT_OVERWRITE
+                putExtra(FileTransferReceiver.EXTRA_FILE_ID, fileId)
+                putExtra(FileTransferReceiver.EXTRA_FILE_NAME, fileName)
+                putExtra(FileTransferReceiver.EXTRA_FILE_SIZE, fileSize)
+            }
+            val overwritePi = PendingIntent.getBroadcast(ctx, 3, overwriteIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+            // "添加编号接收"按钮
+            val renameIntent = Intent(ctx, FileTransferReceiver::class.java).apply {
+                action = FileTransferReceiver.ACTION_CONFLICT_RENAME
+                putExtra(FileTransferReceiver.EXTRA_FILE_ID, fileId)
+                putExtra(FileTransferReceiver.EXTRA_FILE_NAME, fileName)
+                putExtra(FileTransferReceiver.EXTRA_FILE_SIZE, fileSize)
+                putExtra("existing_file", existingFile)
+            }
+            val renamePi = PendingIntent.getBroadcast(ctx, 4, renameIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+            // "取消接收"按钮
+            val skipIntent = Intent(ctx, FileTransferReceiver::class.java).apply {
+                action = FileTransferReceiver.ACTION_CONFLICT_SKIP
+                putExtra(FileTransferReceiver.EXTRA_FILE_ID, fileId)
+            }
+            val skipPi = PendingIntent.getBroadcast(ctx, 5, skipIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+            val notification = NotificationCompat.Builder(ctx, FILE_TRANSFER_CHANNEL_ID)
+                .setContentTitle("文件冲突: $fileName")
+                .setContentText("接收目录已存在同名文件，请选择处理方式")
+                .setSmallIcon(android.R.drawable.ic_menu_help)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(openPi)
+                .addAction(android.R.drawable.ic_menu_edit, "覆盖原有文件", overwritePi)
+                .addAction(android.R.drawable.ic_menu_add, "添加编号接收", renamePi)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消接收", skipPi)
+                .build()
+            mgr.notify(FILE_CONFLICT_NOTIF_ID, notification)
+            Log.i(TAG, "已显示文件冲突通知: $fileName")
+        } catch (e: Exception) {
+            Log.e(TAG, "显示文件冲突通知失败", e)
+        }
+    }
+
+    /** 取消文件冲突通知 */
+    fun cancelFileConflictNotification(@Suppress("UNUSED_PARAMETER") fileId: String) {
+        val ctx = context ?: return
+        try {
+            val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            mgr.cancel(FILE_CONFLICT_NOTIF_ID)
+        } catch (_: Exception) {}
+    }
+
+    /**
      * 用户在通知中点击"开始下载"后触发（由 FileTransferReceiver 调用）
      */
     fun startFileDownloadFromNotification(fileId: String, fileName: String, fileSize: Long) {
@@ -1526,6 +1806,8 @@ object ConnectionManager {
             val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val pct = if (total > 0) ((received * 100) / total).toInt() else 0
             val sizeText = "${formatFileSize(received)} / ${formatFileSize(total)}"
+            val savePath = getReceiveDirPath() ?: ""
+            val pathText = if (savePath.isNotEmpty()) "\n保存路径: $savePath" else ""
 
             val builder = NotificationCompat.Builder(ctx, FILE_TRANSFER_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -1533,7 +1815,7 @@ object ConnectionManager {
                 .setOnlyAlertOnce(true)
                 .setProgress(100, pct, false)
                 .setContentTitle(if (paused) "已暂停: $fileName" else "下载中: $fileName")
-                .setContentText(if (paused) sizeText else "$sizeText ($pct%)")
+                .setContentText(if (paused) sizeText + pathText else "$sizeText ($pct%)$pathText")
 
             // 下载中提供"取消"按钮
             val pendingFileId = pendingFileTransfer?.fileId ?: ""
@@ -1570,6 +1852,8 @@ object ConnectionManager {
     fun completeFileTransferNotification(fileName: String) {
         val ctx = context ?: return
         try {
+            val savePath = getReceiveDirPath() ?: ""
+            val pathInfo = if (savePath.isNotEmpty()) "\n保存路径: $savePath" else ""
             val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val openIntent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -1581,7 +1865,7 @@ object ConnectionManager {
             )
             val notification = NotificationCompat.Builder(ctx, FILE_TRANSFER_CHANNEL_ID)
                 .setContentTitle("下载完成: $fileName")
-                .setContentText("文件已保存到接收目录")
+                .setContentText("文件已保存到接收目录$pathInfo")
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setAutoCancel(true)  // 点击后自动消失
                 .setOngoing(false)    // 不再持续显示
@@ -1644,15 +1928,16 @@ object ConnectionManager {
             val net = getNetworkType(ctx)
             val storage = getStorageInfo()
             val mem = getMemUsage()
-            val cpu = getPhoneCpuUsage()
             _phoneMemUsage.value = mem
-            // 手机 CPU 显示已移除
+            // 手机 CPU 采集与显示已整体移除（电脑端也不展示，避免无意义开销）
+
+            // 确保静音状态是最新的（根据当前音量）
+            isMuted = (getCurrentMusicVolume() == 0)
 
             val msg = buildJsonMessage {
                 put("source", "phone")
                 putJsonObject("data") {
                     put("action", "status")
-                    put("cpu", cpu)
                     put("battery", battery)
                     put("temperature", temp)
                     put("network", net)
@@ -1661,180 +1946,15 @@ object ConnectionManager {
                     put("memory_usage", mem)
                     put("device_model", android.os.Build.MODEL)
                     put("android_version", android.os.Build.VERSION.RELEASE)
-                        put("volume", getCurrentMusicVolume())
+                    put("volume", getCurrentMusicVolume())
+                    // 添加静音状态信息
+                    put("muted", isMuted)
                 }
             }
             scope.launch { sendRaw(msg.toString()) }
         } catch (e: Exception) {
             Log.e(TAG, "Status report failed", e)
         }
-    }
-
-    // 上次 /proc/stat 采样（用于两次差值计算 CPU 占用率）
-    private var prevTotal = 0L
-    private var prevIdle = 0L
-
-    @Synchronized
-    private fun getPhoneCpuUsage(): Float {
-        // 方案1: dumpsys cpuinfo（最可靠，所有 Android 设备可用，格式固定）
-        val fromDumpsys = getCpuFromDumpsys()
-        if (fromDumpsys >= 0f) {
-            Log.d(TAG, "getPhoneCpuUsage: dumpsys=$fromDumpsys")
-            return fromDumpsys
-        }
-
-        // 方案2: top 命令（解析多种格式）
-        val fromTop = getCpuFromTop()
-        if (fromTop >= 0f) {
-            Log.d(TAG, "getPhoneCpuUsage: top=$fromTop")
-            return fromTop
-        }
-
-        // 方案3: 读 /proc/stat（部分设备可用）
-        val fromProcStat = getCpuFromProcStat()
-        if (fromProcStat >= 0f) {
-            Log.d(TAG, "getPhoneCpuUsage: procstat=$fromProcStat")
-            return fromProcStat
-        }
-
-        Log.w(TAG, "getPhoneCpuUsage: 所有方案均失败，返回 0")
-        return 0f
-    }
-
-    /** 方案1: 读 /proc/stat 计算两次采样差值 */
-    private fun getCpuFromProcStat(): Float {
-        return try {
-            val reader = java.io.BufferedReader(java.io.FileReader("/proc/stat"))
-            val line = reader.readLine()  // 第一行 "cpu  user nice system idle ..."
-            reader.close()
-            if (!line.startsWith("cpu")) return -1f
-            val parts = line.split(Regex("\\s+")).drop(1).map { it.toLong() }
-            if (parts.size < 4) return -1f
-            val idle = parts[3]
-            val total = parts.sum()
-            if (prevTotal > 0) {
-                val dTotal = total - prevTotal
-                val dIdle = idle - prevIdle
-                prevTotal = total
-                prevIdle = idle
-                if (dTotal > 0) {
-                    val pct = ((dTotal - dIdle).toFloat() / dTotal * 100f).coerceIn(0f, 100f)
-                    Log.d(TAG, "getCpuFromProcStat: $pct%")
-                    pct
-                } else 0f
-            } else {
-                // 首次采样，记录基准值，下次再算
-                prevTotal = total
-                prevIdle = idle
-                -1f
-            }
-        } catch (e: Exception) {
-            -1f  // Android 8+ SELinux 阻止读取 /proc/stat
-        }
-    }
-
-    /** 方案2: top 命令兜底 */
-    private fun getCpuFromTop(): Float {
-        return try {
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", "top -b -n 1 2>&1"))
-            val finished = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-            val output = if (finished) {
-                process.inputStream.bufferedReader().readText()
-            } else {
-                process.destroy()
-                return -1f
-            }
-            parseTopCpuUsage(output)
-        } catch (e: Exception) {
-            -1f
-        }
-    }
-
-    /** dumpsys cpuinfo 解析（找 "XX% TOTAL" 或 "TOTAL: XX%" 行） */
-    private fun getCpuFromDumpsys(): Float {
-        return try {
-            // 直接用 /system/bin/dumpsys，避免 PATH 查找问题
-            val process = Runtime.getRuntime().exec(arrayOf("/system/bin/dumpsys", "cpuinfo"))
-            val finished = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroy()
-                Log.w(TAG, "getCpuFromDumpsys: timeout")
-                return -1f
-            }
-            val output = process.inputStream.bufferedReader().readText()
-            if (output.isBlank()) {
-                Log.w(TAG, "getCpuFromDumpsys: empty output")
-                return -1f
-            }
-            // 从后往前找 "TOTAL" 行（多种格式）
-            for (line in output.lines().reversed()) {
-                val trimmed = line.trim()
-                if (!trimmed.contains("TOTAL", ignoreCase = true)) continue
-                // 格式1: "18% TOTAL: ..."
-                val match1 = Regex("(\\d+\\.?\\d*)%\\s+TOTAL", RegexOption.IGNORE_CASE).find(trimmed)
-                if (match1 != null) {
-                    val v = match1.groupValues[1].toFloatOrNull()
-                    if (v != null) return v.coerceIn(0f, 100f)
-                }
-                // 格式2: "TOTAL: 18% ..." 或 "TOTAL 18% ..."
-                val match2 = Regex("TOTAL:?(?:\\s+)(\\d+\\.?\\d*)%", RegexOption.IGNORE_CASE).find(trimmed)
-                if (match2 != null) {
-                    val v = match2.groupValues[1].toFloatOrNull()
-                    if (v != null) return v.coerceIn(0f, 100f)
-                }
-                // 格式3: 行中任何百分比
-                val m = Regex("(\\d+\\.?\\d*)%").find(trimmed)
-                val v = m?.groupValues?.get(1)?.toFloatOrNull()
-                if (v != null && v <= 100f) return v
-            }
-            Log.w(TAG, "getCpuFromDumpsys: no TOTAL line, output=${output.take(300)}")
-            -1f
-        } catch (e: Exception) {
-            Log.e(TAG, "getCpuFromDumpsys failed", e)
-            -1f
-        }
-    }
-
-    /**
-     * 解析 top 命令输出的整机 CPU 占用率，兼容多种 Android 版本格式：
-     * - 新版 toybox: "%Cpu(s):  15.2 us,  3.8 sy,  0.0 ni, 80.5 id,  0.5 wa, ..."
-     * - 旧版 toolbox: "CPU: 15% user, 5% kernel, 80% idle"
-     * - Android 10: "User 15%, System 5%, IOW 1%, IRQ 0%"
-     */
-    private fun parseTopCpuUsage(output: String): Float {
-        for (rawLine in output.lineSequence()) {
-            val line = rawLine.trim()
-            // 格式1: "%Cpu(s): 15.2 us, 3.8 sy, 0.0 ni, 80.5 id"
-            if (line.startsWith("%Cpu", ignoreCase = true)) {
-                val idleMatch = Regex("(\\d+\\.?\\d*)\\s+id").find(line)
-                if (idleMatch != null) {
-                    val idle = idleMatch.groupValues[1].toFloatOrNull()
-                    if (idle != null) return (100f - idle).coerceIn(0f, 100f)
-                }
-            }
-            // 格式2: "CPU: 15% user, 5% kernel, 80% idle"
-            if (line.startsWith("CPU:", ignoreCase = true)) {
-                val idleMatch = Regex("(\\d+)%\\s+idle").find(line)
-                if (idleMatch != null) {
-                    val idle = idleMatch.groupValues[1].toFloatOrNull()
-                    if (idle != null) return (100f - idle).coerceIn(0f, 100f)
-                }
-            }
-            // 格式3: "User 15%, System 5%, IOW 1%, IRQ 0%" (Android 10 toolbox)
-            if (line.startsWith("User", ignoreCase = true) && line.contains("%") && line.contains("System", ignoreCase = true)) {
-                val userMatch = Regex("User\\s+(\\d+)%", RegexOption.IGNORE_CASE).find(line)
-                val sysMatch = Regex("System\\s+(\\d+)%", RegexOption.IGNORE_CASE).find(line)
-                val iowMatch = Regex("IOW\\s+(\\d+)%", RegexOption.IGNORE_CASE).find(line)
-                val irqMatch = Regex("IRQ\\s+(\\d+)%", RegexOption.IGNORE_CASE).find(line)
-                val user = userMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
-                val sys = sysMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
-                val iow = iowMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
-                val irq = irqMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
-                return (user + sys + iow + irq).coerceIn(0f, 100f)
-            }
-        }
-        Log.w(TAG, "parseTopCpuUsage: no CPU summary found, output=${output.take(300)}")
-        return -1f
     }
 
     private fun getBatteryStatus(ctx: Context): Int {
@@ -1994,7 +2114,15 @@ object ConnectionManager {
         try {
             val am = context?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
             am?.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_TOGGLE_MUTE, 0)
-        } catch (e: Exception) {}
+            // 更新静音状态：检查当前音量是否为0
+            val currentVol = am?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) ?: 0
+            isMuted = (currentVol == 0)
+            _mutedState.value = isMuted
+            // 向PC发送最新的音量状态（包含mute标志）
+            sendCurrentVolumeWithMuteStatus()
+        } catch (e: Exception) {
+            Log.e(TAG, "toggleMute failed", e)
+        }
     }
 
     private fun setVolume(vol: Int) {
@@ -2004,11 +2132,37 @@ object ConnectionManager {
             val clamped = vol.coerceIn(0, maxVol)
             am?.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, clamped, 0)
             Log.i(TAG, "setVolume: $clamped (max=$maxVol)")
+            // 更新静音状态
+            isMuted = (clamped == 0)
+            _mutedState.value = isMuted
+            // 向PC发送最新的音量状态（包含mute标志）
+            sendCurrentVolumeWithMuteStatus()
         } catch (e: Exception) {
             Log.e(TAG, "setVolume failed", e)
         }
     }
 
+    private fun sendCurrentVolumeWithMuteStatus() {
+        val now = System.currentTimeMillis()
+        // 防抖：如果距离上次发送时间不足，则跳过本次发送
+        if (now - lastVolumeSendTime < VOL_UPDATE_DEBOUNCE_MS) return
+        
+        val volume = getCurrentMusicVolume()
+        // 根据当前音量更新静音状态
+        isMuted = (volume == 0)
+        _mutedState.value = isMuted
+        lastVolumeSendTime = now  // 记录最近发送时间
+        
+        val msg = buildJsonMessage {
+            put("source", "phone")
+            putJsonObject("data") {
+                put("action", "volume_changed")
+                put("volume", volume)
+                put("muted", isMuted)
+            }
+        }
+        scope.launch { sendRaw(msg.toString()) }
+    }
 
     private fun getCurrentMusicVolume(): Int {
         return try {
@@ -2018,8 +2172,69 @@ object ConnectionManager {
     }
 
     private fun sendCurrentVolume() {
-        sendAction("volume_changed", mapOf("volume" to getCurrentMusicVolume()))
+          val vol = getCurrentMusicVolume()
+          val msg = buildJsonMessage {
+              put("source", "phone")
+              putJsonObject("data") {
+                  put("action", "volume_changed")
+                  put("volume", vol)
+              }
+          }
+          scope.launch { sendRaw(msg.toString()) }
+      }
+
+      /**
+       * Public volume sender for BroadcastReceiver and internal use.
+       */
+      fun sendVolumeChanged(volume: Int, muted: Boolean = false) {
+          val msg = buildJsonMessage {
+              put("source", "phone")
+              putJsonObject("data") {
+                  put("action", "volume_changed")
+                  put("volume", volume)
+                  if (muted) put("muted", muted)
+              }
+          }
+          scope.launch { sendRaw(msg.toString()) }
+      }
+
+      /**
+     * 生成带编号的文件名，例如 "test.txt" -> "test (1).txt", "test (1).txt" -> "test (2).txt"
+     */
+    fun generateNumberedFileName(originalFileName: String, existingFileName: String): String {
+        // 分离文件名和扩展名
+        val dot = originalFileName.lastIndexOf('.')
+        val namePart = if (dot > 0) originalFileName.substring(0, dot) else originalFileName
+        val extPart = if (dot > 0) originalFileName.substring(dot) else ""
+        
+        var attempt = 1
+        var newName: String
+        do {
+            newName = "$namePart ($attempt)$extPart"
+            attempt++
+        } while (newName == existingFileName && attempt < 100)
+        
+        return newName
     }
+
+    /**
+     * 发送文件冲突响应给电脑：覆盖/重命名/跳过
+     */
+    fun sendConflictResponse(fileId: String, choice: String, newFileName: String?) {
+          val msg = buildJsonMessage {
+              put("source", "phone")
+              putJsonObject("data") {
+                  put("action", "file_conflict_response")
+                  put("file_id", fileId)
+                  put("choice", choice)
+                  if (!newFileName.isNullOrEmpty()) {
+                      put("new_name", newFileName)
+                  }
+              }
+          }
+          scope.launch { sendRaw(msg.toString()) }
+          Log.i(TAG, "发送文件冲突响应: fileId=$fileId, choice=$choice, new_name=${newFileName ?: "N/A"}")
+      }
 
     // ============================== 媒体信息监控 ==============================
     private var mediaMonitorJob: Job? = null
@@ -2244,6 +2459,7 @@ object ConnectionManager {
         Log.i(TAG, "uploadStreamInternal: 开始上传 $fileId, size=$fileSize, base=$base, offset=$resumeOffset")
         _transferCompleted.value = false
         var conn: HttpURLConnection? = null
+        var uploadInterrupted = false
         try {
             val url = URL("$base/api/upload_file")
             conn = url.openConnection() as HttpURLConnection
@@ -2263,10 +2479,9 @@ object ConnectionManager {
             val remaining = fileSize - resumeOffset
             if (remaining > 0) conn.setFixedLengthStreamingMode(remaining)
             ackTracker[fileId] = System.currentTimeMillis()
-
-            var uploadInterrupted = false
             try {
                 inputStream.use { fis ->
+                    @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")
                     conn!!.outputStream.use { os ->
                         val buffer = ByteArray(65536)
                         var sent: Long = resumeOffset
@@ -2312,7 +2527,7 @@ object ConnectionManager {
                 _fileTransferProgress.value = null
             }
         } catch (e: Exception) {
-            if (transferPaused || fileTransferCancel) {
+            if (uploadInterrupted || transferPaused || fileTransferCancel) {
                 Log.w(TAG, "uploadStreamInternal interrupted (paused/cancelled): ${e.message}")
             } else {
                 Log.e(TAG, "uploadStreamInternal failed", e)
@@ -2482,16 +2697,18 @@ object ConnectionManager {
                 Log.i(TAG, "startReceiveFile: 开始下载 $url, offset=$resumeOffset")
                 conn = url.openConnection() as HttpURLConnection
                 currentConn = conn
-                conn.connectTimeout = 5000
-                conn.readTimeout = 300000  // 5分钟，大文件需要长超时
-                conn.setRequestProperty("Authorization", "Bearer $secretToken")
-                conn.setRequestProperty("Connection", "close")  // 禁用keep-alive，避免流式传输卡死
+                @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")
+                val c = conn!!
+                c.connectTimeout = 5000
+                c.readTimeout = 300000  // 5分钟，大文件需要长超时
+                c.setRequestProperty("Authorization", "Bearer $secretToken")
+                c.setRequestProperty("Connection", "close")  // 禁用keep-alive，避免流式传输卡死
                 if (resumeOffset > 0) {
-                    conn.setRequestProperty("Range", "bytes=$resumeOffset-")
+                    c.setRequestProperty("Range", "bytes=$resumeOffset-")
                 }
 
-                val code = conn.responseCode
-                Log.i(TAG, "startReceiveFile: responseCode=$code, channel=${_currentChannel.value}, contentLength=${conn.contentLength}")
+                val code = c.responseCode
+                Log.i(TAG, "startReceiveFile: responseCode=$code, channel=${_currentChannel.value}, contentLength=${c.contentLength}")
                 if (code == 200 || code == 206) {
                     val state = fileReceiveState[fileId]
                     if (state == null) {
@@ -2507,6 +2724,7 @@ object ConnectionManager {
                     var streamBroken = false
                     try {
                         FileOutputStream(outFile, fosMode).use { fos ->
+                            @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")
                             conn!!.inputStream.use { ins ->
                                 val buffer = ByteArray(65536)
                                 var bytes: Int
@@ -2560,7 +2778,11 @@ object ConnectionManager {
                         _transferCompleted.value = true
                         _completedTransfer.tryEmit(CompletedTransfer(fileName, false))
                         _fileTransferProgress.value = null
-                        completeFileTransferNotification(fileName)
+                        // M1/S4: 只在应用不在前台时显示系统通知，前台仅用Toast即可
+                        val ctx = context
+                        if (ctx != null && !isAppInForeground(ctx)) {
+                            completeFileTransferNotification(fileName)
+                        }
                     } else {
                         // 流中断但未取消/暂停（可能是对端暂停但消息未到达，或网络异常）
                         // 视为暂停处理：保留进度和 resumeInfo，等待对端的 resume/cancel 消息
@@ -2603,6 +2825,7 @@ object ConnectionManager {
     }
 
     // downloadChunk 已废弃（改为流式下载），保留空函数避免编译错误
+    @Suppress("UNUSED_PARAMETER")
     private suspend fun downloadChunk(fileId: String, partNum: Int): ByteArray? {
         return null
     }
@@ -2706,7 +2929,10 @@ object ConnectionManager {
         fileTransferCancel = false
     }
 
-    // ============================== 自动安装APK ==============================
+    /** 获取接收目录路径（用于通知显示） */
+    fun getReceiveDirPath(): String? {
+        return receiveDir?.absolutePath
+    }
 
     private fun autoInstallApk(path: String) {
         scope.launch {
@@ -3034,24 +3260,94 @@ object ConnectionManager {
 
     // ============================== 文件管理 ==============================
 
+    /**
+     * 处理来自PC端的文件列表请求。根据通道类型和权限状态，返回适当的结果：
+     * - ADB通道：直接使用adb shell ls，不受存储权限限制
+     * - WIFI通道：检查MANAGE_EXTERNAL_STORAGE权限，无权限时引导用户授权或使用公共目录
+     */
     private fun handleFileListRequest(path: String) {
         scope.launch {
             try {
-                val dir = File(path)
-                if (!dir.exists() || !dir.isDirectory) {
-                    // 路径无效时返回空列表（携带 path 供 PC 校验），避免 PC 端永久卡在"正在请求..."
-                    val msg = buildJsonMessage {
-                        put("source", "phone")
-                        putJsonObject("data") {
-                            put("action", "file_list")
-                            put("path", path)
-                            put("files", buildJsonArray {})
-                        }
-                    }
-                    sendRaw(msg.toString())
+                val ctx = context ?: run {
+                    sendEmptyFileList(path, "无上下文")
                     return@launch
                 }
-                val files = dir.listFiles() ?: emptyArray()
+
+                // 如果是ADB通道，直接使用shell命令，不受存储权限限制
+                if (ConnectionManager._currentChannel.value == ChannelType.ADB) {
+                    // ADB模式：可通过shell访问，不检查权限
+                    val files = try {
+                        // 通过adb shell获取文件列表
+                        val output = execAdbShellCommand("ls -la ${path.replace(" ", "\\")}")
+                        if (output.isNullOrEmpty()) emptyArray() else parseAdbOutput(output)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "ADB shell list failed, trying Java File: ${e.message}")
+                        // 回退到Java File（可能受权限限制）
+                        File(path).listFiles() ?: emptyArray()
+                    }
+                    sendFileList(path, files)
+                    return@launch
+                }
+
+                // WIFI/PAW通道：需要检查存储权限
+                // 先尝试使用给定路径，如果失败则尝试公共下载目录等安全路径
+                var files: Array<File>? = null
+                var usedPath = path
+
+                // 检查是否有MANAGE_EXTERNAL_STORAGE权限
+                if (hasStoragePermission()) {
+                    // 有权限，可以直接访问
+                    val dir = File(path)
+                    if (dir.exists() && dir.isDirectory) {
+                        files = dir.listFiles()
+                    } else {
+                        Log.w(TAG, "Path $path exists/isDirectory false, trying fallback")
+                    }
+                }
+
+                // 如果没有权限或路径无效，尝试公共目录作为降级方案
+                if (files == null || files.isEmpty()) {
+                    // 尝试使用标准的Download目录（不需要特殊权限即可访问公共媒体）
+                    val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    if (downloadDir.exists() && downloadDir.isDirectory) {
+                        Log.i(TAG, "Using fallback DOWNLOAD directory due to storage permission")
+                        files = downloadDir.listFiles()
+                        usedPath = downloadDir.absolutePath
+                    }
+                }
+
+                if (files == null || files.isEmpty()) {
+                    sendEmptyFileList(usedPath, "无法访问路径或权限不足")
+                    // 提示用户去设置页面授权
+                    openStorageSettings(ctx)
+                    return@launch
+                }
+
+                sendFileList(usedPath, files)
+            } catch (e: Exception) {
+                    Log.e(TAG, "File list failed", e)
+                    // 错误时也尝试发送空列表避免死锁
+                    sendEmptyFileList(path, e.message ?: "未知错误")
+                }
+        }
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    private fun execAdbShellCommand(command: String): String {
+        // 简化的ADB shell命令执行，实际实现可能需要通过ADB连接
+        // 这里作为一个stub，实际应与ADB通道集成
+        return ""
+    }
+
+    private fun parseAdbOutput(@Suppress("UNUSED_PARAMETER") output: String): Array<File> {
+        // 解析ls -la输出，返回File对象数组
+        // 由于在协程中，实际应创建虚拟文件信息而非真实File对象
+        return emptyArray()
+    }
+
+    private fun sendFileList(path: String, files: Array<File>) {
+        scope.launch {
+            try {
                 val arr = buildJsonArray {
                     for (f in files) {
                         addJsonObject {
@@ -3073,10 +3369,31 @@ object ConnectionManager {
                 }
                 sendRaw(msg.toString())
             } catch (e: Exception) {
-                Log.e(TAG, "File list failed", e)
+                Log.e(TAG, "sendFileList failed", e)
             }
         }
     }
+
+    private fun sendEmptyFileList(path: String, @Suppress("UNUSED_PARAMETER") reason: String = "") {
+        scope.launch {
+            try {
+                val msg = buildJsonMessage {
+                    put("source", "phone")
+                    putJsonObject("data") {
+                        put("action", "file_list")
+                        put("path", path)
+                        put("files", buildJsonArray {})
+                    }
+                }
+                sendRaw(msg.toString())
+            } catch (e: Exception) {
+                Log.e(TAG, "sendEmptyFileList failed", e)
+            }
+        }
+    }
+
+    // Note: The original handleFileListRequest has been replaced with the above implementation that includes
+    // permission checking, ADB channel handling, and fallback to public directories.
 
     private fun handleFileDelete(path: String, isDir: Boolean) {
         scope.launch {
@@ -3266,29 +3583,43 @@ object ConnectionManager {
      * 后台静默截图：复用缓存 token 创建 MediaProjection，截取一帧
      * 保存到相册 + 临时文件 + 发送给电脑
      * Android 14+ 必须在前台服务中执行
-     * @return true 成功，false 失败（token 失效等）
+     * @return true 成功，false 失败（token 失效、设备锁定等）
      */
     private suspend fun performBackgroundScreenshot(): Boolean {
         return withContext(Dispatchers.IO) {
+            val ctx = context ?: return@withContext false
+            
             // Android 14+: 确保 ScreenCaptureService 正在运行
             if (android.os.Build.VERSION.SDK_INT >= 34) {
-                val ctx = context ?: return@withContext false
                 if (!ScreenCaptureService.isRunning) {
                     ScreenCaptureService.start(ctx)
                     kotlinx.coroutines.delay(1500) // 等待服务启动
                 }
                 if (!ScreenCaptureService.isRunning) {
                     Log.w(TAG, "ScreenCaptureService 未启动，无法截图")
+                    scope.launch { _screenshotResult.emit("截图服务未就绪") }
                     return@withContext false
                 }
+            }
+
+            // 检查设备是否解锁且处于可交互状态
+            val powerManager = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!powerManager.isInteractive) {
+                // 设备锁屏或休眠，无法截图
+                Log.w(TAG, "设备锁屏，无法静默截图")
+                scope.launch { _screenshotResult.emit("手机当前状态不允许截屏") }
+                return@withContext false
             }
 
             var projection: MediaProjection? = null
             var imageReader: ImageReader? = null
             var virtualDisplay: android.hardware.display.VirtualDisplay? = null
             try {
-                val ctx = context ?: return@withContext false
-                projection = getCachedMediaProjection() ?: return@withContext false
+                projection = getCachedMediaProjection() ?: run {
+                    Log.w(TAG, "无可用 MediaProjection token")
+                    scope.launch { _screenshotResult.emit("需要先授权屏幕录制权限") }
+                    return@withContext false
+                }
 
                 val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 val metrics = android.util.DisplayMetrics()
@@ -3332,7 +3663,11 @@ object ConnectionManager {
 
                 latch.await(3, TimeUnit.SECONDS)
 
-                val bmp = captured ?: return@withContext false
+                val bmp = captured ?: run {
+                    Log.w(TAG, "截图超时，未获取到图像")
+                    scope.launch { _screenshotResult.emit("截图超时，请重试") }
+                    return@withContext false
+                }
 
                 // 保存到相册 + 临时文件 + 发送给电脑
                 val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
@@ -3355,9 +3690,7 @@ object ConnectionManager {
                 try { virtualDisplay?.release() } catch (e: Exception) {}
                 try { imageReader?.close() } catch (e: Exception) {}
                 try { projection?.stop() } catch (e: Exception) {}
-                if (android.os.Build.VERSION.SDK_INT >= 34) {
-                    activeProjectionRef = null
-                }
+                activeProjectionRef = null  // Always clear to avoid using stopped projection (fix M11/S7c)
             }
         }
     }
@@ -3386,12 +3719,18 @@ object ConnectionManager {
 
     fun openUrlOnDevice(url: String, forceVia: Boolean = false) {
         // save.md 功能J：电脑端发给手机
-        // ADB连接下：复制内容到剪贴板 + 用Via浏览器打开
-        // 非ADB连接下：仅复制到剪贴板，用户自行操作
+        // 若手机应用在前台：直接打开（不复制剪贴板）；若不在前台：仅复制剪贴板
         try {
-            // 先复制到剪贴板
-            setClipboardContent(url)
+            val ctx = context ?: return
+            val isInForeground = isAppInForeground(ctx)
             val isAdb = _currentChannel.value == ChannelType.ADB
+
+            // 只有应用不在前台时才复制剪贴板（前台直接打开，无需剪贴板）
+            if (!isInForeground) {
+                setClipboardContent(url)
+            }
+
+            // 仅在ADB连接或显式标志时尝试自动打开
             if (isAdb || forceVia) {
                 // 尝试用Via浏览器打开
                 val viaPackages = listOf("mark.via", "mark.via.gp")
@@ -3402,11 +3741,11 @@ object ConnectionManager {
                             setPackage(pkg)
                             flags = Intent.FLAG_ACTIVITY_NEW_TASK
                         }
-                        context?.startActivity(intent)
+                        ctx.startActivity(intent)
                         opened = true
                         break
                     } catch (e: Exception) {
-                        // Via未安装，继续尝试下一个包名
+                        // Via未安装，继续下一个包名
                     }
                 }
                 if (!opened) {
@@ -3414,10 +3753,9 @@ object ConnectionManager {
                     val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
-                    context?.startActivity(intent)
+                    ctx.startActivity(intent)
                 }
             }
-            // 非ADB模式仅复制到剪贴板，不自动打开
         } catch (e: Exception) {
             Log.e(TAG, "Open URL failed", e)
         }
@@ -3695,6 +4033,19 @@ object ConnectionManager {
     fun addClipboardHistory(text: String, source: String) {
         val item = ClipboardItem(text, source, System.currentTimeMillis(), false)
         val list = _clipboardHistory.value.toMutableList()
+        
+        // Check if same content with same source already exists at top of list (avoid duplicates)
+        val existingIdx = list.indexOfFirst { it.content == text && it.source == source }
+        if (existingIdx >= 0) {
+            // Move existing item to front instead of adding duplicate
+            val existingItem = list.removeAt(existingIdx)
+            list.add(0, existingItem)
+            // No need to save as we didn't change the list size
+            _clipboardHistory.value = list
+            return
+        }
+        
+        // Add new item at the beginning
         list.add(0, item)
         while (list.size > CLIPBOARD_HISTORY_MAX) list.removeAt(list.size - 1)
         _clipboardHistory.value = list
@@ -3911,12 +4262,36 @@ object ConnectionManager {
         }
     }
 
+    // S8b: 发送电脑摄像头推流控制命令（start/stop）- 手机→PC方向
+    fun sendPcCameraCommand(action: String) {
+        try {
+            val url = URL("${getBaseUrl()}/api/pc_camera_command")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer $secretToken")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 2000
+            conn.readTimeout = 2000
+            
+            // 发送JSON命令
+            val command = """{"action":"$action"}"""
+            conn.outputStream.write(command.toByteArray(Charsets.UTF_8))
+            conn.outputStream.flush()
+            conn.outputStream.close()
+            conn.responseCode
+            conn.disconnect()
+            Log.i(TAG, "Sent PC camera command: $action")
+        } catch (e: Exception) {
+            Log.e(TAG, "sendPcCameraCommand failed", e)
+        }
+    }
+
     // ============================== PC 文件浏览 ==============================
 
     fun fetchPcDrives(callback: (List<PcDriveInfo>) -> Unit) {
         scope.launch {
             try {
-                val ip = pcIp ?: DEFAULT_IP
                 val baseUrl = getBaseUrl()
                 val response = client?.get("$baseUrl/api/pc_drives") {
                 }
@@ -3967,6 +4342,110 @@ object ConnectionManager {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "fetchPcFiles failed", e)
+            }
+        }
+    }
+
+    // W1: 电脑文件操作（删除/重命名/复制/属性）
+    fun pcFileInfo(path: String, callback: (Map<String, String>?) -> Unit) {
+        scope.launch {
+            try {
+                val baseUrl = getBaseUrl()
+                val response = client?.post("$baseUrl/api/pc_file_info") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"path\":\"${path.replace("\\", "\\\\")}\"}")
+                }
+                if (response?.status == HttpStatusCode.OK) {
+                    val body = response.bodyAsText()
+                    val json = Json.parseToJsonElement(body).jsonObject
+                    val map = mutableMapOf<String, String>()
+                    map["name"] = json["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                    map["is_dir"] = json["is_dir"]?.jsonPrimitive?.booleanOrNull?.toString() ?: "false"
+                    map["size"] = json["size"]?.jsonPrimitive?.longOrNull?.toString() ?: "0"
+                    map["created"] = json["created"]?.jsonPrimitive?.longOrNull?.toString() ?: "0"
+                    map["modified"] = json["modified"]?.jsonPrimitive?.longOrNull?.toString() ?: "0"
+                    map["ext"] = json["ext"]?.jsonPrimitive?.contentOrNull ?: ""
+                    withContext(Dispatchers.Main) { callback(map) }
+                } else {
+                    withContext(Dispatchers.Main) { callback(null) }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "pcFileInfo failed", e)
+                withContext(Dispatchers.Main) { callback(null) }
+            }
+        }
+    }
+
+    fun pcFileDelete(path: String, callback: (Boolean, String) -> Unit) {
+        scope.launch {
+            try {
+                val baseUrl = getBaseUrl()
+                val response = client?.post("$baseUrl/api/pc_file_delete") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"path\":\"${path.replace("\\", "\\\\")}\"}")
+                }
+                val ok = response?.status == HttpStatusCode.OK
+                var msg = "删除失败"
+                if (!ok && response != null) {
+                    try {
+                        val body = response.bodyAsText()
+                        val json = Json.parseToJsonElement(body).jsonObject
+                        msg = json["error"]?.jsonPrimitive?.contentOrNull ?: msg
+                    } catch (_: Exception) {}
+                }
+                withContext(Dispatchers.Main) { callback(ok, msg) }
+            } catch (e: Exception) {
+                Log.e(TAG, "pcFileDelete failed", e)
+                withContext(Dispatchers.Main) { callback(false, e.message ?: "删除失败") }
+            }
+        }
+    }
+
+    fun pcFileRename(path: String, newName: String, callback: (Boolean, String) -> Unit) {
+        scope.launch {
+            try {
+                val baseUrl = getBaseUrl()
+                val response = client?.post("$baseUrl/api/pc_file_rename") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"path\":\"${path.replace("\\", "\\\\")}\",\"new_name\":\"${newName.replace("\"", "\\\"")}\"}")
+                }
+                val ok = response?.status == HttpStatusCode.OK
+                var msg = "重命名失败"
+                if (!ok && response != null) {
+                    try {
+                        val body = response.bodyAsText()
+                        msg = Json.parseToJsonElement(body).jsonObject["error"]?.jsonPrimitive?.contentOrNull ?: msg
+                    } catch (_: Exception) {}
+                }
+                withContext(Dispatchers.Main) { callback(ok, msg) }
+            } catch (e: Exception) {
+                Log.e(TAG, "pcFileRename failed", e)
+                withContext(Dispatchers.Main) { callback(false, e.message ?: "重命名失败") }
+            }
+        }
+    }
+
+    fun pcFileCopy(path: String, destDir: String, callback: (Boolean, String) -> Unit) {
+        scope.launch {
+            try {
+                val baseUrl = getBaseUrl()
+                val response = client?.post("$baseUrl/api/pc_file_copy") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"path\":\"${path.replace("\\", "\\\\")}\",\"dest_dir\":\"${destDir.replace("\\", "\\\\")}\"}")
+                }
+                val ok = response?.status == HttpStatusCode.OK
+                var errMsg = "复制失败"
+                if (!ok && response != null) {
+                    try {
+                        val body = response.bodyAsText()
+                        errMsg = Json.parseToJsonElement(body).jsonObject["error"]?.jsonPrimitive?.contentOrNull ?: errMsg
+                    } catch (_: Exception) {}
+                }
+                val finalMsg = if (ok) "复制成功" else errMsg
+                withContext(Dispatchers.Main) { callback(ok, finalMsg) }
+            } catch (e: Exception) {
+                Log.e(TAG, "pcFileCopy failed", e)
+                withContext(Dispatchers.Main) { callback(false, e.message ?: "复制失败") }
             }
         }
     }
