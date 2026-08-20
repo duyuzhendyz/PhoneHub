@@ -102,6 +102,22 @@ def handle_error(e):
     return jsonify({"error": str(e)}), 500
 
 
+@app.route("/")
+def index():
+    """健康检查路由"""
+    return jsonify({
+        "service": "PhoneHub PAW Relay Server",
+        "status": "running",
+        "server_time": int(time.time()),
+    })
+
+
+@app.errorhandler(404)
+def handle_404(e):
+    """未匹配路由返回标准 JSON 404，避免被全局异常处理拦截成 500"""
+    return jsonify({"error": "not found", "path": request.path}), 404
+
+
 # ==================== 心跳与注册 ====================
 
 @app.route("/api/register", methods=["POST"])
