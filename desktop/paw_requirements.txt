@@ -1,0 +1,4 @@
+# PhoneHub PAW 中继服务器（PythonAnywhere 部署）依赖
+# 安装：pip install -r paw_requirements.txt
+flask>=2.3
+flask-cors>=4.0

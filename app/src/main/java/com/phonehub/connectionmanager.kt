@@ -69,7 +69,7 @@ object ConnectionManager {
     private const val DEFAULT_SECRET_TOKEN = "541881452418845"
     private const val DEFAULT_PORT = 58627
     private const val CHUNK_SIZE = 524288  // 512KB，与PC端保持一致，减少HTTP请求数量
-    private const val DEFAULT_PAW_URL = ""
+    private const val DEFAULT_PAW_URL = "https://duyuzhendyz.pythonanywhere.com"
     private const val DEFAULT_IP = "192.168.3.9"
 
     // 重连参数

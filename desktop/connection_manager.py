@@ -61,6 +61,7 @@ CHANNEL_PRIORITY = {CHANNEL_ADB: 3, CHANNEL_WIFI: 2, CHANNEL_PAW: 1, CHANNEL_NON
 class ConnectionManager(QObject):
     # ==================== 类常量 ====================
     DEFAULT_SECRET_TOKEN = "541881452418845"
+    DEFAULT_PAW_URL = "https://duyuzhendyz.pythonanywhere.com"
     DEFAULT_PORT = 58627
     CHUNK_SIZE = 524288  # 512KB，减少文件传输的HTTP请求数量，降低延迟
     LOG_DIR = os.path.join(os.path.expanduser("~"), "PhoneHub")
@@ -130,7 +131,7 @@ class ConnectionManager(QObject):
         self._settings_cache = {}
         self._load_settings_cache()
         self.secret_token = self._settings_cache.get("secret_token", self.DEFAULT_SECRET_TOKEN)
-        self.paw_url = self._settings_cache.get("paw_url", "")
+        self.paw_url = self._settings_cache.get("paw_url", self.DEFAULT_PAW_URL)
         
         self.app = Flask(__name__)
         self.app.logger.removeHandler(default_handler)

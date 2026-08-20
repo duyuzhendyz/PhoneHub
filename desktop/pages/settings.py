@@ -118,12 +118,12 @@ class SettingsPage(QWidget):
         token_row = QHBoxLayout()
         token_row.addWidget(BodyLabel("连接令牌:"))
         self.paw_token_input = LineEdit()
-        # 从 settings.json 加载实际 token，若无则使用 connection_manager.SECRET_TOKEN 的当前值
+        # 从 settings.json 加载实际 token，若无则使用 ConnectionManager 的默认令牌
         try:
-            from connection_manager import SECRET_TOKEN as _current_token
-            _token = self.settings_data.get("paw_token", _current_token)
+            from connection_manager import ConnectionManager
+            _token = self.settings_data.get("paw_token", ConnectionManager.DEFAULT_SECRET_TOKEN)
         except Exception:
-            _token = self.settings_data.get("paw_token", "phonehub_default_secret_token")
+            _token = self.settings_data.get("paw_token", "541881452418845")
         self.paw_token_input.setText(_token)
         self.paw_token_input.setEchoMode(LineEdit.Password)
         self.paw_token_input.setMinimumWidth(200)
@@ -135,10 +135,10 @@ class SettingsPage(QWidget):
         paw_url_row.addWidget(BodyLabel("PAW 服务器地址:"))
         self.paw_url_input = LineEdit()
         try:
-            from connection_manager import PAW_URL as _current_paw_url
-            _paw_url = self.settings_data.get("paw_url", _current_paw_url)
+            from connection_manager import ConnectionManager
+            _paw_url = self.settings_data.get("paw_url", ConnectionManager.DEFAULT_PAW_URL)
         except Exception:
-            _paw_url = self.settings_data.get("paw_url", "")
+            _paw_url = self.settings_data.get("paw_url", "https://duyuzhendyz.pythonanywhere.com")
         self.paw_url_input.setText(_paw_url)
         self.paw_url_input.setPlaceholderText("https://yourname.pythonanywhere.com")
         self.paw_url_input.setMinimumWidth(300)

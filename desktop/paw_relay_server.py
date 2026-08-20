@@ -37,6 +37,7 @@ DEVICE_CLEANUP_INTERVAL = 60    # 秒，设备清理间隔
 FILE_BLOCK_SIZE = 64 * 1024     # 64KB 分块大小
 FLOW_CONTROL_HIGH = 300 * 1024 * 1024  # 300MB 流量控制上限
 FLOW_CONTROL_LOW = 250 * 1024 * 1024   # 250MB 流量控制下限
+LONGPOLL_MAX_SECONDS = 50  # 长轮询最大时长：避免单个 SSE 连接永久占用 PythonAnywhere 进程
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [PAW] %(levelname)s %(message)s")
 logger = logging.getLogger("phonehub-paw")
@@ -268,7 +269,11 @@ def get_cmd():
             return jsonify({"error": "device not registered"}), 404
 
     def generate():
+        start_time = time.time()
         while True:
+            # 达到最大时长后断开，由客户端自动重连，避免永久占用 worker
+            if time.time() - start_time > LONGPOLL_MAX_SECONDS:
+                return
             with msg_queues_lock:
                 if device_id in msg_queues and msg_queues[device_id]:
                     msg = msg_queues[device_id].pop(0)
@@ -300,7 +305,11 @@ def get_msg():
             return jsonify({"error": "device not registered"}), 404
 
     def generate():
+        start_time = time.time()
         while True:
+            # 达到最大时长后断开，由客户端自动重连，避免永久占用 worker
+            if time.time() - start_time > LONGPOLL_MAX_SECONDS:
+                return
             with msg_queues_lock:
                 if device_id in msg_queues and msg_queues[device_id]:
                     msg = msg_queues[device_id].pop(0)
@@ -540,10 +549,22 @@ def cleanup_stale_devices():
 
 # ==================== 启动 ====================
 
-if __name__ == "__main__":
-    # 启动清理线程
+_bg_threads_started = False
+
+
+def start_background_threads():
+    """启动后台清理线程（本地 __main__ 与 PythonAnywhere WSGI 均调用，幂等）"""
+    global _bg_threads_started
+    if _bg_threads_started:
+        return
     threading.Thread(target=cleanup_file_blocks, daemon=True).start()
     threading.Thread(target=cleanup_stale_devices, daemon=True).start()
+    _bg_threads_started = True
+    logger.info("Background cleanup threads started")
+
+
+if __name__ == "__main__":
+    start_background_threads()
 
     logger.info(f"Starting PhoneHub PAW server on 0.0.0.0:5000")
     logger.info(f"SECRET_TOKEN: {'*' * 8}{SECRET_TOKEN[-4:]}")

@@ -269,8 +269,10 @@ class MainActivity : AppCompatActivity() {
         // PAW 配置
         val cachedPawUrl = prefs.getString("cached_paw_url", "")
         if (!cachedPawUrl.isNullOrEmpty()) pawUrlInput.setText(cachedPawUrl)
+        if (pawUrlInput.text.isBlank()) pawUrlInput.setText("https://duyuzhendyz.pythonanywhere.com")
         val cachedPawToken = prefs.getString("cached_paw_token", "")
         if (!cachedPawToken.isNullOrEmpty()) pawTokenInput.setText(cachedPawToken)
+        if (pawTokenInput.text.isBlank()) pawTokenInput.setText("541881452418845")
 
         // PAW 保存按钮
         findViewById<Button>(R.id.savePawBtn)?.setOnClickListener {
@@ -3354,6 +3356,8 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("phonehub_prefs", Context.MODE_PRIVATE)
         prefs.getString("cached_paw_url", "")?.let { etPawUrl.setText(it) }
         prefs.getString("cached_paw_token", "")?.let { etPawToken.setText(it) }
+        if (etPawUrl.text.isBlank()) etPawUrl.setText("https://duyuzhendyz.pythonanywhere.com")
+        if (etPawToken.text.isBlank()) etPawToken.setText("541881452418845")
 
         btnSavePaw?.applyDarkTheme(primary = true)
         btnSavePaw?.setOnClickListener {
