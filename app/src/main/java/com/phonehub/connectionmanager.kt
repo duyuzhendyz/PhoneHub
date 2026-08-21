@@ -1271,35 +1271,34 @@ object ConnectionManager {
                     val conn = URL(url).openConnection() as HttpURLConnection
                     conn.requestMethod = "GET"
                     conn.setRequestProperty("Authorization", "Bearer $secretToken")
-                    conn.readTimeout = 35000
+                    conn.readTimeout = 15000
                     conn.connectTimeout = 10000
 
-                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        val lineStr = line ?: continue
-                        if (lineStr.startsWith("data: ")) {
+                    val resp = BufferedReader(InputStreamReader(conn.inputStream)).readText()
+                    conn.disconnect()
+
+                    // 短轮询：服务器立即返回 {"messages":[...]}，无消息则为空数组
+                    if (resp.isNotBlank()) {
+                        val root = Json.parseToJsonElement(resp).jsonObject
+                        val messages = root["messages"]?.jsonArray
+                        messages?.forEach { elem ->
                             try {
-                                val jsonStr = lineStr.substring(6)
-                                if (jsonStr.contains("\"activate\":\"ping\"")) continue
-                                val msg = Json.parseToJsonElement(jsonStr).jsonObject
+                                val msg = elem.jsonObject
+                                if (msg["activate"]?.jsonPrimitive?.contentOrNull == "ping") return@forEach
                                 handlePawMessage(msg)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Parse PAW message failed", e)
                             }
-                        } else if (lineStr.startsWith(": ")) {
-                            continue  // SSE 心跳
                         }
                     }
-                    reader.close()
-                    conn.disconnect()
                     _connectionState.value = ConnectionState.CONNECTED
                     _connectionMessage.value = "已连接 - PAW 中转"
                     userVerifiedConnection = true
                     lastPcCpuAt = System.currentTimeMillis()
                     reconnectFailCount = 0
+                    delay(2000L)
                 } catch (e: Exception) {
-                    delay(2000)
+                    delay(2000L)
                 }
             }
         }

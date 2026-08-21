@@ -20,7 +20,7 @@ import uuid
 import threading
 import shutil
 import logging
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 # ==================== 配置 ====================
@@ -37,7 +37,6 @@ DEVICE_CLEANUP_INTERVAL = 60    # 秒，设备清理间隔
 FILE_BLOCK_SIZE = 64 * 1024     # 64KB 分块大小
 FLOW_CONTROL_HIGH = 300 * 1024 * 1024  # 300MB 流量控制上限
 FLOW_CONTROL_LOW = 250 * 1024 * 1024   # 250MB 流量控制下限
-LONGPOLL_MAX_SECONDS = 50  # 长轮询最大时长：避免单个 SSE 连接永久占用 PythonAnywhere 进程
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [PAW] %(levelname)s %(message)s")
 logger = logging.getLogger("phonehub-paw")
@@ -272,7 +271,10 @@ def send_message():
 
 @app.route("/api/get_cmd", methods=["GET"])
 def get_cmd():
-    """PC 端长轮询获取指令（save.md 标准端点）"""
+    """PC 端短轮询获取指令（save.md 标准端点）
+    立即返回当前队列中的消息；无消息返回空列表，由客户端周期性重询，
+    避免 SSE 长连接长期占用 PythonAnywhere 单 worker。
+    """
     if not check_auth(request):
         return jsonify({"error": "unauthorized"}), 403
 
@@ -284,31 +286,20 @@ def get_cmd():
         if device_id not in devices:
             return jsonify({"error": "device not registered"}), 404
 
-    def generate():
-        start_time = time.time()
-        while True:
-            # 达到最大时长后断开，由客户端自动重连，避免永久占用 worker
-            if time.time() - start_time > LONGPOLL_MAX_SECONDS:
-                return
-            with msg_queues_lock:
-                if device_id in msg_queues and msg_queues[device_id]:
-                    msg = msg_queues[device_id].pop(0)
-                    yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
-                    if msg_queues[device_id]:
-                        for m in msg_queues[device_id]:
-                            yield f"data: {json.dumps(m, ensure_ascii=False)}\n\n"
-                        msg_queues[device_id] = []
-                    break
+    with msg_queues_lock:
+        pending = msg_queues.pop(device_id, [])
+        if len(pending) > MSG_QUEUE_MAX:
+            pending = pending[-MSG_QUEUE_MAX:]
 
-            yield ": heartbeat\n\n"
-            time.sleep(1)
-
-    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+    return jsonify({"messages": pending, "ts": int(time.time() * 1000)})
 
 
 @app.route("/api/get_msg", methods=["GET"])
 def get_msg():
-    """手机端长轮询获取消息（save.md 标准端点）"""
+    """手机端短轮询获取消息（save.md 标准端点）
+    立即返回当前队列中的消息；无消息返回空列表，由客户端周期性重询，
+    避免 SSE 长连接长期占用 PythonAnywhere 单 worker。
+    """
     if not check_auth(request):
         return jsonify({"error": "unauthorized"}), 403
 
@@ -320,26 +311,12 @@ def get_msg():
         if device_id not in devices:
             return jsonify({"error": "device not registered"}), 404
 
-    def generate():
-        start_time = time.time()
-        while True:
-            # 达到最大时长后断开，由客户端自动重连，避免永久占用 worker
-            if time.time() - start_time > LONGPOLL_MAX_SECONDS:
-                return
-            with msg_queues_lock:
-                if device_id in msg_queues and msg_queues[device_id]:
-                    msg = msg_queues[device_id].pop(0)
-                    yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
-                    if msg_queues[device_id]:
-                        for m in msg_queues[device_id]:
-                            yield f"data: {json.dumps(m, ensure_ascii=False)}\n\n"
-                        msg_queues[device_id] = []
-                    break
+    with msg_queues_lock:
+        pending = msg_queues.pop(device_id, [])
+        if len(pending) > MSG_QUEUE_MAX:
+            pending = pending[-MSG_QUEUE_MAX:]
 
-            yield ": heartbeat\n\n"
-            time.sleep(1)
-
-    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+    return jsonify({"messages": pending, "ts": int(time.time() * 1000)})
 
 
 # ==================== 文件块传输 ====================

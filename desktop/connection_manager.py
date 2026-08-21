@@ -1422,43 +1422,36 @@ class ConnectionManager(QObject):
         self.paw_thread.start()
 
     def _paw_long_poll(self):
-        """PAW 长轮询（SSE 风格，使用 save.md 标准端点 /api/get_cmd）"""
+        """PAW 短轮询（每 PAW_POLL_INTERVAL 秒拉取一次指令，避免长期占用服务器 worker）"""
         fail_count = 0
         while self.paw_running:
             try:
                 resp = requests.get(
                     f"{self.paw_url}/api/get_cmd",
                     headers={"Authorization": f"Bearer {self.secret_token}"},
-                    stream=True,
-                    timeout=35,
+                    timeout=max(15, self.PAW_LONG_POLL_TIMEOUT),
                     params={"device_id": self.paw_device_id}
                 )
-                for line in resp.iter_lines():
-                    if line:
-                        line = line.decode('utf-8')
-                        if line.startswith('data: '):
-                            try:
-                                data = json.loads(line[6:])
-                                if data.get('activate') == 'ping':
-                                    continue
-                                self._handle_paw_message(data)
-                                fail_count = 0
-                            except Exception:
-                                pass
-                        elif line.startswith(': '):
-                            continue  # SSE 心跳
-                # 长轮询超时
-                fail_count += 1
-                if fail_count >= self.RECONNECT_RETRY:
-                    self.paw_connected = False
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for msg in data.get("messages", []):
+                        try:
+                            if msg.get('activate') == 'ping':
+                                continue
+                            self._handle_paw_message(msg)
+                            fail_count = 0
+                        except Exception:
+                            pass
                     fail_count = 0
-                time.sleep(2)
+                else:
+                    fail_count += 1
+                time.sleep(self.PAW_RECONNECT_WAIT)
             except Exception:
                 fail_count += 1
                 if fail_count >= self.RECONNECT_RETRY:
                     self.paw_connected = False
                     fail_count = 0
-                time.sleep(2)
+                time.sleep(self.PAW_RECONNECT_WAIT)
     #
     def _handle_paw_message(self, data):
         """PAW 通道消息处理"""
