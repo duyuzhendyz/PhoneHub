@@ -293,13 +293,13 @@ class SettingsPage(QWidget):
             paw_token = self.paw_token_input.text().strip()
             paw_url = self.paw_url_input.text().strip()
             if paw_token:
-                import connection_manager
-                connection_manager.SECRET_TOKEN = paw_token
+                self.manager.secret_token = paw_token
                 self.settings_data["paw_token"] = paw_token
             if paw_url:
-                import connection_manager
-                connection_manager.PAW_URL = paw_url
+                self.manager.paw_url = paw_url
                 self.settings_data["paw_url"] = paw_url
+            # 同步到 ConnectionManager 实际读取的配置缓存，确保 PAW 连接使用新值
+            self.manager._save_settings_cache(paw_url=paw_url or None, secret_token=paw_token or None)
             self.settings_data["auto_start"] = self.auto_start_cb.isChecked()
             self.settings_data["auto_sync"] = self.auto_sync_cb.isChecked()
             self.settings_data["auto_open"] = self.auto_open_cb.isChecked()

@@ -33,6 +33,9 @@ Desktop.ini
 # 签名密钥（敏感信息）
 *.keystore
 
+# 本地运行配置（含连接令牌等敏感信息，不入库）
+desktop/settings.json
+
 # 临时文件
 *.tmp
 *.log
