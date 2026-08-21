@@ -87,6 +87,7 @@ class MainActivity : AppCompatActivity() {
 
     // 摄像头画面超时清理：2秒无新帧则清空画面
     private val frameTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val screenCaptureHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var mirrorFrameTimeoutRunnable: Runnable? = null
     private var cameraFrameTimeoutRunnable: Runnable? = null
 
@@ -194,23 +195,51 @@ class MainActivity : AppCompatActivity() {
     ) { result ->
         try {
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
-                    as android.media.projection.MediaProjectionManager
                 // 缓存 MediaProjection token 供后台静默截图复用
                 ConnectionManager.cacheMediaProjectionToken(result.resultCode, result.data!!)
-                mediaProjection = mpManager.getMediaProjection(result.resultCode, result.data!!)
-                mediaProjection?.registerCallback(object : android.media.projection.MediaProjection.Callback() {
-                    override fun onStop() {
-                        stopPhoneScreenCapture()
+                if (android.os.Build.VERSION.SDK_INT >= 34) {
+                    // Android 14+ 强制要求 MediaProjection 在已声明 mediaProjection 类型的前台服务中创建
+                    // 通过 ScreenCaptureService 创建并复用其投影实例，Activity 内不可直接 getMediaProjection()
+                    ConnectionManager.attachScreenCaptureService(this, result.resultCode, result.data!!) {
+                        startCapturedProjection()
                     }
-                }, android.os.Handler(android.os.Looper.getMainLooper()))
-                startScreenCaptureLoop()
+                } else {
+                    val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                        as android.media.projection.MediaProjectionManager
+                    mediaProjection = mpManager.getMediaProjection(result.resultCode, result.data!!)
+                    mediaProjection?.registerCallback(object : android.media.projection.MediaProjection.Callback() {
+                        override fun onStop() {
+                            stopPhoneScreenCapture()
+                        }
+                    }, android.os.Handler(android.os.Looper.getMainLooper()))
+                    startCapturedProjection()
+                }
             } else {
                 Toast.makeText(this, "屏幕录制权限被拒绝", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
             Toast.makeText(this, "初始化投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
         }
+    }
+
+    /**
+     * 使用已就绪的 MediaProjection 启动投屏循环
+     * Android 14+ 时 mediaProjection 来自 ScreenCaptureService 持有的实例
+     */
+    private fun startCapturedProjection() {
+        val proj = if (android.os.Build.VERSION.SDK_INT >= 34) {
+            ConnectionManager.getCachedMediaProjection()
+        } else {
+            mediaProjection
+        }
+        if (proj == null) {
+            screenCaptureHandler.post {
+                Toast.makeText(this, "初始化投屏失败: 无法获取 MediaProjection", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        mediaProjection = proj
+        startScreenCaptureLoop()
     }
 
     // 文字保存：用系统文件选择器（ACTION_CREATE_DOCUMENT）选择保存路径

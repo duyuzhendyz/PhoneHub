@@ -3470,6 +3470,52 @@ object ConnectionManager {
     }
 
     /**
+     * Android 14+：启动 ScreenCaptureService（mediaProjection 前台服务）并在服务内创建 MediaProjection，
+     * 就绪后回调 onProjectionReady()。Activity 内不可直接 getMediaProjection()。
+     * @param ctx 用于启动前台服务的 Context（通常为 Activity）
+     * @param resultCode MediaProjection 授权结果码
+     * @param data MediaProjection 授权 Intent
+     * @param onProjectionReady 投影就绪后的回调（主线程）
+     */
+    fun attachScreenCaptureService(ctx: Context, resultCode: Int, data: Intent,
+                                   onProjectionReady: () -> Unit) {
+        // 服务已运行且已创建投影：直接回调
+        if (ScreenCaptureService.isRunning && ScreenCaptureService.instance?.getProjection() != null) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post(onProjectionReady)
+            return
+        }
+        // 启动前台服务
+        ScreenCaptureService.start(ctx)
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        val maxAttempts = 10
+        val retry = object : Runnable {
+            var attempts = 0
+            override fun run() {
+                attempts++
+                val svc = ScreenCaptureService.instance
+                if (svc != null && ScreenCaptureService.isRunning) {
+                    try {
+                        // 在服务内创建 MediaProjection（满足前台服务类型要求）
+                        svc.startProjection(resultCode, data)
+                        if (svc.getProjection() != null) {
+                            mainHandler.post(onProjectionReady)
+                            return
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "startProjection failed", e)
+                    }
+                }
+                if (attempts < maxAttempts) {
+                    mainHandler.postDelayed(this, 200L)
+                } else {
+                    Log.e(TAG, "ScreenCaptureService 启动超时")
+                }
+            }
+        }
+        mainHandler.postDelayed(retry, 200L)
+    }
+
+    /**
      * 是否已缓存可用的 MediaProjection token
      */
     fun hasCachedProjectionToken(): Boolean {
