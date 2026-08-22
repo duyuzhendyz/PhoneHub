@@ -232,4 +232,35 @@
             android:textColor="#b0b0b0"
             android:textSize="12sp" />
     </LinearLayout>
+
+    <!-- PAW 连接加载遮罩 -->
+    <FrameLayout
+        android:id="@+id/pawLoadingOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#1e1e1e"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <ProgressBar
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginBottom="16dp"
+                android:indeterminateTint="#ffffff" />
+
+            <TextView
+                android:id="@+id/pawLoadingText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="正在通过 PAW 连接..."
+                android:textColor="#ffffff"
+                android:textSize="16sp" />
+        </LinearLayout>
+    </FrameLayout>
 </FrameLayout>

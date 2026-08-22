@@ -281,6 +281,7 @@ object ConnectionManager {
     private var msgPollingJob: Job? = null
     private var statusReportJob: Job? = null
     private var adbWatchdogJob: Job? = null
+    private var connectJob: Job? = null
     @Volatile
     private var lastClipboardContent = ""
 
@@ -564,7 +565,8 @@ object ConnectionManager {
         // save.md 规则：本地缓存的电脑IP仅在直连成功时更新，失败不缓存
         // 因此此处不预先 cacheIp，等 testConnection 成功后再缓存
 
-        scope.launch {
+        connectJob?.cancel()
+        connectJob = scope.launch {
             if (isAdbAvailable()) {
                 _connectionMessage.value = "检测到 ADB 通道，尝试通过 ADB 连接..."
                 val adbSuccess = testConnection("127.0.0.1", port)
@@ -584,7 +586,9 @@ object ConnectionManager {
                     } else {
                         val reason = lastConnectFailReason ?: "未知错误"
                         _connectionMessage.value = "WiFi 连接失败: $reason"
-                        _connectionState.value = ConnectionState.DISCONNECTED
+                        if (isActive && _currentChannel.value == ChannelType.NONE) {
+                            _connectionState.value = ConnectionState.DISCONNECTED
+                        }
                     }
                 }
             } else {
@@ -604,7 +608,9 @@ object ConnectionManager {
                         _connectionMessage.value = "PAW 中转连接成功"
                         startChannel(ChannelType.PAW)
                     } else {
-                        _connectionState.value = ConnectionState.DISCONNECTED
+                        if (isActive && _currentChannel.value == ChannelType.NONE) {
+                            _connectionState.value = ConnectionState.DISCONNECTED
+                        }
                     }
                 }
             }
@@ -4537,6 +4543,9 @@ object ConnectionManager {
     fun connectPaw() {
         userConnectedIntent = true
         lastConnectFailReason = null
+        // 取消正在进行的自动连接，防止其失败后覆盖 PAW 的 CONNECTED 状态
+        connectJob?.cancel()
+        connectJob = null
         _connectionState.value = ConnectionState.CONNECTING
         _connectionMessage.value = "正在通过 PAW 连接..."
         Log.i(TAG, "connectPaw() called")

@@ -69,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pawTokenInput: EditText
     private lateinit var connectBtn: Button
     private lateinit var pawConnectBtn: Button
+    private lateinit var pawLoadingOverlay: FrameLayout
     private lateinit var connectStatus: TextView
     private lateinit var statusText: TextView
     private lateinit var titleText: TextView
@@ -321,6 +322,7 @@ class MainActivity : AppCompatActivity() {
 
         // PAW 连接按钮
         pawConnectBtn = findViewById(R.id.pawConnectBtn)
+        pawLoadingOverlay = findViewById(R.id.pawLoadingOverlay)
         pawConnectBtn.setOnClickListener {
             val url = pawUrlInput.text.toString().trim()
             val token = pawTokenInput.text.toString().trim()
@@ -333,7 +335,9 @@ class MainActivity : AppCompatActivity() {
                 .putString("cached_paw_url", url)
                 .putString("cached_paw_token", token)
                 .apply()
-            Toast.makeText(this, "正在通过 PAW 连接...", Toast.LENGTH_SHORT).show()
+            // 显示加载遮罩，隐藏表单
+            pawLoadingOverlay.visibility = View.VISIBLE
+            findViewById<TextView>(R.id.pawLoadingText).text = "正在通过 PAW 连接..."
             ConnectionManager.connectPaw()
         }
 
@@ -3510,6 +3514,7 @@ class MainActivity : AppCompatActivity() {
                 when (state) {
                     ConnectionManager.ConnectionState.DISCONNECTED -> {
                         connectBtn.isEnabled = true
+                        pawLoadingOverlay.visibility = View.GONE
                         val msg = ConnectionManager.connectionMessage.value
                         connectStatus.text = if (msg.startsWith("WiFi 连接失败") || msg.startsWith("ADB 连接失败")) msg else "未连接"
                         statusText.text = "未连接"
@@ -3535,6 +3540,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     ConnectionManager.ConnectionState.CONNECTED -> {
                         connectBtn.isEnabled = true
+                        pawLoadingOverlay.visibility = View.GONE
                         connectStatus.text = "已连接"
                         statusText.text = "已连接"
                         statusText.setTextColor(0xFF107c10.toInt())
