@@ -451,17 +451,7 @@ object ConnectionManager {
         // 启动媒体信息监控（定期轮询，尽快反映播放状态变化）
         startMediaMonitoring()
         // 通知监听权限由用户在通知页手动开启，不在启动时自动检查或跳转设置页
-        // 启动时自动连接（使用缓存的 IP/端口/Token，无缓存则用默认值）
-        scope.launch {
-            val prefs = ctx.getSharedPreferences("phonehub_prefs", Context.MODE_PRIVATE)
-            val cachedIp = getCachedIp() ?: DEFAULT_IP
-            val cachedPort = if (prefs.contains("cached_port")) prefs.getInt("cached_port", DEFAULT_PORT) else DEFAULT_PORT
-            val cachedToken = prefs.getString("cached_token", DEFAULT_SECRET_TOKEN) ?: DEFAULT_SECRET_TOKEN
-            // 优先使用 cached_token，其次使用 paw_token
-            val effectiveToken = if (cachedToken != DEFAULT_SECRET_TOKEN) cachedToken else secretToken
-            delay(300)  // 等待 client 初始化完成
-            connect(cachedIp, cachedPort, effectiveToken)
-        }
+        // 不再自动连接：由用户手动点击 WiFi 直连或 PAW 连接，避免 app 启动即抢占连接
     }
 
     fun hasReceivedPcCpu(): Boolean {
@@ -1357,11 +1347,12 @@ object ConnectionManager {
                 }
             }
 
-            // 通过 PAW 发送
+            // 通过 PAW 发送（必须带 X-Device-Id 头，服务器据此识别 sender 并配对 target）
             val conn = URL("$pawUrl/api/send").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Authorization", "Bearer $secretToken")
             conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("X-Device-Id", pawDeviceId ?: "")
             conn.doOutput = true
             conn.outputStream.use { os ->
                 os.write(msg.toString().toByteArray(Charsets.UTF_8))
@@ -4235,12 +4226,20 @@ object ConnectionManager {
                         setBody(payload)
                     }
                 }
-                // ChannelType.PAW -> {  // 【禁止删除】PAW 发送
-                //     client?.post("$pawUrl/api/send") {
-                //         contentType(ContentType.Application.Json)
-                //         setBody(payload)
-                //     }
-                // }
+                ChannelType.PAW -> {
+                    // 通过 PAW 发送业务指令，带 X-Device-Id 头供服务器识别 sender
+                    val conn = java.net.URL("$pawUrl/api/send").openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Authorization", "Bearer $secretToken")
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("X-Device-Id", pawDeviceId ?: "")
+                    conn.doOutput = true
+                    conn.outputStream.use { os ->
+                        os.write(payload.toByteArray(Charsets.UTF_8))
+                    }
+                    conn.responseCode
+                    conn.disconnect()
+                }
                 else -> {}
             }
         } catch (e: Exception) {
