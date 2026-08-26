@@ -1230,12 +1230,10 @@ object ConnectionManager {
         pawPollingJob?.cancel()
         statusJob?.cancel()
         _currentChannel.value = ChannelType.PAW
-        
-        // PAW 通道需要独立的状态上报任务（替代 ADB/WiFi 的轮询机制）
-        startPawStatusReport()
-        
-        // 注册 PAW 设备
-        scope.launch {
+
+        // 顺序执行：先注册拿 pawDeviceId，再启动状态上报与轮询，避免 get_msg 空 device_id 返回 400
+        pawPollingJob = scope.launch {
+            // 1) 确保设备已注册
             if (pawDeviceId == null) {
                 try {
                     val phoneId = android.provider.Settings.Secure.getString(context?.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone_${System.currentTimeMillis()}"
@@ -1259,8 +1257,9 @@ object ConnectionManager {
                     pawDeviceId = "phone_${System.currentTimeMillis()}"
                 }
             }
-        }
-        pawPollingJob = scope.launch {
+            // 2) 注册完成后启动独立的状态上报
+            startPawStatusReport()
+            // 3) 短轮询收电脑端消息
             while (isActive) {
                 try {
                     val url = "$pawUrl/api/get_msg?device_id=${pawDeviceId}"

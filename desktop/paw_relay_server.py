@@ -232,23 +232,31 @@ def send_message():
     target_id = data.get("target_id", "")
 
     if not sender_id or not target_id:
-        # 尝试从设备类型推断
+        # 尝试从设备类型推断：优先选「在线且最近活跃」的同类设备，
+        # 避免历史残留离线设备抢占配对位。
         with devices_lock:
             sender_info = devices.get(sender_id)
             if sender_info and sender_info["type"] == "pc":
-                # PC 发送 → 找配对的手机
-                target_id = None
-                for dev_id, info in devices.items():
-                    if info["type"] == "phone":
-                        target_id = dev_id
-                        break
+                target_type = "phone"
             elif sender_info and sender_info["type"] == "phone":
-                # 手机发送 → 找配对的 PC
+                target_type = "pc"
+            else:
+                target_type = None
+
+            if target_type:
                 target_id = None
+                best_ts = -1
+                now = time.time()
                 for dev_id, info in devices.items():
-                    if info["type"] == "pc":
+                    if info["type"] != target_type:
+                        continue
+                    # 跳过离线设备（心跳超时）
+                    if now - info["last_heartbeat"] > HEARTBEAT_TIMEOUT:
+                        continue
+                    # 优先选择最近活动的设备
+                    if info["last_heartbeat"] > best_ts:
+                        best_ts = info["last_heartbeat"]
                         target_id = dev_id
-                        break
 
     if not target_id:
         return jsonify({"error": "target_id required"}), 400
@@ -285,6 +293,8 @@ def get_cmd():
     with devices_lock:
         if device_id not in devices:
             return jsonify({"error": "device not registered"}), 404
+        # 轮询即视为在线，刷新心跳防超时清理
+        devices[device_id]["last_heartbeat"] = time.time()
 
     with msg_queues_lock:
         pending = msg_queues.pop(device_id, [])
@@ -310,6 +320,8 @@ def get_msg():
     with devices_lock:
         if device_id not in devices:
             return jsonify({"error": "device not registered"}), 404
+        # 轮询即视为在线，刷新心跳防超时清理
+        devices[device_id]["last_heartbeat"] = time.time()
 
     with msg_queues_lock:
         pending = msg_queues.pop(device_id, [])

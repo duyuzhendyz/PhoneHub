@@ -1323,6 +1323,9 @@ class ConnectionManager(QObject):
         self.server_thread = threading.Thread(target=self._run_server, daemon=True)
         self.server_thread.start()
         self._start_monitoring()
+        # 启动即被动注册 PAW 设备并保活轮询，作为常驻配对目标，
+        # 手机端 PAW 连接时可被服务器配对到（不触发 UI 连接状态）。
+        threading.Thread(target=self._register_paw_device, daemon=True).start()
         # threading.Thread(target=self._report_to_paw, daemon=True).start()  # 【禁止删除】PAW 上报
         # self._start_paw_polling()  # 【禁止删除】PAW 轮询
         # 先等待ADB连接（10秒），超时后切换到WiFi等待模式
