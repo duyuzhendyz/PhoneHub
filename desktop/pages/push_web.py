@@ -146,14 +146,10 @@ class PushWebPage(QWidget):
         return text
 
     def _open_in_edge(self, url):
-        try:
-            # 优先使用 Edge, 找不到则使用默认浏览器
-            subprocess.Popen(['start', 'msedge', url], shell=True)
-        except Exception:
-            try:
-                os.startfile(url)
-            except Exception:
-                pass
+        # 用系统解析打开 URL，与 shell 完全解耦，消除命令注入面
+        from PyQt5.QtGui import QDesktopServices
+        from PyQt5.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(url))
 
     def _handle_received(self):
         text = self.recv_text.toPlainText().strip()

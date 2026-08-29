@@ -151,6 +151,8 @@ class ScreenshotActivity : AppCompatActivity() {
                     buffer.rewind()
                     bmp.copyPixelsFromBuffer(buffer)
                     val cropped = Bitmap.createBitmap(bmp, 0, 0, w, h)
+                    // 原始全尺寸位图（含 rowPadding）用后即回收，避免峰值双份全屏位图导致 OOM
+                    bmp.recycle()
                     onScreenshotCaptured(cropped)
                 } catch (e: Exception) {
                     Log.e(TAG, "Image available handle failed", e)
@@ -170,21 +172,24 @@ class ScreenshotActivity : AppCompatActivity() {
     private fun onScreenshotCaptured(bmp: Bitmap) {
         try {
             val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val fileName = "screenshot_${ts}.png"
+            val pngName = "screenshot_${ts}.png"
+            val jpgName = "screenshot_${ts}.jpg"
 
-            // 1. 相册存一份
-            saveToGallery(bmp, fileName)
+            // 1. 相册存一份（PNG 高清）
+            saveToGallery(bmp, pngName)
 
-            // 2. 写入临时文件，回传电脑
-            val outFile = File(getExternalFilesDir(null), fileName)
+            // 2. 写入临时文件（JPEG 压缩，传输体积缩小 80-90%），回传电脑
+            val outFile = File(getExternalFilesDir(null), jpgName)
             FileOutputStream(outFile).use { out ->
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
             }
             ConnectionManager.sendFile(outFile)
             // 静默截图：不弹 Toast，避免 Activity finish 后 Toast 崩溃
         } catch (e: Exception) {
             Log.e(TAG, "onScreenshotCaptured failed", e)
         } finally {
+            // 截图位图用后回收
+            if (!bmp.isRecycled) bmp.recycle()
             // 延迟 finish，确保 ImageReader 回调中的资源全部释放完毕
             Handler(Looper.getMainLooper()).postDelayed({ finish() }, 100)
         }

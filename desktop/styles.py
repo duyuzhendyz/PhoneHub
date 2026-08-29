@@ -10,14 +10,18 @@ import ctypes
 _SETTINGS_DIR = os.path.join(os.path.expanduser("~"), "PhoneHub", "data")
 _THEME_FILE = os.path.join(_SETTINGS_DIR, "theme.json")
 _current_theme = "dark"
+_theme_loaded = False  # theme.json 仅在首次调用时读取一次，避免每次弹窗都触发磁盘 IO
+_palettes = {}         # {is_dark: {key: color}}，避免每次 _c() 重建字典
 
 
 def get_theme():
-    global _current_theme
+    global _current_theme, _theme_loaded
     try:
-        if os.path.exists(_THEME_FILE):
-            with open(_THEME_FILE, "r", encoding="utf-8") as f:
-                _current_theme = json.load(f).get("theme", "dark")
+        if not _theme_loaded:
+            if os.path.exists(_THEME_FILE):
+                with open(_THEME_FILE, "r", encoding="utf-8") as f:
+                    _current_theme = json.load(f).get("theme", "dark")
+            _theme_loaded = True
         # 同步到 qfluentwidgets（懒加载）
         from qfluentwidgets import Theme, setTheme, qconfig
         qconfig.theme = Theme.DARK if _current_theme == "dark" else Theme.LIGHT
@@ -52,27 +56,30 @@ class _ThemeColor:
 
 
 def _c():
-    """获取当前主题色板（兼容旧代码）"""
+    """获取当前主题色板（兼容旧代码，结果缓存避免每次重建字典）"""
     from qfluentwidgets import Theme, qconfig
     is_dark = qconfig.theme == Theme.DARK
-    return {
-        "bg": "#1C1C1C" if is_dark else "#F3F3F3",
-        "surface": "#2C2C2C" if is_dark else "#FFFFFF",
-        "surface_hover": "#353535" if is_dark else "#F5F5F5",
-        "text": "#FFFFFF" if is_dark else "#1A1A1A",
-        "text_secondary": "#9E9E9E" if is_dark else "#616161",
-        "text_disabled": "#5A5A5A" if is_dark else "#BDBDBD",
-        "accent": "#60CDFF" if is_dark else "#0078D4",
-        "accent_hover": "#78D5FF" if is_dark else "#1A86D8",
-        "border": "#4D4D4D" if is_dark else "#D6D6D6",
-        "border_subtle": "#424242" if is_dark else "#E8E8E8",
-        "success": "#6CCB5F" if is_dark else "#0F7B0F",
-        "warning": "#FCE100" if is_dark else "#9D5D00",
-        "error": "#FF99A4" if is_dark else "#C42B1C",
-        "card": "#2C2C2C" if is_dark else "#FFFFFF",
-        "card_border": "#3A3A3A" if is_dark else "#E8E8E8",
-        "flyout": "#323232" if is_dark else "#F7F7F7",
-    }
+    cached = _palettes.get(is_dark)
+    if cached is None:
+        cached = _palettes.setdefault(is_dark, {
+            "bg": "#1C1C1C" if is_dark else "#F3F3F3",
+            "surface": "#2C2C2C" if is_dark else "#FFFFFF",
+            "surface_hover": "#353535" if is_dark else "#F5F5F5",
+            "text": "#FFFFFF" if is_dark else "#1A1A1A",
+            "text_secondary": "#9E9E9E" if is_dark else "#616161",
+            "text_disabled": "#5A5A5A" if is_dark else "#BDBDBD",
+            "accent": "#60CDFF" if is_dark else "#0078D4",
+            "accent_hover": "#78D5FF" if is_dark else "#1A86D8",
+            "border": "#4D4D4D" if is_dark else "#D6D6D6",
+            "border_subtle": "#424242" if is_dark else "#E8E8E8",
+            "success": "#6CCB5F" if is_dark else "#0F7B0F",
+            "warning": "#FCE100" if is_dark else "#9D5D00",
+            "error": "#FF99A4" if is_dark else "#C42B1C",
+            "card": "#2C2C2C" if is_dark else "#FFFFFF",
+            "card_border": "#3A3A3A" if is_dark else "#E8E8E8",
+            "flyout": "#323232" if is_dark else "#F7F7F7",
+        })
+    return cached
 
 
 BG_DARK = _ThemeColor("bg")

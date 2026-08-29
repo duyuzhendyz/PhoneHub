@@ -140,7 +140,11 @@ class FileManagerPage(QWidget):
     def _sort_tree_by_column(self, column: int, order: Qt.SortOrder):
         """按指定列和排序方式排序树形控件"""
         self.tree.setSortingEnabled(False)  # 临时禁用排序避免递归
-        
+
+        def is_dir(item):
+            role = item.data(0, Qt.UserRole)
+            return bool(role and role.get('is_dir', False))
+
         def sort_key(item):
             if column == 0:  # 名称
                 key = item.text(0).replace('📁', '').replace('📎', '').lower()
@@ -156,19 +160,19 @@ class FileManagerPage(QWidget):
                 key = item.text(3)
             else:
                 key = item.text(column)
-            
-            return (not item.data(0, Qt.UserRole).get('is_dir', False), key) if column == 0 else key
-        
-        # 对顶级项目进行排序
+
+            return (not is_dir(item), key) if column == 0 else key
+
+        # 对顶级项目进行排序（按显示文本构造 key，目录优先、名称不含图标前缀）
         items = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
-        
+
         def custom_compare(a, b):
             a_key = sort_key(a)
             b_key = sort_key(b)
             if isinstance(a_key, tuple) and isinstance(b_key, tuple):
-                # 目录优先排序
+                # 目录优先：is_dir 编码为 not is_dir（False=目录），数值小的（目录）排前面
                 if a_key[0] != b_key[0]:
-                    return -1 if a_key[0] else 1
+                    return -1 if a_key[0] < b_key[0] else 1
                 if a_key[1] < b_key[1]: return -1 if order == Qt.AscendingOrder else 1
                 if a_key[1] > b_key[1]: return 1 if order == Qt.AscendingOrder else -1
                 return 0
@@ -176,20 +180,21 @@ class FileManagerPage(QWidget):
                 if a_key < b_key: return -1 if order == Qt.AscendingOrder else 1
                 if a_key > b_key: return 1 if order == Qt.AscendingOrder else -1
                 return 0
-        
-        # 使用简单的冒泡排序（对于少量文件足够高效）
+
         n = len(items)
-        for i in range(n):
-            for j in range(0, n - i - 1):
-                if custom_compare(items[j], items[j + 1]) > 0:
-                    items[i], items[j] = items[j], items[i]  # Swap
-        
-        # 重新添加排序后的项目
-        self.tree.clear()
-        for item in items:
-            self.tree.addTopLevelItem(item)
-        
-        self.tree.setSortingEnabled(True)  # 恢复排序功能
+        # 利用 Python list.sort 稳定排序（key 缓存避免重复计算）
+        import functools
+        items.sort(key=functools.cmp_to_key(custom_compare))
+
+        # 用 takeTopLevelItem 转移所有权后重新插入，避免 clear() 析构 item 导致
+        # 后续 addTopLevelItem 复用已删除的 C++ 对象而崩溃
+        for i in range(self.tree.topLevelItemCount() - 1, -1, -1):
+            self.tree.takeTopLevelItem(i)
+        self.tree.addTopLevelItems(items)
+
+        # 保持 sortingEnabled=False：页面经 header.sectionClicked 手动接管排序，
+        # 若恢复为 True，Qt 会在下次 set/insert 后按文本内建重排，覆盖上面的目录优先自定义顺序
+        # self.tree.setSortingEnabled(True)
 
     def _update_channel_label(self):
         """更新通道标签，并根据通道禁用/启用操作按钮"""

@@ -136,7 +136,7 @@ class ReceivePopupWindow(QWidget):
         if path:
             try:
                 import subprocess
-                subprocess.Popen(f'explorer /select,"{path}"')
+                subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
             except Exception:
                 try:
                     os.startfile(os.path.dirname(path))

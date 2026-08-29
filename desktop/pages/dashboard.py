@@ -51,12 +51,16 @@ class StatProgressBar(QWidget):
     def setValue(self, pct):
         self.value_label.setText(f"{pct:.0f}%")
         self.progress.setValue(int(pct))
-        if pct >= 90:
-            self._apply_color("#FF6B6B", "#FF8A80")
-        elif pct >= 70:
-            self._apply_color("#FFB74D", "#FFCC80")
-        else:
-            self._apply_color("#60CDFF", "#4FC3F7")
+        # 仅在档位跨越阈值时切换样式，避免每秒 setStyleSheet 重解析 QSS
+        tier = 0 if pct >= 90 else (1 if pct >= 70 else 2)
+        if getattr(self, '_color_tier', None) != tier:
+            self._color_tier = tier
+            if tier == 0:
+                self._apply_color("#FF6B6B", "#FF8A80")
+            elif tier == 1:
+                self._apply_color("#FFB74D", "#FFCC80")
+            else:
+                self._apply_color("#60CDFF", "#4FC3F7")
 
 
 class ConnectionDot(QWidget):
@@ -91,11 +95,19 @@ class DashboardPage(QWidget):
         self._connect_signals()
         # 初始化连接状态
         self._on_connection_changed(self.manager.phone_connected, self.manager.current_channel)
-        # 1秒定时器刷新本地统计
+        # 1秒定时器刷新本地统计（仅页面可见时运行）
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_local_stats)
-        self._timer.start(1000)
+        self._timer.setInterval(1000)
         self._refresh_local_stats()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)

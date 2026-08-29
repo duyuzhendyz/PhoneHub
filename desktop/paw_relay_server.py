@@ -65,14 +65,14 @@ flow_control = {}
 flow_control_lock = threading.Lock()
 
 # 传输暂停状态: {device_id: bool}
-transfer_paused = {}
-transfer_paused_lock = threading.Lock()
+# 保留字段定义以兼容历史数据（当前无业务读写，暂停/继续走 /api/send 的 transfer_control 消息）
 
 
 # ==================== Flask App ====================
 
 app = Flask(__name__)
-CORS(app)
+# CORS 收敛：本服务仅服务原生客户端（非浏览器），无需跨域授权，禁止任意站点跨域调用
+CORS(app, resources={r"/api/*": {"origins": []}})
 
 
 def check_auth(req):
@@ -163,7 +163,7 @@ def heartbeat():
     if not check_auth(request):
         return jsonify({"error": "unauthorized"}), 403
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     device_id = data.get("device_id", "")
     if not device_id:
         return jsonify({"error": "device_id required"}), 400
@@ -182,7 +182,7 @@ def disconnect_device():
     if not check_auth(request):
         return jsonify({"error": "unauthorized"}), 403
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     device_id = data.get("device_id", "")
     if not device_id:
         return jsonify({"error": "device_id required"}), 400
@@ -200,10 +200,6 @@ def disconnect_device():
         if device_id in flow_control:
             del flow_control[device_id]
 
-    with transfer_paused_lock:
-        if device_id in transfer_paused:
-            del transfer_paused[device_id]
-
     return jsonify({"status": "ok"})
 
 
@@ -215,7 +211,7 @@ def send_message():
     if not check_auth(request):
         return jsonify({"error": "unauthorized"}), 403
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     if not data:
         return jsonify({"error": "missing json body"}), 400
 
@@ -340,11 +336,21 @@ def upload_chunk():
         return jsonify({"error": "unauthorized"}), 403
 
     file_id = request.args.get("file_id", "")
-    part_num = int(request.args.get("part_num", 0))
+    try:
+        part_num = int(request.args.get("part_num", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid part_num"}), 400
+    if part_num < 0:
+        return jsonify({"error": "invalid part_num"}), 400
     sender_id = get_sender_device_id(request)
 
     if not file_id or not sender_id:
         return jsonify({"error": "file_id and device_id required"}), 400
+
+    # 防路径遍历：file_id 仅允许字母数字/下划线/连字符，禁止目录穿越
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{6,64}", file_id):
+        return jsonify({"error": "invalid file_id"}), 400
 
     # 流量控制检查
     with flow_control_lock:
@@ -352,24 +358,24 @@ def upload_chunk():
         if total >= FLOW_CONTROL_HIGH:
             return jsonify({"error": "flow_control_exceeded", "current": total}), 429
 
-    # 保存文件块
+    # 保存文件块（写盘在锁外执行，避免持全局锁做磁盘 IO 串行化所有并发上传）
+    block_path = os.path.join(BLOCKS_DIR, f"{file_id}_part_{part_num}")
+    with open(block_path, "wb") as f:
+        while True:
+            chunk = request.stream.read(8192)
+            if not chunk:
+                break
+            f.write(chunk)
+
+    block_size = os.path.getsize(block_path)
     with file_blocks_lock:
         if file_id not in file_blocks:
             file_blocks[file_id] = {}
-
-        block_path = os.path.join(BLOCKS_DIR, f"{file_id}_part_{part_num}")
-        with open(block_path, "wb") as f:
-            while True:
-                chunk = request.stream.read(8192)
-                if not chunk:
-                    break
-                f.write(chunk)
-
-        block_size = os.path.getsize(block_path)
         file_blocks[file_id][part_num] = {
             "path": block_path,
             "size": block_size,
             "timestamp": time.time(),
+            "sender_id": sender_id,
         }
 
     # 更新流量控制计数器
@@ -381,7 +387,7 @@ def upload_chunk():
 
 @app.route("/api/download_chunk/<file_id>/<int:part_num>", methods=["GET"])
 def download_chunk(file_id, part_num):
-    """下载文件块（PC 端从 PAW 下载）"""
+    """下载文件块（PC 端从 PAW 下载），下载完成自动回退流量计数"""
     if not check_auth(request):
         return jsonify({"error": "unauthorized"}), 403
 
@@ -391,9 +397,21 @@ def download_chunk(file_id, part_num):
 
         block_info = file_blocks[file_id][part_num]
         block_path = block_info["path"]
+        block_size = block_info["size"]
+        sender_id = block_info.get("sender_id", "")
+        already_downloaded = block_info.get("downloaded", False)
+        if not already_downloaded:
+            block_info["downloaded"] = True
 
     if not os.path.exists(block_path):
         return jsonify({"error": "block file missing"}), 404
+
+    # 分块下载完成后回退上传者的流量计数（幂等：每块仅回退一次），
+    # 使流量控制从"只增不减"变为滑动回退，避免累计 300MB 后永久 429
+    if not already_downloaded and sender_id:
+        with flow_control_lock:
+            cur = flow_control.get(sender_id, 0)
+            flow_control[sender_id] = max(0, cur - block_size)
 
     return send_file_static(block_path, f"{file_id}_part_{part_num}")
 
@@ -404,12 +422,17 @@ def delete_block():
     if not check_auth(request):
         return jsonify({"error": "unauthorized"}), 403
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     file_id = data.get("file_id", "")
     part_num = data.get("part_num")
 
     if not file_id:
         return jsonify({"error": "file_id required"}), 400
+
+    # 防路径遍历：file_id 必须匹配白名单，防止拼接跳出 BLOCKS_DIR
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{6,64}", file_id):
+        return jsonify({"error": "invalid file_id"}), 400
 
     deleted_size = 0
 
@@ -500,18 +523,25 @@ def get_peers():
 # ==================== 定时清理 ====================
 
 def cleanup_file_blocks():
-    """清理超时的文件块（10分钟）"""
+    """清理超时的文件块（10分钟），并同步回退上传者的流量计数"""
     while True:
         time.sleep(BLOCK_CLEANUP_INTERVAL)
         now = time.time()
         expired_ids = []
+        released = {}  # sender_id -> released bytes
 
         with file_blocks_lock:
             for file_id, parts in file_blocks.items():
                 for part_num, info in list(parts.items()):
                     if now - info["timestamp"] > BLOCK_CLEANUP_INTERVAL:
-                        if os.path.exists(info["path"]):
-                            os.remove(info["path"])
+                        try:
+                            if os.path.exists(info["path"]):
+                                os.remove(info["path"])
+                        except OSError:
+                            pass
+                        sender = info.get("sender_id", "")
+                        if sender:
+                            released[sender] = released.get(sender, 0) + info.get("size", 0)
                         del parts[part_num]
                         logger.info(f"Expired block: {file_id}_part_{part_num}")
                 if not parts:
@@ -519,6 +549,12 @@ def cleanup_file_blocks():
 
             for file_id in expired_ids:
                 del file_blocks[file_id]
+
+        # 清理超时块后回退流量计数，避免流量控制永不回落
+        for sender, sz in released.items():
+            with flow_control_lock:
+                cur = flow_control.get(sender, 0)
+                flow_control[sender] = max(0, cur - sz)
 
 
 def cleanup_stale_devices():
@@ -546,10 +582,6 @@ def cleanup_stale_devices():
             with flow_control_lock:
                 if dev_id in flow_control:
                     del flow_control[dev_id]
-
-            with transfer_paused_lock:
-                if dev_id in transfer_paused:
-                    del transfer_paused[dev_id]
 
 
 # ==================== 启动 ====================

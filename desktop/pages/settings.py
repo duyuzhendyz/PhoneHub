@@ -118,12 +118,8 @@ class SettingsPage(QWidget):
         token_row = QHBoxLayout()
         token_row.addWidget(BodyLabel("连接令牌:"))
         self.paw_token_input = LineEdit()
-        # 从 settings.json 加载实际 token，若无则使用 ConnectionManager 的默认令牌
-        try:
-            from connection_manager import ConnectionManager
-            _token = self.settings_data.get("paw_token", ConnectionManager.DEFAULT_SECRET_TOKEN)
-        except Exception:
-            _token = self.settings_data.get("paw_token", "541881452418845")
+        # 从 settings.json 加载实际 token，默认值统一取 ConnectionManager 常量（单一数据源）
+        _token = self.settings_data.get("paw_token", self.manager.DEFAULT_SECRET_TOKEN)
         self.paw_token_input.setText(_token)
         self.paw_token_input.setEchoMode(LineEdit.Password)
         self.paw_token_input.setMinimumWidth(200)
@@ -134,11 +130,7 @@ class SettingsPage(QWidget):
         paw_url_row = QHBoxLayout()
         paw_url_row.addWidget(BodyLabel("PAW 服务器地址:"))
         self.paw_url_input = LineEdit()
-        try:
-            from connection_manager import ConnectionManager
-            _paw_url = self.settings_data.get("paw_url", ConnectionManager.DEFAULT_PAW_URL)
-        except Exception:
-            _paw_url = self.settings_data.get("paw_url", "https://duyuzhendyz.pythonanywhere.com")
+        _paw_url = self.settings_data.get("paw_url", self.manager.DEFAULT_PAW_URL)
         self.paw_url_input.setText(_paw_url)
         self.paw_url_input.setPlaceholderText("https://yourname.pythonanywhere.com")
         self.paw_url_input.setMinimumWidth(300)
@@ -289,7 +281,11 @@ class SettingsPage(QWidget):
         try:
             port_text = self.port_input.text().strip()
             if port_text:
-                self.manager.port = int(port_text)
+                port = int(port_text)
+                if not (1 <= port <= 65535):
+                    dark_msg_box(self, QMessageBox.Warning, "端口无效", "端口必须在 1-65535 之间。")
+                    return
+                self.manager.port = port
             paw_token = self.paw_token_input.text().strip()
             paw_url = self.paw_url_input.text().strip()
             if paw_token:

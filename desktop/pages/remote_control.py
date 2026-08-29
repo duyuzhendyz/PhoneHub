@@ -10,7 +10,7 @@ from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel, SubtitleLabel,
                             InfoBar, InfoBarPosition, ListWidget)
 
 
-# 截图保存目录（电脑端，自动创建）
+# 截图保存目录（电脑端，自动创建；优先使用接收目录，避免硬编码盘符导致无法使用）
 SCREENSHOT_SAVE_DIR = r"F:\desk\手机上传\截图"
 
 
@@ -45,9 +45,6 @@ class RemoteControlPage(QWidget):
         ss_layout.addStretch()
         layout.addWidget(func_group)
 
-    def _send_key(self, key):
-        self.manager.send_command("key", extra={"key": key})
-
     def _group_style(self):
         c = _c()
         return f"""
@@ -76,16 +73,18 @@ class RemoteControlPage(QWidget):
     # ====== 手机截图 ======
     def _phone_screenshot(self):
         """手机截图：支持 WiFi 和 ADB 两种方式，保存到电脑并回传手机"""
+        # 截图目录跟随接收目录（自动创建，具备不可用回退），避免硬编码盘符
+        save_dir = os.path.join(self.manager.receive_dir, "screenshots")
         # 自动创建保存目录
         try:
-            os.makedirs(SCREENSHOT_SAVE_DIR, exist_ok=True)
+            os.makedirs(save_dir, exist_ok=True)
         except Exception as e:
             dark_msg_box(self, QMessageBox.Critical, "创建目录失败",
-                         f"无法创建截图保存目录:\n{SCREENSHOT_SAVE_DIR}\n错误: {e}")
+                         f"无法创建截图保存目录:\n{save_dir}\n错误: {e}")
             return
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        local_path = os.path.join(SCREENSHOT_SAVE_DIR, f"phone_{timestamp}.png")
+        local_path = os.path.join(save_dir, f"phone_{timestamp}.png")
 
         if self.manager.adb_device_id:
             # ADB 模式：直接 ADB 截图

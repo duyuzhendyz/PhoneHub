@@ -141,10 +141,11 @@ class CameraWindow(QWidget):
                     self._aspect_ratio = w / h
                 self.canvas.set_pixmap(self._pix)
         else:
-            # 电脑摄像头预览：从 manager 拉取最新帧
+            # 电脑摄像头预览：从 manager 拉取最新帧（引用相同则跳过，避免同帧重复解码）
             try:
                 frame = self.manager._latest_camera_frame
-                if frame:
+                if frame is not None and frame is not self._last_pc_frame_ref:
+                    self._last_pc_frame_ref = frame
                     self.canvas.load_frame(frame)
             except Exception:
                 pass

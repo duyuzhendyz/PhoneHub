@@ -28,8 +28,10 @@ from pages.settings import SettingsPage
 
 class MainWindow(FluentWindow):
     def __init__(self):
-        self.manager = ConnectionManager()
+        # 先完成 QObject/QWidget 初始化再创建 ConnectionManager，
+        # 避免其后台线程在对象构造完成前就开始发射信号
         super().__init__()
+        self.manager = ConnectionManager()
         self.setWindowTitle("PhoneHub")
         self.resize(1000, 680)
         self.setMinimumSize(960, 640)
@@ -206,7 +208,7 @@ class MainWindow(FluentWindow):
                 timer.stop()
                 try:
                     import subprocess
-                    subprocess.Popen('shutdown /a', shell=True)
+                    subprocess.Popen(['shutdown', '/a'], shell=False)
                 except Exception:
                     pass
                 dlg.reject()

@@ -33,8 +33,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // 开启 R8 混淆与资源收缩（proguard-rules.pro 已 keep 整个 com.phonehub 包，
+            // 防止反射/Manifest 组件引用被移除）
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
             isMinifyEnabled = false

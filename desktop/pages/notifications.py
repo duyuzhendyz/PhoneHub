@@ -64,14 +64,6 @@ class NotificationPopupDialog(QDialog):
         self.setStyleSheet(dark_dialog_style())
         self._setup_ui()
 
-    def _poll_active_notifications(self):
-        """1s 周期拉取活动通知；仅内容变化时刷新UI。"""
-        try:
-            if getattr(self.manager, "phone_connected", False):
-                self.manager.send_action("get_active_notifications")
-        except Exception:
-            pass
-
     @staticmethod
     def _notif_signature(notif):
         key = notif.get("key") or notif.get("id") or ""
@@ -81,9 +73,6 @@ class NotificationPopupDialog(QDialog):
         summary = notif.get("summary", "") or ""
         actions = sorted(a.get("title", "") for a in (notif.get("actions") or []))
         return "|".join([key, package, title, text_val, summary, ",".join(actions)])
-
-    def _active_snapshot_signature(self):
-        return frozenset(f"{k}:{self._notif_signature(n)}" for k, n in self.active_notifs.items())
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -243,25 +232,28 @@ class NotificationsPage(QWidget):
         self._setup_ui()
         self._connect_signals()
         self._refresh_history_list()
-        # 1s 周期拉取活动通知，内容变化时再刷新/分发
+        # 3s 周期拉取活动通知（仅页面可见时运行），内容变化时再刷新/分发
         self._batch_notifications = {}
         self._batch_refresh_pending = False
         self._last_poll_signature = None
         self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(1000)
+        self._poll_timer.setInterval(3000)
         self._poll_timer.timeout.connect(self._poll_active_notifications)
-        self._poll_timer.start()
         # 通知权限完全由手机端用户手动点击按钮开启，PC 端不再发送 request_notif_permission
         self._refresh_active_list()
-        # 1s 周期拉取活动通知，内容变化时再刷新/分发
-        # 通知权限完全由手机端用户手动点击按钮开启，PC 端不再发送 request_notif_permission
-        # 通知权限完全由手机端用户手动点击按钮开启，PC 端不再发送 request_notif_permission
 
     def showEvent(self, event):
-        """每次显示通知页时刷新活动通知"""
+        """每次显示通知页时刷新活动通知并启动轮询"""
         super().showEvent(event)
         # 用户进入通知页时刷新活动通知（不自动请求权限）
         self._request_active_notifications()
+        # 仅页面可见时轮询，避免用户停留在其他页面时后台空转请求
+        self._poll_timer.start()
+
+    def hideEvent(self, event):
+        """页面隐藏时停止轮询，避免不可见时仍每秒请求"""
+        super().hideEvent(event)
+        self._poll_timer.stop()
 
     def _poll_active_notifications(self):
         """1s 周期拉取活动通知；仅内容变化时刷新UI。"""
@@ -445,11 +437,13 @@ class NotificationsPage(QWidget):
         if sig == getattr(self, '_last_poll_signature', None):
             return
         self._last_poll_signature = sig
-        # 历史记录仅追加本批次新增的条目（不重复）
+        # 历史记录仅追加本批次新增的条目（不重复，集合去重避免 O(n²) 线性扫描）
         appended = False
+        existing_keys = {self._notif_key(n) for n in self.history}
         for notif in snapshot.values():
             key = self._notif_key(notif)
-            if not any(self._notif_key(n) == key for n in self.history):
+            if key not in existing_keys:
+                existing_keys.add(key)
                 self.history.insert(0, notif)
                 appended = True
         if appended:
@@ -662,6 +656,19 @@ class NotificationsPage(QWidget):
             self.history = []
 
     def _save_history(self):
+        """防抖保存历史：250ms 合并窗口，避免通知高频到达时每条都全量重写 JSON"""
+        now = time.time()
+        if now - getattr(self, '_last_history_save', 0) < 0.25:
+            from PyQt5.QtCore import QTimer
+            if not getattr(self, '_history_flush_scheduled', False):
+                self._history_flush_scheduled = True
+                QTimer.singleShot(300, self._flush_history)
+            return
+        self._flush_history()
+
+    def _flush_history(self):
+        self._history_flush_scheduled = False
+        self._last_history_save = time.time()
         try:
             with open(NOTIFICATION_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)

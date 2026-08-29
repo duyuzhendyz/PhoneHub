@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.CountDownTimer
 import android.os.Environment
 import android.os.Handler
@@ -250,7 +251,7 @@ class MainActivity : AppCompatActivity() {
     ) { uri ->
         if (uri != null) {
             val textToSave = pendingSaveText
-            CoroutineScope(Dispatchers.IO).launch {
+            lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     contentResolver.openOutputStream(uri, "w")?.use { os ->
                         os.write(textToSave.toByteArray(Charsets.UTF_8))
@@ -271,7 +272,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // 不再无条件常亮：屏幕常亮只在投屏/观看电脑画面期间按需设置，避免正常使用时长亮耗电
         setContentView(R.layout.activity_main)
 
         setupScreen = findViewById(R.id.setupScreen)
@@ -388,7 +389,14 @@ class MainActivity : AppCompatActivity() {
         try {
             unregisterReceiver(volumeReceiver)
         } catch (_: Exception) {}
-        registerReceiver(volumeReceiver, IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
+        // targetSdk 34+ 动态注册广播必须指定 RECEIVER_EXPORTED/NOT_EXPORTED，否则抛 SecurityException
+        val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(volumeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(volumeReceiver, filter)
+        }
 
         // 使用 OnBackPressedDispatcher 替代已废弃的 onBackPressed()
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
@@ -1244,13 +1252,13 @@ class MainActivity : AppCompatActivity() {
         val mediaInfoText = v.findViewById<TextView>(R.id.mediaInfoText)
         val mediaCoverImg = v.findViewById<android.widget.ImageView>(R.id.mediaCoverImg)
         // 收集媒体信息文本
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.mediaInfo.collect { info ->
                 mediaInfoText?.text = info
             }
         }
         // 收集媒体封面图
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.mediaThumbnail.collect { bytes ->
                 if (bytes != null && bytes.isNotEmpty() && mediaCoverImg != null) {
                     val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -2141,7 +2149,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // S8a: 收集摄像头推送命令（启动/停止推流），用于处理电脑端请求
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.cameraPushCommand.collect { command ->
                 when (command.action) {
                     "start" -> startCameraPush()
@@ -2171,7 +2179,7 @@ class MainActivity : AppCompatActivity() {
         // Removed btnCameraStop (分享相机画面 button) per M12/S8c
 
         // S8b: 收集电脑摄像头推流帧（收到PC发送的画面后显示）
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.pcCameraFrame.collect { frameData ->
                 if (frameData.isNotEmpty() && cameraImageView != null) {
                     val bmp = android.graphics.BitmapFactory.decodeByteArray(frameData, 0, frameData.size)
@@ -2307,7 +2315,7 @@ class MainActivity : AppCompatActivity() {
                             orientedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, baos)
                             val jpegData = baos.toByteArray()
                             // 异步发送，避免阻塞分析线程
-                            CoroutineScope(Dispatchers.IO).launch {
+                            lifecycleScope.launch(Dispatchers.IO) {
                                 ConnectionManager.sendFrameToPc(jpegData, type = "camera")
                             }
                             orientedBitmap.recycle()
@@ -2624,7 +2632,7 @@ class MainActivity : AppCompatActivity() {
             refresh()
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.notifications.collect { item ->
                 val key = notifKey(item)
                 // 更新当前通知列表（替换同 key 的旧通知，新通知插入最前面）
@@ -3320,7 +3328,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 收集电脑推送过来的 URL，加入历史并标注方向 "电脑 -> 手机"
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.receivedUrl.collect { url ->
                 if (url.isNotEmpty()) {
                     addUrlHistory(url, "电脑 -> 手机")
@@ -3331,7 +3339,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 收集电脑端发来的 URL 历史同步数据，合并到本地
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.urlHistorySync.collect { remoteHistory ->
                 var changed = false
                 for (item in remoteHistory) {
@@ -3509,7 +3517,7 @@ class MainActivity : AppCompatActivity() {
     // ============================== Flow 收集 ==============================
 
     private fun setupFlows() {
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.connectionState.collect { state ->
                 when (state) {
                     ConnectionManager.ConnectionState.DISCONNECTED -> {
@@ -3562,7 +3570,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.connectionMessage.collect { msg ->
                 val state = ConnectionManager.connectionState.value
                 if (state == ConnectionManager.ConnectionState.DISCONNECTED && msg == "未连接") {
@@ -3574,7 +3582,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 收集截图结果事件，显示 Toast 提示
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.screenshotResult.collect { msg ->
                 val now = System.currentTimeMillis()
                 if (msg == lastScreenshotToastMsg && now - lastScreenshotToastAtMs < 4000) return@collect
@@ -3585,14 +3593,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 全局监听电脑端发来的摄像头切换请求
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.cameraSwitchRequest.collect {
                 performCameraSwitch(cameraPreviewRunning)
             }
         }
 
         // 全局监听电脑端发来的投屏命令（S5）
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.mirrorCommand.collect { cmd ->
                 when (cmd.action) {
                     "start" -> {
@@ -3619,7 +3627,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.currentChannel.collect { channel ->
                 val channelName = when (channel) {
                     ConnectionManager.ChannelType.WIFI -> "WiFi 直连"
@@ -3634,7 +3642,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // S6: 全局监听电脑端发来的声音传输控制指令（开始/停止声音传输）
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.audioControl.collect { cmd ->
                 when (cmd.action) {
                     "start" -> {
@@ -3651,13 +3659,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.phoneMemUsage.collect { _ ->
                 // 手机内存数据可用于其他页面
             }
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.receivedClipboard.collect { text ->
                 if (text != null) {
                     pageCache[4]?.findViewById<TextView>(R.id.currentClipText)?.text = text
@@ -3666,14 +3674,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 电脑端媒体信息更新
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.mediaInfo.collect { info ->
                 pageCache[2]?.findViewById<TextView>(R.id.mediaInfoText)?.text = info
             }
         }
 
         // collect receivedText 流，显示接收到的文字（基于内容去重，5秒内相同内容不重复弹窗）
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.receivedText.collect { (filename, text) ->
                 val key = "$filename|$text"
                 val lastHandled = handledTextContents[key]
@@ -3685,7 +3693,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 文件传输进度收集：包含速度采样（最近 4 秒）、UI 状态切换、完成按钮
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             // 手机端速度采样：(ts_ms, sent_bytes)，用于平滑速度显示
             val speedSamples = ArrayDeque<Pair<Long, Long>>()
             var lastTransferDir = "" // 记录"发送中"/"接收中"用于完成时区分
@@ -3789,7 +3797,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 订阅 PC 发来的暂停事件，同步手机端按钮文字
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.transferPausedFromPc.collect { paused ->
                 val v = pageCache[1] ?: return@collect
                 val btn = v.findViewById<Button>(R.id.pauseFileBtn) ?: return@collect
@@ -3804,7 +3812,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 订阅 PC 发来的取消事件，重置手机端界面并提示用户
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.transferCancelledFromPc.collect { _ ->
                 val v = pageCache[1] ?: return@collect
                 v.findViewById<TextView>(R.id.fileNameText)?.text = "对端已取消"
@@ -3824,19 +3832,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.clipboardHistory.collect {
                 // 剪贴板历史已合并到剪贴板页（index 4），清缓存让下次重建
                 pageCache.remove(4)
             }
         }
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             ConnectionManager.clipboardFavorites.collect {
                 pageCache.remove(4)
             }
         }
         // save.md 功能7：收集电脑画面帧并显示（2秒无新帧则清空）
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             ConnectionManager.pcFrame.collect { jpegBytes ->
                 val bmp = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                 if (bmp != null) {
@@ -3857,7 +3865,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         // save.md 功能8：收集电脑摄像头帧并显示（2秒无新帧则清空）
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             ConnectionManager.pcCameraFrame.collect { jpegBytes ->
                 val bmp = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                 if (bmp != null) {
@@ -4047,9 +4055,12 @@ class MainActivity : AppCompatActivity() {
             }
             SELECT_APK_CODE -> {
                 data?.data?.let { uri ->
-                    val file = uriToFile(uri)
-                    if (file != null && file.exists()) {
-                        installApk(file)
+                    // 复制整个 APK 到缓存目录移入 IO 线程，避免大文件主线程复制导致 ANR
+                    lifecycleScope.launch {
+                        val file = withContext(Dispatchers.IO) { uriToFile(uri) }
+                        if (file != null && file.exists()) {
+                            installApk(file)
+                        }
                     }
                 }
             }
@@ -4063,7 +4074,10 @@ class MainActivity : AppCompatActivity() {
             tempFile.outputStream().use { output -> inputStream.copyTo(output) }
             inputStream.close()
             tempFile
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "uriToFile failed", e)
+            null
+        }
     }
 
     override fun onResume() {
@@ -4079,6 +4093,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun startPhoneScreenCapture() {
         if (screenCaptureRunning) return
+        // 投屏期间保持屏幕常亮，防止观看时息屏
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         try {
             val dm = resources.displayMetrics
             screenWidth = dm.widthPixels
@@ -4142,10 +4158,13 @@ class MainActivity : AppCompatActivity() {
 
         screenCaptureThread = Thread {
             val conn = ConnectionManager
-            // 预分配复用缓冲区，避免每帧GC
+            // 每帧复用 ByteArrayOutputStream，减少 GC 压力
+            val reuseBaos = java.io.ByteArrayOutputStream(512 * 1024)
             while (screenCaptureRunning) {
+                var image: android.media.Image? = null
+                var bitmap: android.graphics.Bitmap? = null
                 try {
-                    val image = imageReader?.acquireLatestImage()
+                    image = imageReader?.acquireLatestImage()
                     if (image == null) {
                         // 防止CPU空转
                         try { Thread.sleep(16) } catch (ie: InterruptedException) { break }
@@ -4153,7 +4172,6 @@ class MainActivity : AppCompatActivity() {
                     }
                     val planes = image.planes
                     if (planes.isEmpty()) {
-                        image.close()
                         try { Thread.sleep(16) } catch (ie: InterruptedException) { break }
                         continue
                     }
@@ -4162,7 +4180,7 @@ class MainActivity : AppCompatActivity() {
                     val rowStride = planes[0].rowStride
                     val rowPadding = rowStride - pixelStride * screenWidth
 
-                    val bitmap = if (rowPadding == 0) {
+                    bitmap = if (rowPadding == 0) {
                         // 无行填充：直接从buffer创建bitmap
                         android.graphics.Bitmap.createBitmap(
                             screenWidth, screenHeight,
@@ -4179,19 +4197,17 @@ class MainActivity : AppCompatActivity() {
                         )
                         buffer.rewind()
                         paddedBitmap.copyPixelsFromBuffer(buffer)
-                        android.graphics.Bitmap.createBitmap(paddedBitmap, 0, 0, screenWidth, screenHeight).also {
-                            paddedBitmap.recycle()
-                        }
+                        val cropped = android.graphics.Bitmap.createBitmap(paddedBitmap, 0, 0, screenWidth, screenHeight)
+                        paddedBitmap.recycle()
+                        cropped
                     }
 
-                    val baos = java.io.ByteArrayOutputStream()
-                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, baos)
-                    val jpegData = baos.toByteArray()
+                    reuseBaos.reset()
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, reuseBaos)
+                    val jpegData = reuseBaos.toByteArray()
 
                     conn.sendFrameToPc(jpegData)
 
-                    image.close()
-                    bitmap.recycle()
                     try { Thread.sleep(16) } catch (ie: InterruptedException) { break } // ~60fps
                 } catch (e: Exception) {
                     if (screenCaptureRunning) {
@@ -4201,6 +4217,13 @@ class MainActivity : AppCompatActivity() {
                             break
                         }
                     }
+                } finally {
+                    // 关键：无论处理成功或异常都必须关闭 image，否则 ImageReader 的 maxImages
+                    // 耗尽后 acquireLatestImage 恒返回 null，投屏会假死为空转
+                    try { image?.close() } catch (_: Exception) {}
+                    if (bitmap != null && !bitmap.isRecycled) {
+                        try { bitmap.recycle() } catch (_: Exception) {}
+                    }
                 }
             }
         }
@@ -4209,6 +4232,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopPhoneScreenCapture() {
         screenCaptureRunning = false
+        // 停止投屏后恢复系统屏幕超时
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         screenCaptureThread?.interrupt()
         // 清理超时回调
         mirrorFrameTimeoutRunnable?.let { frameTimeoutHandler.removeCallbacks(it) }

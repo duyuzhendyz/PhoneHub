@@ -114,8 +114,22 @@ class ApkInstallPage(QWidget):
             # WiFi 文件传输信号
             self.manager.file_transfer_progress.connect(self._on_wifi_transfer_progress)
             self.manager.file_transfer_complete.connect(self._on_wifi_transfer_complete)
+            # 传输被取消/失败时必须复位安装状态，否则页面永久锁死
+            self.manager.file_transfer_cancelled.connect(self._on_transfer_cancelled)
         except Exception:
             pass
+
+    def _on_transfer_cancelled(self, file_id):
+        """对端取消传输：复位安装状态，避免 _installing 永久卡死"""
+        if getattr(self, '_installing', False):
+            self._installing = False
+            self._close_wifi_dialog()
+            self._pending_apk_path = None
+            self._pending_apk_file_id = None
+            self._update_button_states()
+            self.cancel_btn.setEnabled(False)
+            self.progress_bar.setRange(0, 0)
+            self.status_label.setText("传输已取消")
 
     def _update_button_states(self):
         """根据通道更新按钮状态和标签：仅 ADB 通道可用"""
@@ -179,6 +193,8 @@ class ApkInstallPage(QWidget):
             self._update_button_states()
             self._show_message(QMessageBox.Warning, "发送失败", "无法启动文件传输，请检查连接状态。")
             return
+        # 记录本次传输的 file_id，完成回调据此精确匹配，避免其他无关传输误触发 install_apk
+        self._pending_apk_file_id = getattr(self.manager, 'outgoing_file_id', None)
         self.status_label.setText("已交给文件传输，请在文件传输页面查看进度")
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setValue(0)
@@ -248,18 +264,23 @@ class ApkInstallPage(QWidget):
 
     @pyqtSlot(str, str)
     def _on_wifi_transfer_complete(self, file_id, file_path):
-        """文件传输完成回调：若本次任务是 APK，则通知手机端自动安装。"""
+        """文件传输完成回调：仅当本次完成任务确为 APK 传输时才通知手机端自动安装。"""
         self._close_wifi_dialog()
-        pending = getattr(self, '_pending_apk_path', None) or getattr(self, '_wifi_transfer_apk_path', None)
+        pending = getattr(self, '_pending_apk_path', None)
         if not pending:
+            return
+        # 精确匹配：file_id 不一致说明完成的是其他传输任务，不触发安装
+        expected_id = getattr(self, '_pending_apk_file_id', None)
+        if expected_id is not None and expected_id != file_id:
             return
         file_name = os.path.basename(pending)
         try:
-            self.manager.send_action("install_apk", {"path": "/sdcard/Download/PhoneHub/" + file_name})
+            # 使用常量统一远程安装目录
+            self.manager.send_action("install_apk", {"path": APK_REMOTE_DIR + file_name})
         except Exception:
             pass
         self._pending_apk_path = None
-        self._wifi_transfer_apk_path = None
+        self._pending_apk_file_id = None
         self.install_done.emit(True, f"APK 已传输到手机: {file_name}\n手机端将自动安装。")
 
     @pyqtSlot(int, str)

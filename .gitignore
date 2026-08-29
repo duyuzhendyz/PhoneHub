@@ -36,6 +36,16 @@ Desktop.ini
 # 本地运行配置（含连接令牌等敏感信息，不入库）
 desktop/settings.json
 
+# PAW 服务器运行数据（本地生成，不入库）
+desktop/paw_data/
+
+# 临时诊断脚本与打包产物（不入库）
+paw_*_test.py
+paw_diag*.py
+paw_server_verify.py
+desktop.zip
+_check*.png
+
 # 临时文件
 *.tmp
 *.log

@@ -1,6 +1,6 @@
 package com.phonehub
 
-import android.os.Environment
+import android.content.Context
 import android.util.Log
 import java.io.BufferedWriter
 import java.io.File
@@ -12,14 +12,14 @@ import java.util.concurrent.Executors
 
 /**
  * 日志工具类
- * - 同时输出到 Logcat 和文件 /storage/emulated/0/_/PHlog.txt
+ * - 同时输出到 Logcat 和应用私有目录文件（Android/data/com.phonehub/files/log/PHlog.txt）
  * - 带详细时间戳，格式: yyyy-MM-dd HH:mm:ss.SSS
- * - 使用单线程写入器避免IO阻塞
+ * - 使用单线程写入器避免IO阻塞，超 5MB 自动轮转
  */
 object LogUtil {
     private const val TAG = "LogUtil"
-    private const val LOG_DIR = "_/"
     private const val LOG_FILE_NAME = "PHlog.txt"
+    private const val LOG_MAX_BYTES = 5L * 1024 * 1024  // 5MB 后轮转，防止无限增长
     private var logFile: File? = null
     private var writer: BufferedWriter? = null
     private val executor = Executors.newSingleThreadExecutor()
@@ -34,10 +34,12 @@ object LogUtil {
     @Volatile
     var isEnabled = false
 
-    fun init() {
+    fun init(context: Context) {
         try {
-            val extDir = Environment.getExternalStorageDirectory()
-            val dir = File(extDir, LOG_DIR)
+            // 使用应用私有外部目录存储日志（含点击坐标、按键等敏感行为数据），
+            // 避免写入公共存储根目录被其他应用读取
+            val dir = context.getExternalFilesDir("log")
+                ?: File(context.filesDir as File, "log")
             if (!dir.exists()) {
                 dir.mkdirs()
             }
@@ -191,12 +193,19 @@ object LogUtil {
             
             executor.execute {
                 try {
+                    // 大小轮转：超过上限时把旧日志改名为 .old 后重开新文件
+                    if ((logFile?.length() ?: 0L) > LOG_MAX_BYTES) {
+                        try {
+                            writer?.flush()
+                            writer?.close()
+                            val old = File(logFile?.parentFile, "${LOG_FILE_NAME}.old")
+                            logFile?.renameTo(old)
+                            logFile?.let { writer = BufferedWriter(FileWriter(it, true)) }
+                        } catch (_: Exception) {}
+                    }
                     writer?.write(logLine)
                     writer?.newLine()
-                    // 每10行刷新一次，平衡性能和数据安全性
-                    if (msg.endsWith("\n") || msg.length > 200) {
-                        writer?.flush()
-                    }
+                    writer?.flush()
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "LogUtil 写入失败", e)
                 }

@@ -201,7 +201,14 @@ class ClipboardSyncPage(QWidget):
 
     def _on_search_changed(self, text):
         self._search_keyword = text.strip().lower()
-        self._refresh_history_view()
+        # 搜索输入防抖：停顿 300ms 后才刷新列表，避免每敲一键全量重建
+        from PyQt5.QtCore import QTimer
+        self._search_timer = getattr(self, '_search_timer', None)
+        if self._search_timer is None:
+            self._search_timer = QTimer(self)
+            self._search_timer.setSingleShot(True)
+            self._search_timer.timeout.connect(lambda: self._refresh_history_view())
+        self._search_timer.start(300)
 
     def _on_fav_filter_toggled(self, checked):
         self._fav_filter = checked
@@ -213,7 +220,9 @@ class ClipboardSyncPage(QWidget):
         self.clip_content.setPlainText(text)
         if source == "phone":
             try:
-                self.manager._suppress_clipboard = True
+                # 标记远端推送的时间窗口，剪贴板监控线程据此识别回环后跳过
+                self.manager._last_remote_clipboard = text
+                self.manager._last_remote_clipboard_time = time.time()
                 pyperclip.copy(text)
             except Exception:
                 pass
@@ -242,6 +251,8 @@ class ClipboardSyncPage(QWidget):
         """接收手机端同步过来的剪贴板历史"""
         if not items:
             return
+        # 已存在内容的集合在循环外构造一次，避免 O(n²) 重建
+        existing_texts = {e.get('text') for e in self.clipboard_history}
         for item in items:
             content = item.get('content', '')
             source = item.get('source', '手机')
@@ -250,9 +261,9 @@ class ClipboardSyncPage(QWidget):
             if not content:
                 continue
             # 避免重复添加
-            existing_texts = {e.get('text') for e in self.clipboard_history}
             if content in existing_texts:
                 continue
+            existing_texts.add(content)
             entry = {
                 'text': content,
                 'source': source,
@@ -311,10 +322,10 @@ class ClipboardSyncPage(QWidget):
     def _is_favorited(self, text):
         return any(e.get('text') == text for e in self.clipboard_favorites)
 
-    def _format_entry(self, entry):
+    def _format_entry(self, entry, fav_set=None):
         text = entry.get('text', '')
         source = entry.get('source', '本机')
-        star = "★" if self._is_favorited(text) else "☆"
+        star = "★" if (fav_set is not None and text in fav_set) else ("★" if self._is_favorited(text) else "☆")
         ts = time.strftime("%m-%d %H:%M", time.localtime(entry.get('time', time.time())))
         preview = text[:60].replace('\n', ' ')
         if len(text) > 60:
@@ -323,13 +334,15 @@ class ClipboardSyncPage(QWidget):
 
     def _refresh_history_view(self):
         self.history_list.clear()
+        # 收藏集合在循环外构造一次，避免每条历史都线性扫描收藏列表
+        fav_set = {e.get('text') for e in self.clipboard_favorites}
         for entry in self.clipboard_history:
             text = entry.get('text', '')
             if self._search_keyword and self._search_keyword not in text.lower():
                 continue
-            if self._fav_filter and not self._is_favorited(text):
+            if self._fav_filter and text not in fav_set:
                 continue
-            item = QListWidgetItem(self._format_entry(entry))
+            item = QListWidgetItem(self._format_entry(entry, fav_set))
             set_item_text_color(item)
             item.setData(Qt.UserRole, entry)
             self.history_list.addItem(item)
@@ -442,6 +455,19 @@ class ClipboardSyncPage(QWidget):
             self.clipboard_history = []
 
     def _save_history(self):
+        """防抖保存历史：250ms 合并窗口，避免高频更新时每条都全量重写 JSON"""
+        now = time.time()
+        if now - getattr(self, '_last_history_save', 0) < 0.25:
+            from PyQt5.QtCore import QTimer
+            if not getattr(self, '_history_flush_scheduled', False):
+                self._history_flush_scheduled = True
+                QTimer.singleShot(300, self._flush_history)
+            return
+        self._flush_history()
+
+    def _flush_history(self):
+        self._history_flush_scheduled = False
+        self._last_history_save = time.time()
         try:
             with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.clipboard_history, f, ensure_ascii=False, indent=2)

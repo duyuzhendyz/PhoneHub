@@ -12,6 +12,7 @@ import android.os.Build
  * 共享通知构建器：供 PhoneHubService 和 ScreenCaptureService 共用
  */
 object SharedNotificationHelper {
+    // 直接引用同包 Activity 类（避免 Class.forName 字符串在开启混淆后崩溃）
     private const val MAIN_ACTIVITY_CLASS = "com.phonehub.MainActivity"
 
     /**
@@ -30,9 +31,8 @@ object SharedNotificationHelper {
     /**
      * 构建基础通知（点击打开 MainActivity）
      */
-    @Suppress("UNCHECKED_CAST")
     fun buildNotification(context: Context, channelId: String, text: String, priority: Int): Notification {
-        val mainIntent = Intent(context, Class.forName(MAIN_ACTIVITY_CLASS) as Class<android.app.Activity>).apply {
+        val mainIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pi = PendingIntent.getActivity(

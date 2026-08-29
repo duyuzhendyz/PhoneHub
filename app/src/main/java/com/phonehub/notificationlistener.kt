@@ -30,11 +30,11 @@ import kotlinx.coroutines.*
 class NotificationListener : NotificationListenerService() {
     private val notificationScope = CoroutineScope(Dispatchers.Main + Job())
     private var lastNotifications = mutableMapOf<String, Long>()
-    private var pollJob: Job? = null
 
     companion object {
         private const val TAG = "PHNotificationListener"
         private const val PREF_NAME = "phonehub_prefs"
+        // 存储内容实际为"通知黑名单"（被屏蔽的应用包名集合）
         private const val KEY_WHITELIST = "notification_blacklist"
 
         @Volatile
@@ -52,14 +52,6 @@ class NotificationListener : NotificationListenerService() {
         fun setBlacklist(ctx: Context, pkgs: Set<String>) {
             ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
                 .edit().putStringSet(KEY_WHITELIST, pkgs).apply()
-        }
-
-        /**
-         * 检查应用是否拥有 WRITE_SECURE_SETTINGS 权限（通常需要 ADB 或系统签名）
-         */
-        private fun hasWriteSecureSettings(ctx: Context): Boolean {
-            return ctx.checkCallingOrSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) ==
-                    android.content.pm.PackageManager.PERMISSION_GRANTED
         }
 
         /**
@@ -98,62 +90,29 @@ class NotificationListener : NotificationListenerService() {
             if (active != null && active.isNotEmpty()) {
                 for (sbn in active) {
                     processAndReport(sbn)
-                }
-                // 记录这些通知的当前时间戳作为基准
-                active.forEach { sbn ->
                     lastNotifications[sbn.key] = System.currentTimeMillis()
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "onListenerConnected getActiveNotifications failed", e)
         }
-
-        // 启动每 1 秒一次的轮询检查
-        pollJob = notificationScope.launch {
-            while (true) {
-                delay(1000) // 1 秒
-                checkAndReportChanges()
-            }
-        }
+        // 不启动周期轮询：onNotificationPosted 事件驱动已足够，
+        // 轮询会让所有活动通知每秒重复上报（HTTP + 本地落盘），是流量/电量/磁盘放大器
     }
 
     override fun onListenerDisconnected() {
         instance = null
         Log.i(TAG, "NotificationListener disconnected - 停止监听通知")
         super.onListenerDisconnected()
-        // 取消轮询协程
-        pollJob?.cancel()
-    }
-
-    /**
-     * 每 1 秒调用一次：比较当前通知与上次记录的不同之处，如有变化则重新上报。
-     */
-    private fun checkAndReportChanges() {
-        try {
-            val active = getActiveNotifications() ?: return
-            val currentKeys = mutableSetOf<String>()
-            for (sbn in active) {
-                currentKeys.add(sbn.key)
-                val lastTime = lastNotifications[sbn.key]
-                if (lastTime == null || System.currentTimeMillis() - lastTime > 100L) {
-                    // 新增或长时间未更新，重新上报（去抖动：至少100毫秒才上报相同内容，避免频繁重复）
-                    processAndReport(sbn)
-                    lastNotifications[sbn.key] = System.currentTimeMillis()
-                }
-            }
-            // 检查是否有通知被移除（currentKeys 中没有但 lastNotifications 中有）
-            val removedKeys = lastNotifications.keys.subtract(currentKeys)
-            if (removedKeys.isNotEmpty()) {
-                // 对已删除的通知，也可选择上报空消息或直接清除；这里简单清除记录
-                removedKeys.forEach { key -> lastNotifications.remove(key) }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "checkAndReportChanges failed", e)
-        }
     }
 
     override fun onDestroy() {
         instance = null
+        // 取消协程作用域，防止服务销毁后轮询/上报协程继续存活
+        try {
+            notificationScope.cancel()
+        } catch (_: Exception) {
+        }
         super.onDestroy()
     }
 
@@ -287,10 +246,18 @@ class NotificationListener : NotificationListenerService() {
         try {
             val dir = File(getExternalFilesDir(null), "NotificationCache")
             if (!dir.exists()) dir.mkdirs()
-            // 清理 7 天前的文件
-            val cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
-            dir.listFiles()?.forEach { f ->
-                if (f.lastModified() < cutoff) f.delete()
+            // 过期文件清理改为每日一次（对比上次清理日期），避免每收一条通知就全目录 listFiles 遍历
+            try {
+                val today = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
+                val pref = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                if (pref.getString("notif_cleanup_day", "") != today) {
+                    val cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
+                    dir.listFiles()?.forEach { f ->
+                        if (f.lastModified() < cutoff) f.delete()
+                    }
+                    pref.edit().putString("notif_cleanup_day", today).apply()
+                }
+            } catch (_: Exception) {
             }
             val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault())
                 .format(Date(item.timestamp))

@@ -292,8 +292,8 @@ class AppManagerPage(QWidget):
                     continue
             self._apps = apps
             self.action_progress.emit(95, "渲染列表...")
+            # 通过信号在主线程渲染（apps_loaded 已连接 _populate），此处不再跨线程直接操作 UI
             self.apps_loaded.emit()
-            self._populate()
             self.action_done.emit(True, f"加载完成: {len(apps)} 个应用")
         except Exception as e:
             self.action_done.emit(False, f"加载失败: {e}")

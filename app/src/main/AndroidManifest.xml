@@ -65,7 +65,7 @@
 
     <application
         android:name=".App"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_main"
         android:label="PhoneHub"
         android:supportsRtl="true"

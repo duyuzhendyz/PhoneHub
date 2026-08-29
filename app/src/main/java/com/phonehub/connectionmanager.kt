@@ -292,6 +292,9 @@ object ConnectionManager {
     @Volatile
     private var cachedProjectionData: Intent? = null
     private var projectionManager: MediaProjectionManager? = null
+    // 屏幕常亮 WakeLock（never_sleep 指令）：成员持有以便重复指令时先释放再获取，避免无限叠加泄漏
+    @Volatile
+    private var pendingWakeLock: PowerManager.WakeLock? = null
     // 使用 WeakReference 避免持有 MediaProjection 强引用导致内存泄漏
     @Volatile
     private var activeProjectionRef: java.lang.ref.WeakReference<MediaProjection>? = null
@@ -751,7 +754,8 @@ object ConnectionManager {
                             _connectionState.value = ConnectionState.CONNECTED
                             _connectionLatency.value = rtt
                             _connectionMessage.value = "已连接 - ${channelName(channel)} (${rtt}ms)"
-                            sendStatusReport()
+                            // 状态上报由 5 秒周期的 startStatusReportLoop 统一负责；
+                            // 这里不再每次轮询都重复上报（避免 2Hz 全量电量/存储/序列化开销）
                             reconnectFailCount = 0
                         }
                         // 处理消息（兼容旧版 msg 单条和新版 msgs 数组）
@@ -1486,12 +1490,23 @@ object ConnectionManager {
                     @Suppress("DEPRECATION")
                     context?.let {
                         val pm = it.getSystemService(Context.POWER_SERVICE) as? PowerManager
-                        // 使用 FULL_WAKE_LOCK 替代已弃用的 SCREEN_BRIGHT_WAKE_LOCK
-                        pm?.newWakeLock(
+                        // 成员变量持有：重复指令先释放旧锁再获取，避免 WakeLock 无限叠加
+                        try {
+                            pendingWakeLock?.let { if (it.isHeld) it.release() }
+                        } catch (_: Exception) {}
+                        val lock = pm?.newWakeLock(
                             PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE,
                             "PhoneHub::NeverSleep"
-                        )?.acquire()
+                        )
+                        // 屏幕常亮带超时（30 分钟），防止一次性指令导致屏幕永久无法熄灭
+                        lock?.acquire(30 * 60 * 1000L)
+                        pendingWakeLock = lock
                     }
+                } else {
+                    try {
+                        pendingWakeLock?.let { if (it.isHeld) it.release() }
+                    } catch (_: Exception) {}
+                    pendingWakeLock = null
                 }
             }
         }
@@ -2717,6 +2732,7 @@ object ConnectionManager {
                     // 206 时追加写入，200 时覆盖写入
                     val fosMode = if (code == 206) true else false
                     var streamBroken = false
+                    var lastProgressSave = 0L
                     try {
                         FileOutputStream(outFile, fosMode).use { fos ->
                             @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")
@@ -2728,7 +2744,12 @@ object ConnectionManager {
                                     received += bytes
                                     state.received = received
                                     _fileTransferProgress.value = TransferProgress(fileId, fileName, received, fileSize, true)
-                                    progressFile.writeText(received.toString())
+                                    // 进度文件按 500ms 节流写入（每 64KB 全量重写会放大磁盘 IO）
+                                    val nowMs = System.currentTimeMillis()
+                                    if (nowMs - lastProgressSave >= 500 || received >= fileSize) {
+                                        lastProgressSave = nowMs
+                                        try { progressFile.writeText(received.toString()) } catch (_: Exception) {}
+                                    }
                                     // 同步更新通知中的进度条（节流在 updateFileTransferNotification 内部）
                                     updateFileTransferNotification(fileName, received, fileSize)
                                 }
@@ -3949,8 +3970,11 @@ object ConnectionManager {
             return
         }
         LogUtil.connI("无障碍服务已连接，准备执行操作")
-        
-        when (op) {
+
+        // dispatchGesture/performGlobalAction 必须在主线程调用（framework 内部 Handler 检查），
+        // performScreenTouch 由 IO 轮询协程触发，因此整体切到主线程执行
+        runOnUiThread {
+            when (op) {
             "click" -> {
                 LogUtil.connD("执行点击操作")
                 acc.performTap(px, py)
@@ -4000,6 +4024,7 @@ object ConnectionManager {
             else -> {
                 LogUtil.connW("未知操作类型: $op，默认执行点击")
                 acc.performTap(px, py)
+            }
             }
         }
         LogUtil.connI("屏幕操控指令执行完毕: $op ($px, $py)")
@@ -4521,9 +4546,20 @@ object ConnectionManager {
         lastPcHeartbeatAt = 0L
         statusJob?.cancel()
         msgPollingJob?.cancel()
-        // pawPollingJob?.cancel()  // 【禁止删除】PAW 轮询停止
+        // pawPollingJob?.cancel()  // 【禁止删除】PAW 轮询停止（PAW 通道常驻，勿删）
         statusReportJob?.cancel()
         pawStatusReportJob?.cancel()  // PAW 状态上报
+        // 停止其余后台轮询/监控，避免"断开"后仍持续空转探测、采集与推流
+        adbWatchdogJob?.cancel()
+        mediaMonitorJob?.cancel()
+        pcFrameJob?.cancel()
+        pcAudioJob?.cancel()
+        pcCameraJob?.cancel()
+        // 释放屏幕常亮唤醒锁
+        try {
+            pendingWakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {}
+        pendingWakeLock = null
         // Task 10: 分别 cancel 发送和接收 Job
         sendJob?.cancel()
         receiveJob?.cancel()

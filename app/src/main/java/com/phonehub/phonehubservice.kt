@@ -13,16 +13,12 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
 
 /**
  * 前台保活服务：
  * - 前台通知（CATEGORY_SERVICE，不可滑动移除）让系统优先保留
  * - START_STICKY 让系统内存紧张被杀后自动重启
  * - onTaskRemoved：用户清理所有后台时触发三路重启
- * - 看门狗：每 15 秒自检
  * - onDestroy：销毁时通过 AlarmManager + JobScheduler 双重重启
  */
 class PhoneHubService : Service() {
@@ -30,7 +26,6 @@ class PhoneHubService : Service() {
         private const val TAG = "PhoneHubService"
         private const val CHANNEL_ID = "phonehub_foreground"
         private const val NOTIFICATION_ID = 1001
-        private const val WATCHDOG_INTERVAL_SEC = 15L
         private const val JOB_RESTART_ID = 7777
 
         @Volatile
@@ -60,7 +55,7 @@ class PhoneHubService : Service() {
                 val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
                 am.setExactAndAllowWhileIdle(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    System.currentTimeMillis() + delayMs, pi
+                    android.os.SystemClock.elapsedRealtime() + delayMs, pi
                 )
                 Log.i(TAG, "AlarmManager: ${delayMs / 1000}s 后重启")
             } catch (e: Exception) {
@@ -110,8 +105,6 @@ class PhoneHubService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
-    private val scheduler = Executors.newSingleThreadScheduledExecutor()
-    private var watchdogFuture: ScheduledFuture<*>? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -122,11 +115,14 @@ class PhoneHubService : Service() {
         NotificationHelper.createChannel(mgr)
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.buildNotification(this))
         acquireWakeLock()
-        startWatchdog()
         Log.i(TAG, "PhoneHubService created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 服务被重启时重新获取（超时已释放）的 WakeLock，保证后台连接可用
+        if (wakeLock?.isHeld != true) {
+            acquireWakeLock()
+        }
         return START_STICKY
     }
 
@@ -143,7 +139,6 @@ class PhoneHubService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopWatchdog()
         releaseWakeLock()
         instance = null
         Log.w(TAG, "PhoneHubService destroyed，尝试重启")
@@ -151,35 +146,17 @@ class PhoneHubService : Service() {
         scheduleJobRestart(this)
     }
 
-    // ==================== 看门狗 ====================
-
-    private fun startWatchdog() {
-        watchdogFuture?.cancel(false)
-        watchdogFuture = scheduler.scheduleAtFixedRate({
-            try {
-                if (instance == null) {
-                    Log.w(TAG, "watchdog: instance 为 null，重启")
-                    start(this@PhoneHubService)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "watchdog error", e)
-            }
-        }, WATCHDOG_INTERVAL_SEC, WATCHDOG_INTERVAL_SEC, TimeUnit.SECONDS)
-    }
-
-    private fun stopWatchdog() {
-        watchdogFuture?.cancel(false)
-        watchdogFuture = null
-    }
-
     // ==================== WakeLock ====================
 
     private fun acquireWakeLock() {
         try {
+            if (wakeLock?.isHeld == true) return
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhoneHub:KeepAlive")
             wakeLock?.setReferenceCounted(false)
-            wakeLock?.acquire()
+            // 带超时获取：10 分钟后自动释放，避免无限期持有导致 CPU 永久无法深睡；
+            // 活跃传输/投屏的持续保活由各功能在需要时单独持锁
+            wakeLock?.acquire(10 * 60 * 1000L)
         } catch (e: Exception) {
             Log.e(TAG, "Acquire wakelock failed", e)
         }

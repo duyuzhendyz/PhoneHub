@@ -5,6 +5,7 @@ import time
 import uuid
 import socket
 import base64
+import shlex
 import threading
 import subprocess
 import requests
@@ -134,13 +135,20 @@ class ConnectionManager(QObject):
         self.paw_url = self._settings_cache.get("paw_url", self.DEFAULT_PAW_URL)
         
         self.app = Flask(__name__)
+        # 防止持有 token 的客户端用超大请求体打爆内存（帧/音频接口按 MB 计足够）
+        self.app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
         self.app.logger.removeHandler(default_handler)
         werkzeug_logger = logging.getLogger('werkzeug')
         werkzeug_logger.removeHandler(default_handler)
         # 仅首次实例化添加文件 handler，避免多次 __init__ 造成句柄累积
         if not werkzeug_logger.handlers:
-            self._werkzeug_fh = logging.FileHandler(self.LOG_FILE, encoding='utf-8')
-            self._werkzeug_fh.setLevel(logging.INFO)
+            try:
+                from logging.handlers import RotatingFileHandler as _RFH
+                self._werkzeug_fh = _RFH(self.LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
+            except Exception:
+                self._werkzeug_fh = logging.FileHandler(self.LOG_FILE, encoding='utf-8')
+            # 高频轮询/拉帧访问日志（INFO）不落盘，只记录 WARNING 及以上，防止 log.txt 无限增长
+            self._werkzeug_fh.setLevel(logging.WARNING)
             self._werkzeug_fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
             werkzeug_logger.addHandler(self._werkzeug_fh)
         self.server_thread = None
@@ -164,9 +172,8 @@ class ConnectionManager(QObject):
         self.last_phone_seen = 0
         self.last_pc_clipboard = ""
         self.clipboard_monitor_running = False
-        self._suppress_clipboard = False  # 防回环标志
-        self._suppressed_content = ""     # 被抑制的回环内容（用于区分回环 vs 用户新复制）
-        self.last_local_clipboard_time = 0  # 本地剪贴板最近一次变更时间（毫秒）
+        self._last_remote_clipboard = ""
+        self._last_remote_clipboard_time = 0.0
 
         self.file_transfer_active = False
         self.current_file_id = None
@@ -187,8 +194,8 @@ class ConnectionManager(QObject):
             except Exception as e2:
                 logger.warning("回退接收目录创建失败: %s", e2)
 
-        self.cmd_queue = deque()
-        self.msg_queue = deque()
+        self.cmd_queue = deque(maxlen=200)  # 历史兼容保留（无实际消费者）
+        self.msg_queue = deque(maxlen=500)  # 上限防手机断连期间无限堆积
         self.queue_lock = threading.Lock()
 
         # save.md 功能7：电脑→手机推流（手机轮询拉取 JPEG 帧）
@@ -258,7 +265,6 @@ class ConnectionManager(QObject):
     def log(self, msg):
         """统一的日志方法"""
         logger.info(msg)
-        print(msg)
 
     def log_phone_request(self, action, detail=""):
         """记录手机请求日志"""
@@ -266,7 +272,6 @@ class ConnectionManager(QObject):
         if detail:
             msg += f" - {detail}"
         logger.info(msg)
-        print(msg)
 
     def log_pc_send(self, action, detail=""):
         """记录PC发送日志"""
@@ -274,7 +279,6 @@ class ConnectionManager(QObject):
         if detail:
             msg += f" - {detail}"
         logger.info(msg)
-        print(msg)
 
     # ==================== 设置缓存 ====================
 
@@ -338,8 +342,11 @@ class ConnectionManager(QObject):
             auth = request.headers.get('Authorization', '')
             if auth != f'Bearer {self.secret_token}':
                 remote = request.remote_addr or 'unknown'
-                # 记录认证失败详情（显示完整token便于排查）
-                self.log(f"[AUTH FAIL] 来自 {remote} {request.method} {request.path} | 手机端发送='{auth}' | 电脑端期望='Bearer {self.secret_token}'")
+                # 记录认证失败详情（token 脱敏，避免完整 token 落入日志被本机进程窃取）
+                def _mask(token):
+                    t = token.replace('Bearer ', '')
+                    return f"Bearer {t[:3]}***{t[-2:]}" if len(t) > 5 else "***"
+                self.log(f"[AUTH FAIL] 来自 {remote} {request.method} {request.path} | 手机端发送='{_mask(auth)}' | 电脑端期望='{_mask('Bearer ' + self.secret_token)}'")
                 return jsonify({'error': 'unauthorized'}), 403
 
         @self.app.errorhandler(Exception)
@@ -431,6 +438,7 @@ class ConnectionManager(QObject):
                     if file_id in self._pending_conflict:
                         del self._pending_conflict[file_id]
 
+            # cmd_queue 无消费者，仅为兼容保留（上限防内存无限增长）
             with self.queue_lock:
                 self.cmd_queue.append(data)
 
@@ -442,8 +450,9 @@ class ConnectionManager(QObject):
                 # 内容对比：仅当远端剪贴板与本地不同时才覆盖本地
                 # 不使用时间戳对比，避免时钟差异导致新内容被拒绝
                 if text and text != self.last_pc_clipboard:
-                    self._suppress_clipboard = True
-                    self._suppressed_content = text
+                    # 时间窗口抑制：记录远端推送内容与时间，剪贴板监控线程据此识别回环
+                    self._last_remote_clipboard = text
+                    self._last_remote_clipboard_time = time.time()
                     self.last_pc_clipboard = text
                     self.clipboard_received.emit(text, source)
             elif action == 'clipboard_favorite':
@@ -462,7 +471,7 @@ class ConnectionManager(QObject):
                 self.log_phone_request("发送文件", f"name={file_name}, size={file_size}, id={file_id}")
                 
                 # Check for file conflict before starting receive
-                conflict_target = os.path.join(self.receive_dir, file_name)
+                conflict_target = os.path.join(self.receive_dir, os.path.basename(file_name))
                 if os.path.exists(conflict_target):
                     # File exists - send conflict notification to phone instead of proceeding
                     self.log_phone_request("文件冲突", f"{file_name} 已存在，等待手机决策")
@@ -838,6 +847,8 @@ class ConnectionManager(QObject):
         def get_frame():
             self.log_phone_request("获取电脑画面帧")
             """save.md 功能7：手机轮询拉取电脑画面 JPEG 帧，附带鼠标归一化坐标"""
+            # 记录拉取时间，PC 推流线程据此按需降频
+            self._last_frame_pull_time = time.time()
             with self._frame_lock:
                 frame = self._latest_frame
             if frame:
@@ -1044,6 +1055,19 @@ class ConnectionManager(QObject):
             path = data.get('path', '')
             if not path or not os.path.exists(path):
                 return jsonify({'error': 'not found'}), 404
+            # 删除保护：禁止删除驱动器根目录与系统关键目录，防止误删全盘
+            norm = os.path.normcase(os.path.normpath(path))
+            root = os.path.splitdrive(norm)[0] + os.sep
+            if norm.rstrip('\\/') == root.rstrip('\\/') or norm == root.lower():
+                return jsonify({'error': 'cannot delete drive root'}), 403
+            system_dirs = [os.path.normcase(d) for d in (
+                os.environ.get('WINDIR', r'C:\Windows'),
+                os.environ.get('PROGRAMFILES', r'C:\Program Files'),
+                os.environ.get('PROGRAMFILES(X86)', r'C:\Program Files (x86)'),
+                os.environ.get('PROGRAMDATA', r'C:\ProgramData'),
+            )]
+            if any(norm == d or norm.startswith(d + os.sep) for d in system_dirs if d):
+                return jsonify({'error': 'cannot delete system directory'}), 403
             basename = os.path.basename(path).lower()
             if basename in ('desktop.ini', 'thumbs.db', '.ds_store'):
                 return jsonify({'error': 'system file, not deletable'}), 403
@@ -1151,9 +1175,9 @@ class ConnectionManager(QObject):
             self.phone_connected = (channel != CHANNEL_NONE)
             self.connection_status_changed.emit(self.phone_connected, channel)
 
-    def _register_paw_device(self):
-        """在 PAW 服务器上注册 PC 设备"""
-        if self.paw_device_id:
+    def _register_paw_device(self, force=False):
+        """在 PAW 服务器上注册 PC 设备（force=True 用于设备被服务器清理后重新注册）"""
+        if not force and self.paw_device_id:
             return  # 已注册
         try:
             resp = requests.post(
@@ -1168,8 +1192,9 @@ class ConnectionManager(QObject):
             if resp.status_code == 200:
                 self.paw_device_id = self.device_id
                 logger.info(f"PAW registered PC: {self.paw_device_id}")
-                # 启动长轮询
-                self._start_paw_polling()
+                # 仅在轮询未启动时启动长轮询（404 重注册时轮询线程依然存活）
+                if not self.paw_running:
+                    self._start_paw_polling()
         except Exception as e:
             logger.warning(f"PAW register failed: {e}")
 
@@ -1292,7 +1317,9 @@ class ConnectionManager(QObject):
             if channel == CHANNEL_ADB and self._check_adb():
                 return True
             elif channel == CHANNEL_WIFI:
-                return True
+                # WiFi 通道无法主动探测手机（手机无 HTTP 服务），循环内重试无意义，
+                # 直接进入降级判断，避免一直 return True 导致"已连接"状态卡死
+                break
             elif channel == CHANNEL_PAW and self._check_paw():
                 return True
             time.sleep(self.RECONNECT_WAIT)
@@ -1354,10 +1381,8 @@ class ConnectionManager(QObject):
         if not self.is_running:
             return
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2)
-            s.connect(("127.0.0.1", self.port))
-            s.close()
+            with socket.create_connection(("127.0.0.1", self.port), timeout=self.VERIFY_SERVER_TIMEOUT):
+                pass
             self.log(f"Flask 服务器自检通过: 127.0.0.1:{self.port} 端口监听正常")
         except Exception as e:
             self.log(f"Flask 服务器自检失败: {e}")
@@ -1375,19 +1400,13 @@ class ConnectionManager(QObject):
                 try:
                     current = pyperclip.paste()
                     if current and current != self.last_pc_clipboard and len(current) < 100000:
-                        if self._suppress_clipboard:
-                            self._suppress_clipboard = False
-                            if current != self._suppressed_content:
-                                # 用户新复制了与回环内容不同的内容，正常发送
-                                self.last_pc_clipboard = current
-                                self.last_local_clipboard_time = int(time.time() * 1000)
-                                self.send_clipboard(current)
-                            else:
-                                # 回环内容，仅更新追踪值
-                                self.last_pc_clipboard = current
+                        # 回环抑制：3 秒内收到过远端推送的相同内容视为回环（时间窗口，避免一次性标志被连续推送击穿）
+                        now = time.time()
+                        if current == getattr(self, '_last_remote_clipboard', '') and \
+                                now - getattr(self, '_last_remote_clipboard_time', 0) < 3.0:
+                            self.last_pc_clipboard = current
                         else:
                             self.last_pc_clipboard = current
-                            self.last_local_clipboard_time = int(time.time() * 1000)
                             self.send_clipboard(current)
                 except Exception:
                     pass
@@ -1397,7 +1416,7 @@ class ConnectionManager(QObject):
 
     def _status_monitor(self):
         while self.is_running:
-            if self.phone_connected and time.time() - self.last_phone_seen > 15:
+            if self.phone_connected and time.time() - self.last_phone_seen > self.STATUS_MONITOR_IDLE_THRESHOLD:
                 self._reconnect()
             # 不再获取 CPU 占用（用户要求去掉双端 CPU 显示与采集）
             time.sleep(1)
@@ -1446,9 +1465,17 @@ class ConnectionManager(QObject):
                         except Exception:
                             pass
                     fail_count = 0
+                elif resp.status_code == 404:
+                    # 设备已被服务器清理（如断网超过心跳超时）：重新注册恢复配对
+                    logger.warning("[PAW] 设备未注册(404)，重新注册...")
+                    self._register_paw_device(force=True)
+                    time.sleep(self.PAW_RECONNECT_WAIT)
                 else:
                     fail_count += 1
-                time.sleep(self.PAW_RECONNECT_WAIT)
+                    if fail_count >= self.RECONNECT_RETRY:
+                        self.paw_connected = False
+                        fail_count = 0
+                    time.sleep(self.PAW_RECONNECT_WAIT)
             except Exception:
                 fail_count += 1
                 if fail_count >= self.RECONNECT_RETRY:
@@ -1496,15 +1523,14 @@ class ConnectionManager(QObject):
         elif action == 'notification':
             self.notification_received.emit(msg_data)
         elif action == 'location_batch':
-            self.location_received.emit(msg_data.get('locations', []))
-        elif action == 'process_list':
-            self.process_list_received.emit(msg_data.get('processes', []))
-        elif action == 'process_list_request':
-            self._send_process_list()
-        elif action == 'kill_process':
+            self.location_received.emit(msg_data.get('points', msg_data.get('locations', [])))
+        elif action in ('process_list', 'process_list_request'):
+            # PC 侧未实现进程列表信号/方法，静默忽略避免异常（保持与 WiFi 通道行为一致）
+            pass
+        elif action in ('kill_process', 'kill_pc_process'):
             pid = msg_data.get('pid')
             if pid:
-                self._kill_process(pid)
+                self._kill_pc_process(pid)
         elif action == 'run_as_admin':
             program = msg_data.get('program', '')
             if program:
@@ -1538,10 +1564,6 @@ class ConnectionManager(QObject):
             history = msg_data.get('history', [])
             if history:
                 self.url_history_sync_received.emit(history)
-        elif action == 'clipboard_history':
-            items = msg_data.get('items', [])
-            if items:
-                self.clipboard_history_received.emit(items)
 
     # ==================== 文件接收 ====================
 
@@ -1550,7 +1572,15 @@ class ConnectionManager(QObject):
         self.file_transfer_active = True
         self.current_file_id = file_id
         self.file_transfer_cancel = False
-        self.current_receive_file = os.path.join(self.receive_dir, file_name)
+        # 防路径遍历：文件名归一化为纯文件名，禁止目录穿越写出接收目录
+        safe_name = os.path.basename(file_name.replace('\\', '/'))
+        if not safe_name or safe_name in ('.', '..'):
+            self.log(f"[file] 非法文件名，拒绝接收: {file_name!r}")
+            self.file_transfer_active = False
+            self.transfer_in_progress = False
+            self.current_file_id = None
+            return
+        self.current_receive_file = os.path.join(self.receive_dir, safe_name)
         self.current_receive_size = file_size
         self.current_receive_written = 0
         self.current_receive_parts = {}
@@ -1577,11 +1607,22 @@ class ConnectionManager(QObject):
         except Exception as e:
             print(f"[file] 写入 chunk 失败: {e}")
             return
-        self.current_receive_written = max(self.current_receive_written, (part_num + 1) * self.CHUNK_SIZE)
-        with open(self.current_receive_file + '.progress', 'w') as f:
-            f.write(str(self.current_receive_written))
-        self.last_transfer_progress_time = time.time()
-        self.file_transfer_progress.emit(file_id, self.current_receive_written, self.current_receive_size, time.time())
+        now = time.time()
+        # 进度按实际数据量累计（乱序分块时用块序号×块大小取 max，并对最后一块钳制到文件大小，避免进度显示 >100%）
+        written_now = (part_num + 1) * self.CHUNK_SIZE
+        if self.current_receive_size > 0:
+            written_now = min(written_now, self.current_receive_size)
+        self.current_receive_written = max(self.current_receive_written, written_now)
+        self.last_transfer_progress_time = now
+        # 进度文件节流写入（最多每2秒一次），减少大文件传输时的磁盘I/O
+        if now - getattr(self, '_last_progress_write_time', 0) >= 2:
+            self._last_progress_write_time = now
+            try:
+                with open(self.current_receive_file + '.progress', 'w') as f:
+                    f.write(str(self.current_receive_written))
+            except Exception:
+                pass
+        self.file_transfer_progress.emit(file_id, self.current_receive_written, self.current_receive_size, now)
 
     def _complete_file_receive(self, file_id):
         try:
@@ -1771,6 +1812,8 @@ class ConnectionManager(QObject):
             pass
         elif self.current_channel == CHANNEL_ADB and self.adb_device_id:
             pass
+        elif self.current_channel == CHANNEL_PAW and self.paw_device_id:
+            pass
         else:
             return False
 
@@ -1806,14 +1849,17 @@ class ConnectionManager(QObject):
             threading.Thread(target=self._file_transfer_watchdog, args=(file_id,), daemon=True).start()
             return True
         elif self.current_channel == CHANNEL_PAW:
-            # PAW 模式：通过中转服务器发送文件头消息
+            # PAW 模式：通过中转服务器发送文件头消息（与 _send_to_phone 相同协议）
             try:
                 requests.post(
-                    f"{self.paw_url}/api/send_msg",
+                    f"{self.paw_url}/api/send",
                     json={
+                        "token": self.secret_token,
+                        "activate": "send",
+                        "source": "pc",
                         "sender_id": self.paw_device_id,
-                        "target_id": self.paw_phone_id if hasattr(self, 'paw_phone_id') else "",
-                        "message": head_msg
+                        "target_id": getattr(self, 'paw_phone_id', None) or "",
+                        "data": head_msg.get('data', head_msg),
                     },
                     headers={"Authorization": f"Bearer {self.secret_token}"},
                     timeout=10
@@ -1828,20 +1874,24 @@ class ConnectionManager(QObject):
         return False
 
     def _file_transfer_watchdog(self, file_id):
-        """300秒后如果传输仍未完成，强制重置状态（防止卡死）；暂停期间不计入超时"""
-        elapsed = 0
-        while elapsed < self.FILE_TRANSFER_TIMEOUT:
+        """看门狗：若传输长时间无进度则强制重置状态（防止卡死）；暂停期间不计入超时"""
+        no_progress_seconds = 0
+        while self.outgoing_file_id == file_id and self.file_transfer_active:
             time.sleep(self.WATCHDOG_INTERVAL)
-            # 暂停期间不累计超时
             if getattr(self, '_transfer_paused', False):
+                no_progress_seconds = 0
                 continue
-            elapsed += 5
-        if self.outgoing_file_id == file_id and self.file_transfer_active:
-            print(f"[watchdog] 文件传输超时(300s)，强制重置: {file_id}")
-            self.outgoing_file_path = None
-            self.outgoing_file_id = None
-            self.transfer_in_progress = False
-            self.file_transfer_active = False
+            if time.time() - self.last_transfer_progress_time > 5:
+                no_progress_seconds += self.WATCHDOG_INTERVAL
+            else:
+                no_progress_seconds = 0
+            if no_progress_seconds >= 60:
+                print(f"[watchdog] 传输超过60秒无进度，强制重置: {file_id}")
+                self.outgoing_file_path = None
+                self.outgoing_file_id = None
+                self.transfer_in_progress = False
+                self.file_transfer_active = False
+                break
 
     def _send_file_wifi(self, file_id, file_path, file_size, head_msg):
         """WiFi模式：发送文件头到msg_queue，手机主动通过/api/download_file下载"""
@@ -1960,9 +2010,15 @@ class ConnectionManager(QObject):
             if callback:
                 callback(None)
             return None
+        def build_cmd():
+            # adb shell 会把剩余参数拼成 shell 命令串，必须对每个参数做 shell 转义，
+            # 否则文件名中的空格/`;`/`$()` 会造成远端命令注入
+            if args and args[0] == 'shell' and len(args) > 1:
+                return ['adb', '-s', self.adb_device_id, 'shell'] + [shlex.quote(str(a)) for a in args[1:]]
+            return ['adb', '-s', self.adb_device_id] + list(args)
         def run_cmd():
             try:
-                cmd = ['adb', '-s', self.adb_device_id] + list(args)
+                cmd = build_cmd()
                 result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
                 if callback:
                     callback(result.stdout)
@@ -1973,7 +2029,7 @@ class ConnectionManager(QObject):
             threading.Thread(target=run_cmd, daemon=True).start()
             return None
         try:
-            cmd = ['adb', '-s', self.adb_device_id] + list(args)
+            cmd = build_cmd()
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
             return result.stdout
         except Exception:
@@ -2023,7 +2079,10 @@ class ConnectionManager(QObject):
     def _run_as_admin(self, program):
         """以管理员权限启动程序（Windows）"""
         try:
-            subprocess.Popen(f'runas /user:administrator "{program}"', shell=True)
+            # 参数列表形式，避免 shell 解释导致命令注入；仅允许启动常规可执行程序
+            uname = os.path.basename(program.strip().strip('"'))
+            target = uname if uname and not program.strip().startswith('-') else program
+            subprocess.Popen(['runas', '/user:administrator', target], shell=False)
             result = "started"
         except Exception as e:
             result = f"error: {e}"
@@ -2056,7 +2115,7 @@ class ConnectionManager(QObject):
                        "data": {"action": "phone_volume_sync", "volume": volume}}
                 self._send_to_phone(msg)
             elif cmd == 'lock':
-                subprocess.Popen('rundll32.exe user32.dll,LockWorkStation', shell=True)
+                subprocess.Popen(['rundll32.exe', 'user32.dll,LockWorkStation'], shell=False)
             elif cmd == 'get_media_info':
                 self._send_media_info()
             elif cmd == 'screenshot':
@@ -2260,8 +2319,8 @@ class ConnectionManager(QObject):
                 print(f"[media_monitor] error: {e}")
             time.sleep(self.MEDIA_MONITOR_INTERVAL)
 
-    def _check_and_send_media_info(self):
-        """获取当前媒体信息并低延迟推送，封面/作者等变化由手机端 Flow 自动刷新。"""
+    def _check_and_send_media_info(self, force=False):
+        """获取当前媒体信息，仅在曲目变化（或强制刷新）时推送，避免每秒重复查询与编码封面"""
         try:
             import asyncio
             import winsdk.windows.media.control as wmc
@@ -2303,18 +2362,33 @@ class ConnectionManager(QObject):
                 album = info.get('album', '') or ''
                 thumbnail = info.get('thumbnail', '') or ''
 
-            # 仅用歌名+作者判断冗余，但每次轮询都推送封面/专辑等完整字段
-            self._last_media_title = title
-            self._last_media_artist = artist
-            self._send_media_info()
+            now = time.time()
+            changed = (title != self._last_media_title or artist != self._last_media_artist)
+            # 曲目变化立即推送；未变化时每 30 秒兜底推送一次（保持封面/连接活性）
+            if changed or force or now - getattr(self, '_last_media_send_time', 0) >= 30:
+                self._last_media_title = title
+                self._last_media_artist = artist
+                self._last_media_send_time = now
+                if info is None:
+                    msg = {"token": self.secret_token, "activate": "send", "source": "pc",
+                           "data": {"action": "media_info", "title": "未检测到媒体播放",
+                                    "artist": "", "album": "", "thumbnail": ""}}
+                else:
+                    msg = {"token": self.secret_token, "activate": "send", "source": "pc",
+                           "data": {"action": "media_info", "title": title,
+                                    "artist": artist, "album": album, "thumbnail": thumbnail}}
+                self._send_to_phone(msg)
+            else:
+                self._last_media_title = title
+                self._last_media_artist = artist
         except Exception as e:
             print(f"[check_media_info] error: {e}")
 
     def _delay_check_media_info(self):
-        """按键后延迟检测并推送媒体信息"""
+        """按键后延迟检测并推送媒体信息（强制刷新，确保切歌后立即同步）"""
         def _delayed():
             time.sleep(self.DELAYED_MEDIA_CHECK_DELAY)
-            self._check_and_send_media_info()
+            self._check_and_send_media_info(force=True)
         threading.Thread(target=_delayed, daemon=True).start()
 
     def _take_screenshot_and_send(self):
@@ -2346,10 +2420,24 @@ class ConnectionManager(QObject):
         try:
             import subprocess
             import webbrowser
+            from urllib.parse import quote
             if not url.startswith('http://') and not url.startswith('https://'):
-                url = 'https://www.bing.com/search?q=' + url
+                # 搜索词做 URL 编码，避免特殊字符注入
+                url = 'https://www.bing.com/search?q=' + quote(url)
             if use_edge:
-                subprocess.Popen(['cmd', '/c', 'start', 'msedge', url], shell=False)
+                # 直接调用 Edge 可执行文件，绕开 cmd 解析，消除命令注入面
+                edge_paths = [
+                    os.path.expandvars(r'%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe'),
+                    os.path.expandvars(r'%ProgramFiles%\Microsoft\Edge\Application\msedge.exe'),
+                ]
+                opened = False
+                for ep in edge_paths:
+                    if os.path.exists(ep):
+                        subprocess.Popen([ep, url], shell=False)
+                        opened = True
+                        break
+                if not opened:
+                    webbrowser.open(url)
             else:
                 # 用默认浏览器打开
                 webbrowser.open(url)
@@ -2393,6 +2481,10 @@ class ConnectionManager(QObject):
         sct = mss.mss()
         while self._pc_stream_running:
             try:
+                # 按需降频：2 秒内无人拉取帧则进入低频待机，避免全速截屏+编码空转浪费 CPU
+                if time.time() - getattr(self, '_last_frame_pull_time', 0) > 2.0:
+                    time.sleep(0.5)
+                    continue
                 monitor = sct.monitors[1]
                 shot = sct.grab(monitor)
                 img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
@@ -2401,7 +2493,7 @@ class ConnectionManager(QObject):
                 max_w = 1280
                 if w > max_w:
                     ratio = max_w / w
-                    img = img.resize((max_w, int(h * ratio)), Image.LANCZOS)
+                    img = img.resize((max_w, int(h * ratio)), Image.BILINEAR)
                 buf = io.BytesIO()
                 img.save(buf, format='JPEG', quality=75)
                 frame_data = buf.getvalue()
@@ -2739,18 +2831,41 @@ class ConnectionManager(QObject):
                     self._last_touch_y = y
                     self._touch_moved = False
                 elif op == 'move':
-                    # 移动：input swipe 从上一个点到当前点
-                    last_x = getattr(self, '_last_touch_x', x)
-                    last_y = getattr(self, '_last_touch_y', y)
+                    # 节流合并：高频 move 事件若每个都 fork adb 子进程会严重卡顿，
+                    # 30ms 窗口内只发送一次（取窗口内最新坐标）
+                    self._pending_move = (x, y)
+                    now = time.time()
+                    if now - getattr(self, '_last_move_sent_time', 0) < 0.03:
+                        return
+                    self._last_move_sent_time = now
+                    nx, ny = self._pending_move
+                    self._pending_move = None
+                    last_x = self._last_touch_x if hasattr(self, '_last_touch_x') else nx
+                    last_y = self._last_touch_y if hasattr(self, '_last_touch_y') else ny
                     subprocess.run(
                         ['adb', '-s', self.adb_device_id, 'shell', 'input', 'swipe',
-                         str(last_x), str(last_y), str(x), str(y), '50'],
+                         str(last_x), str(last_y), str(nx), str(ny), '50'],
                         capture_output=True, timeout=2
                     )
                     self._touch_moved = True
+                    self._last_touch_x = nx
+                    self._last_touch_y = ny
                 elif op == 'up':
-                    # 抬起：如果没有移动过，执行 tap
-                    if not getattr(self, '_touch_moved', False):
+                    # 抬起：先补发最后挂起未发送的移动点，若无移动则执行 tap
+                    pending = getattr(self, '_pending_move', None)
+                    if pending:
+                        px, py = pending
+                        self._pending_move = None
+                        lx = getattr(self, '_last_touch_x', px)
+                        ly = getattr(self, '_last_touch_y', py)
+                        subprocess.run(
+                            ['adb', '-s', self.adb_device_id, 'shell', 'input', 'swipe',
+                             str(lx), str(ly), str(px), str(py), '50'],
+                            capture_output=True, timeout=2
+                        )
+                        self._last_touch_x = px
+                        self._last_touch_y = py
+                    elif not getattr(self, '_touch_moved', False):
                         subprocess.run(
                             ['adb', '-s', self.adb_device_id, 'shell', 'input', 'tap', str(x), str(y)],
                             capture_output=True, timeout=2
@@ -2789,15 +2904,15 @@ class ConnectionManager(QObject):
                     return
                 self._last_power_cmd_time = now
             if action_type == 'lock':
-                subprocess.Popen('rundll32.exe user32.dll,LockWorkStation', shell=True)
+                subprocess.Popen(['rundll32.exe', 'user32.dll,LockWorkStation'], shell=False)
             elif action_type in ('sleep', 'hibernate'):
-                subprocess.Popen('shutdown /h', shell=True)
+                subprocess.Popen(['shutdown', '/h'], shell=False)
             elif action_type == 'shutdown':
-                subprocess.Popen('shutdown /s /t 30 /c "PhoneHub远程关机"', shell=True)
+                subprocess.Popen(['shutdown', '/s', '/t', '30', '/c', 'PhoneHub远程关机'], shell=False)
             elif action_type == 'reboot':
-                subprocess.Popen('shutdown /r /t 30 /c "PhoneHub远程重启"', shell=True)
+                subprocess.Popen(['shutdown', '/r', '/t', '30', '/c', 'PhoneHub远程重启'], shell=False)
             elif action_type == 'cancel':
-                subprocess.Popen('shutdown /a', shell=True)
+                subprocess.Popen(['shutdown', '/a'], shell=False)
         except Exception as e:
             print(f"Power action failed: {e}")
 

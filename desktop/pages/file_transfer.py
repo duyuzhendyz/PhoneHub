@@ -411,6 +411,9 @@ class FileTransferPage(QWidget):
             item = QListWidgetItem(record)
             set_item_text_color(item)
             self.history_list.addItem(item)
+        # 传输历史列表设上限，防止长会话无限增长
+        while self.history_list.count() > 100:
+            self.history_list.takeItem(0)
         self._completed_records.clear()
         self._reset_to_idle()
 

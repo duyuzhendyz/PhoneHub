@@ -192,6 +192,12 @@ class MirrorWindow(QWidget):
         self._touch_pool.shutdown(wait=False)
         self._latest_frame = None
         self.canvas.clear()
+        # 通知页面本窗口被用户关闭（用于抑制后续在途帧重新拉起窗口）
+        if self._closed_cb:
+            try:
+                self._closed_cb()
+            except Exception:
+                pass
         super().closeEvent(event)
 
     def _on_frame_received(self, frame_data):
@@ -476,7 +482,8 @@ class ScreenMirrorPage(QWidget):
 
     def _phone_screenshot(self):
         """手机截图：ADB模式直接截图，WiFi模式发送截图请求"""
-        screenshot_dir = r"F:\desk\手机上传\截图"
+        # 截图目录跟随接收目录（自动创建，具备不可用回退），避免硬编码盘符
+        screenshot_dir = os.path.join(self.manager.receive_dir, "screenshots")
         try:
             os.makedirs(screenshot_dir, exist_ok=True)
         except Exception as e:
@@ -510,14 +517,21 @@ class ScreenMirrorPage(QWidget):
 
     def _on_phone_frame_received(self, frame_data):
         """收到手机投屏帧时自动打开投屏窗口"""
+        # 用户手动关闭窗口后 3 秒内不再自动拉起（手机端停止采集有延迟，在途帧会触发重建）
+        if time.time() - getattr(self, '_mirror_closed_at', 0) < 3.0:
+            return
         if self._mirror_window is None or not self._mirror_window.isVisible():
             self._open_mirror_window()
+
+    def _on_mirror_closed(self):
+        """投屏窗口被用户关闭：记录时间用于抑制在途帧重新拉起"""
+        self._mirror_closed_at = time.time()
 
     def _open_mirror_window(self):
         """打开独立投屏查看窗口"""
         try:
             if self._mirror_window is None or not self._mirror_window.isVisible():
-                self._mirror_window = MirrorWindow(self.manager)
+                self._mirror_window = MirrorWindow(self.manager, closed_cb=self._on_mirror_closed)
             self._mirror_window.show()
             self._mirror_window.raise_()
             self._mirror_window.activateWindow()
