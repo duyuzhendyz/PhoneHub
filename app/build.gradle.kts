@@ -15,6 +15,15 @@ android {
     namespace = "com.phonehub"
     compileSdk = 36
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("../phonehub.keystore")
+            storePassword = "phonehub123"
+            keyAlias = "phonehub"
+            keyPassword = "phonehub123"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.phonehub"
         minSdk = 24
@@ -33,10 +42,12 @@ android {
 
     buildTypes {
         release {
-            // 开启 R8 混淆与资源收缩（proguard-rules.pro 已 keep 整个 com.phonehub 包，
+            // 开启 R8 混淆（proguard-rules.pro 已 keep 整个 com.phonehub 包，
             // 防止反射/Manifest 组件引用被移除）
+            // 注意：禁用资源收缩以避免 Material 库自动生成向量资源被误删
             isMinifyEnabled = true
-            isShrinkResources = true
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
