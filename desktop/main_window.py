@@ -15,7 +15,8 @@ from pages.dashboard import DashboardPage
 from pages.file_transfer import FileTransferPage
 from pages.clipboard_sync import ClipboardSyncPage
 from pages.text_share import TextSharePage
-from pages.screen_mirror import ScreenMirrorPage
+# 投屏已迁移到独立网页程序 web_pcscreen.py(端口1845)，桌面端投屏页面暂时禁用
+# from pages.screen_mirror import ScreenMirrorPage
 from pages.camera import CameraPage
 from pages.notifications import NotificationsPage
 from pages.location_map import LocationMapPage
@@ -96,7 +97,7 @@ class MainWindow(FluentWindow):
         self.file_transfer_page = FileTransferPage(self.manager)
         self.clipboard_page = ClipboardSyncPage(self.manager)
         self.text_page = TextSharePage(self.manager)
-        self.screen_mirror_page = ScreenMirrorPage(self.manager)
+        # self.screen_mirror_page = ScreenMirrorPage(self.manager)  # 投屏页面已迁移到 web_pcscreen.py
         self.camera_page = CameraPage(self.manager)
         self.notifications_page = NotificationsPage(self.manager)
         self.location_map_page = LocationMapPage(self.manager)
@@ -112,7 +113,7 @@ class MainWindow(FluentWindow):
             (self.file_transfer_page,  FIF.SHARE,     "文件传输"),
             (self.clipboard_page,     FIF.COPY,      "剪贴板同步"),
             (self.text_page,          FIF.CHAT,      "文字互传"),
-            (self.screen_mirror_page,  FIF.VIDEO,     "投屏与反向控制"),
+            # (self.screen_mirror_page,  FIF.VIDEO,     "投屏与反向控制"),  # 已迁移到 web_pcscreen.py
             (self.camera_page,        FIF.CAMERA,    "共享摄像头"),
             (self.notifications_page,  FIF.MESSAGE,   "通知读取"),
             (self.location_map_page,   FIF.DATE_TIME, "移动路线图"),
@@ -149,7 +150,7 @@ class MainWindow(FluentWindow):
     def _on_connection_changed(self, connected, channel):
         c = _c()
         if connected:
-            channel_names = {"wifi": "WiFi直连", "paw": "PAW中转", "adb": "USB数据线"}
+            channel_names = {"wifi": "WiFi直连", "cloudflare": "Cloudflare 隧道", "adb": "USB数据线"}
             self.status_label.setText(f"已连接 — {channel_names.get(channel, channel)}")
             self.status_label.setStyleSheet(f"color:{c['success']}; font-size: 12px; font-weight: 500;")
         else:

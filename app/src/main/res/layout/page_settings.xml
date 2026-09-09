@@ -48,7 +48,7 @@
                 android:id="@+id/etPawUrl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="https://yourname.pythonanywhere.com"
+                android:hint="https://xxx.trycloudflare.com"
                 android:textColor="#ffffff"
                 android:textColorHint="#808080"
                 android:background="#3a3a3a"

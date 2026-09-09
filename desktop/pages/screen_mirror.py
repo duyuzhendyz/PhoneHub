@@ -144,9 +144,10 @@ class MirrorCanvas(QFrame):
 class MirrorWindow(QWidget):
     """独立投屏查看窗口：显示手机画面帧 + 支持远程控制，60fps 显示"""
 
-    def __init__(self, manager, parent=None):
+    def __init__(self, manager, parent=None, closed_cb=None):
         super().__init__(parent, Qt.Window)
         self.manager = manager
+        self._closed_cb = closed_cb
         self._latest_frame = None
         self._last_frame_time = 0  # 上次收到帧的时间
         self._touch_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="touch")

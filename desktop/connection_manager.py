@@ -55,14 +55,13 @@ def _save_settings_to_file(settings):
 CHANNEL_NONE = "none"
 CHANNEL_ADB = "adb"
 CHANNEL_WIFI = "wifi"
-CHANNEL_PAW = "paw"  # PAW 中转通道
-CHANNEL_PRIORITY = {CHANNEL_ADB: 3, CHANNEL_WIFI: 2, CHANNEL_PAW: 1, CHANNEL_NONE: 0}
+CHANNEL_CLOUDFLARE = "cloudflare"  # Cloudflare 隧道：手机通过公网地址直连电脑（本机回环转发）
+CHANNEL_PRIORITY = {CHANNEL_ADB: 3, CHANNEL_WIFI: 2, CHANNEL_CLOUDFLARE: 1, CHANNEL_NONE: 0}
 
 
 class ConnectionManager(QObject):
     # ==================== 类常量 ====================
     DEFAULT_SECRET_TOKEN = "541881452418845"
-    DEFAULT_PAW_URL = "https://duyuzhendyz.pythonanywhere.com"
     DEFAULT_PORT = 58627
     CHUNK_SIZE = 524288  # 512KB，减少文件传输的HTTP请求数量，降低延迟
     LOG_DIR = os.path.join(os.path.expanduser("~"), "PhoneHub")
@@ -83,10 +82,6 @@ class ConnectionManager(QObject):
     ADB_FORWARD_TIMEOUT = 2
     ADB_TCPID_TIMEOUT = 10
     ADB_COMMAND_TIMEOUT = 15
-    PAW_REGISTER_TIMEOUT = 10
-    PAW_DISCONNECT_TIMEOUT = 5
-    PAW_LONG_POLL_TIMEOUT = 35
-    PAW_RECONNECT_WAIT = 2
     RECONNECT_WAIT = 2
     PROBE_WAIT = 5
     MEDIA_KEY_DELAY = 0.05
@@ -132,7 +127,6 @@ class ConnectionManager(QObject):
         self._settings_cache = {}
         self._load_settings_cache()
         self.secret_token = self._settings_cache.get("secret_token", self.DEFAULT_SECRET_TOKEN)
-        self.paw_url = self._settings_cache.get("paw_url", self.DEFAULT_PAW_URL)
         
         self.app = Flask(__name__)
         # 防止持有 token 的客户端用超大请求体打爆内存（帧/音频接口按 MB 计足够）
@@ -162,12 +156,6 @@ class ConnectionManager(QObject):
         self.phone_ip = None
         self.cached_phone_ip = None
         self.adb_device_id = None
-
-        self.paw_connected = False
-        self.paw_thread = None
-        self.paw_running = False
-        self.paw_device_id = None
-        self.paw_phone_id = None
 
         self.last_phone_seen = 0
         self.last_pc_clipboard = ""
@@ -286,10 +274,8 @@ class ConnectionManager(QObject):
         """加载并缓存设置文件"""
         self._settings_cache = _load_settings_from_file()
 
-    def _save_settings_cache(self, paw_url=None, secret_token=None):
+    def _save_settings_cache(self, secret_token=None):
         """保存设置到缓存和文件"""
-        if paw_url is not None:
-            self._settings_cache["paw_url"] = paw_url
         if secret_token is not None:
             self._settings_cache["secret_token"] = secret_token
         _save_settings_to_file(self._settings_cache)
@@ -360,7 +346,14 @@ class ConnectionManager(QObject):
             remote_ip = request.remote_addr
             if not remote_ip:
                 return
+            # Cloudflare 隧道：手机通过公网地址直连，经 cloudflared 本机转发后 remote_addr 为 127.0.0.1，
+            # 用手机端上报的 X-Channel 头区分（与 ADB 的 127.0.0.1 不混淆）
+            phone_channel = request.headers.get('X-Channel', '').lower()
             self.last_phone_seen = time.time()
+            if phone_channel == CHANNEL_CLOUDFLARE:
+                if not self.phone_connected or self.current_channel != CHANNEL_CLOUDFLARE:
+                    self._set_channel(CHANNEL_CLOUDFLARE)
+                return
             if remote_ip != '127.0.0.1':
                 if self.phone_ip != remote_ip:
                     self.phone_ip = remote_ip
@@ -1149,9 +1142,6 @@ class ConnectionManager(QObject):
             self.connection_status_changed.emit(True, channel)
             self.upgrade_confirm.clear()
             self.downgrade_fail.clear()
-            # PAW 通道：注册设备
-            if channel == CHANNEL_PAW:
-                self._register_paw_device()
             return
         if CHANNEL_PRIORITY.get(channel, 0) > CHANNEL_PRIORITY.get(old, 0):
             self.upgrade_confirm[channel] = self.upgrade_confirm.get(channel, 0) + 1
@@ -1160,60 +1150,15 @@ class ConnectionManager(QObject):
                 self.phone_connected = True
                 self.connection_status_changed.emit(True, channel)
                 self.upgrade_confirm.clear()
-                if channel == CHANNEL_PAW:
-                    self._register_paw_device()
         elif CHANNEL_PRIORITY.get(channel, 0) < CHANNEL_PRIORITY.get(old, 0):
             self.current_channel = channel
             self.phone_connected = (channel != CHANNEL_NONE)
             self.connection_status_changed.emit(self.phone_connected, channel)
             self.downgrade_fail.clear()
-            # PAW 通道：断开时清理
-            if channel == CHANNEL_NONE and old == CHANNEL_PAW:
-                self._disconnect_paw()
         else:
             self.current_channel = channel
             self.phone_connected = (channel != CHANNEL_NONE)
             self.connection_status_changed.emit(self.phone_connected, channel)
-
-    def _register_paw_device(self, force=False):
-        """在 PAW 服务器上注册 PC 设备（force=True 用于设备被服务器清理后重新注册）"""
-        if not force and self.paw_device_id:
-            return  # 已注册
-        try:
-            resp = requests.post(
-                f"{self.paw_url}/api/register",
-                json={
-                    "device_id": self.device_id,
-                    "type": "pc",
-                },
-                headers={"Authorization": f"Bearer {self.secret_token}"},
-                timeout=10
-            )
-            if resp.status_code == 200:
-                self.paw_device_id = self.device_id
-                logger.info(f"PAW registered PC: {self.paw_device_id}")
-                # 仅在轮询未启动时启动长轮询（404 重注册时轮询线程依然存活）
-                if not self.paw_running:
-                    self._start_paw_polling()
-        except Exception as e:
-            logger.warning(f"PAW register failed: {e}")
-
-    def _disconnect_paw(self):
-        """断开 PAW 连接"""
-        self.paw_running = False
-        if self.paw_device_id:
-            try:
-                requests.post(
-                    f"{self.paw_url}/api/disconnect",
-                    json={"device_id": self.paw_device_id},
-                    headers={"Authorization": f"Bearer {self.secret_token}"},
-                    timeout=5
-                )
-            except Exception:
-                pass
-        self.paw_device_id = None
-        self.paw_phone_id = None
-        logger.info("PAW disconnected")
 
     def _check_adb(self):
         """检测ADB设备并设置端口转发"""
@@ -1269,18 +1214,6 @@ class ConnectionManager(QObject):
         if not self.phone_connected:
             self.connection_message_changed.emit("等待手机WiFi连接...")
 
-    def _check_paw(self):
-        """PAW 通道检测"""
-        try:
-            resp = requests.get(
-                f"{self.paw_url}/api/status",
-                headers={"Authorization": f"Bearer {self.secret_token}"},
-                timeout=5
-            )
-            return resp.status_code == 200
-        except Exception:
-            return False
-
     def _probe_channels(self):
         """探测线程：每5秒检测各通道可用性，自动升降级"""
         while self.is_running:
@@ -1300,13 +1233,7 @@ class ConnectionManager(QObject):
             elif not adb_device_ok:
                 self.upgrade_confirm.clear()
 
-            # WiFi通道无需主动探测（手机没有HTTP服务），依赖手机主动连接
-
-            # PAW 通道降级检测
-            if self.phone_connected and self.current_channel == CHANNEL_PAW:
-                paw_ok = self._check_paw()
-                if not paw_ok:
-                    time.sleep(self.PROBE_WAIT)  # 等待一段时间确认 PAW 确实不可用
+            # WiFi / Cloudflare 通道无需主动探测（通道由手机主动发起连接）
 
             time.sleep(self.PROBE_INTERVAL)
 
@@ -1316,26 +1243,19 @@ class ConnectionManager(QObject):
         for _ in range(self.RECONNECT_RETRY):
             if channel == CHANNEL_ADB and self._check_adb():
                 return True
-            elif channel == CHANNEL_WIFI:
-                # WiFi 通道无法主动探测手机（手机无 HTTP 服务），循环内重试无意义，
-                # 直接进入降级判断，避免一直 return True 导致"已连接"状态卡死
+            elif channel in (CHANNEL_WIFI, CHANNEL_CLOUDFLARE):
+                # WiFi / Cloudflare 通道无法主动探测手机（手机无回连 HTTP 服务），
+                # 循环内重试无意义，直接进入降级判断，避免一直 return True 导致"已连接"状态卡死
                 break
-            elif channel == CHANNEL_PAW and self._check_paw():
-                return True
             time.sleep(self.RECONNECT_WAIT)
         # 降级
         if channel == CHANNEL_ADB:
             self._set_channel(CHANNEL_WIFI)
             return True
         if channel == CHANNEL_WIFI:
-            if self._check_paw():
-                self._set_channel(CHANNEL_PAW)
-                return True
             self._set_channel(CHANNEL_NONE)
             return False
-        if channel == CHANNEL_PAW:
-            if self._check_paw():
-                return True
+        if channel == CHANNEL_CLOUDFLARE:
             self._set_channel(CHANNEL_NONE)
             return False
         self._set_channel(CHANNEL_NONE)
@@ -1350,11 +1270,7 @@ class ConnectionManager(QObject):
         self.server_thread = threading.Thread(target=self._run_server, daemon=True)
         self.server_thread.start()
         self._start_monitoring()
-        # 启动即被动注册 PAW 设备并保活轮询，作为常驻配对目标，
-        # 手机端 PAW 连接时可被服务器配对到（不触发 UI 连接状态）。
-        threading.Thread(target=self._register_paw_device, daemon=True).start()
-        # threading.Thread(target=self._report_to_paw, daemon=True).start()  # 【禁止删除】PAW 上报
-        # self._start_paw_polling()  # 【禁止删除】PAW 轮询
+        # Cloudflare 隧道无需注册/轮询中继：手机通过公网地址直连本机 Flask
         # 先等待ADB连接（10秒），超时后切换到WiFi等待模式
         threading.Thread(target=self._wait_for_connection, daemon=True).start()
         threading.Thread(target=self._probe_channels, daemon=True).start()
@@ -1436,135 +1352,6 @@ class ConnectionManager(QObject):
     #                 self.paw_connected = False
     #             time.sleep(60)
     #     threading.Thread(target=report, daemon=True).start()
-    #
-    def _start_paw_polling(self):
-        """启动 PAW 长轮询"""
-        self.paw_running = True
-        self.paw_thread = threading.Thread(target=self._paw_long_poll, daemon=True)
-        self.paw_thread.start()
-
-    def _paw_long_poll(self):
-        """PAW 短轮询（每 PAW_POLL_INTERVAL 秒拉取一次指令，避免长期占用服务器 worker）"""
-        fail_count = 0
-        while self.paw_running:
-            try:
-                resp = requests.get(
-                    f"{self.paw_url}/api/get_cmd",
-                    headers={"Authorization": f"Bearer {self.secret_token}"},
-                    timeout=max(15, self.PAW_LONG_POLL_TIMEOUT),
-                    params={"device_id": self.paw_device_id}
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for msg in data.get("messages", []):
-                        try:
-                            if msg.get('activate') == 'ping':
-                                continue
-                            self._handle_paw_message(msg)
-                            fail_count = 0
-                        except Exception:
-                            pass
-                    fail_count = 0
-                elif resp.status_code == 404:
-                    # 设备已被服务器清理（如断网超过心跳超时）：重新注册恢复配对
-                    logger.warning("[PAW] 设备未注册(404)，重新注册...")
-                    self._register_paw_device(force=True)
-                    time.sleep(self.PAW_RECONNECT_WAIT)
-                else:
-                    fail_count += 1
-                    if fail_count >= self.RECONNECT_RETRY:
-                        self.paw_connected = False
-                        fail_count = 0
-                    time.sleep(self.PAW_RECONNECT_WAIT)
-            except Exception:
-                fail_count += 1
-                if fail_count >= self.RECONNECT_RETRY:
-                    self.paw_connected = False
-                    fail_count = 0
-                time.sleep(self.PAW_RECONNECT_WAIT)
-    #
-    def _handle_paw_message(self, data):
-        """PAW 通道消息处理"""
-        msg_data = data.get('data', {})
-        action = msg_data.get('action', '')
-        source = data.get('source', 'phone')
-        self.last_phone_seen = time.time()
-        if not self.phone_connected:
-            self._set_channel(CHANNEL_PAW)
-
-        if action == 'clipboard':
-            self.clipboard_received.emit(msg_data.get('txt', ''), source)
-        elif action == 'txt':
-            self.text_received.emit(msg_data.get('txt', ''), msg_data.get('filename', ''))
-        elif action == 'cmd':
-            self._handle_remote_command(msg_data)
-            self.command_received.emit(msg_data)
-        elif action == 'send_file_head':
-            self.file_receive_started.emit(msg_data.get('file_name', ''), msg_data.get('file_size', 0), msg_data.get('file_id', ''))
-        elif action == 'file_complete':
-            self._complete_file_receive(msg_data.get('file_id', ''))
-        elif action == 'ack':
-            self.file_sent.emit(msg_data.get('file_id', ''))
-        elif action == 'cpu':
-            self.phone_cpu_received.emit(float(msg_data.get('cpu', 0)))
-        elif action == 'phone_status':
-            self.phone_status_received.emit(msg_data)
-            # 从PAW状态中提取静音信息（注意：PAW消息中的msg_data即是body）
-            if 'muted' in msg_data:
-                self.phone_mute_received.emit(bool(msg_data['muted']))
-        elif action == 'status':
-            # PAW通道手机状态上报（与WiFi/ADB通道保持一致）
-            self.phone_status_received.emit(msg_data)
-            # 从PAW状态中提取静音信息
-            if 'muted' in msg_data:
-                self.phone_mute_received.emit(bool(msg_data['muted']))
-            # 更新最后心跳时间，维持连接状态
-            self.last_phone_seen = time.time()
-        elif action == 'notification':
-            self.notification_received.emit(msg_data)
-        elif action == 'location_batch':
-            self.location_received.emit(msg_data.get('points', msg_data.get('locations', [])))
-        elif action in ('process_list', 'process_list_request'):
-            # PC 侧未实现进程列表信号/方法，静默忽略避免异常（保持与 WiFi 通道行为一致）
-            pass
-        elif action in ('kill_process', 'kill_pc_process'):
-            pid = msg_data.get('pid')
-            if pid:
-                self._kill_pc_process(pid)
-        elif action == 'run_as_admin':
-            program = msg_data.get('program', '')
-            if program:
-                self._run_as_admin(program)
-        elif action == 'power':
-            action_type = msg_data.get('cmd') or msg_data.get('type', '')
-            self._handle_power_action(action_type)
-            self.power_action_received.emit(action_type)
-        elif action == 'screenshot':
-            self.screenshot_received.emit(msg_data.get('path', ''))
-        elif action == 'app_list':
-            self.app_list_received.emit(msg_data.get('apps', []))
-        elif action == 'file_list':
-            self.file_list_received.emit(msg_data.get('files', []))
-        elif action == 'clipboard_history':
-            # 剪贴板历史同步
-            items = msg_data.get('items', [])
-            if items:
-                self.clipboard_history_received.emit(items)
-        elif action == 'volume_changed':
-            try:
-                volume = int(msg_data.get('volume', 0))
-                self.phone_volume_received.emit(volume)
-                # 如果PAW消息中包含了静音状态，也更新
-                if msg_data.get('muted') is not None:
-                    self.phone_mute_received.emit(bool(msg_data['muted']))
-                # PAW通道不处理静音，由音量变化推断
-            except Exception:
-                pass
-        elif action == 'url_history_sync':
-            history = msg_data.get('history', [])
-            if history:
-                self.url_history_sync_received.emit(history)
-
     # ==================== 文件接收 ====================
 
     def _start_file_receive(self, file_id, file_name, file_size):
@@ -1717,27 +1504,7 @@ class ConnectionManager(QObject):
         action = msg.get('data', {}).get('action', '未知')
         self.log_pc_send(action)
 
-        if self.current_channel == CHANNEL_PAW and self.paw_device_id:
-            # PAW 通道：通过中转服务器发送
-            try:
-                requests.post(
-                    f"{self.paw_url}/api/send",
-                    json={
-                        "token": self.secret_token,
-                        "activate": "send",
-                        "source": "pc",
-                        "sender_id": self.paw_device_id,
-                        "target_id": self.paw_phone_id if hasattr(self, 'paw_phone_id') else "",
-                        "data": msg.get('data', {}),
-                    },
-                    headers={"Authorization": f"Bearer {self.secret_token}"},
-                    timeout=10
-                )
-            except Exception as e:
-                logger.warning(f"PAW send failed: {e}")
-            return True
-
-        # WiFi/ADB 通道：加入内存队列
+        # 所有通道（WiFi/ADB/Cloudflare）均为手机轮询 /api/poll 主动拉取，统一走内存队列
         with self.queue_lock:
             self.msg_queue.append(msg)
         return True
@@ -1808,11 +1575,10 @@ class ConnectionManager(QObject):
         if not os.path.exists(file_path):
             return False
         # 先检查通道条件，不满足则直接返回，不设置传输状态
-        if self.current_channel == CHANNEL_WIFI and self.phone_ip:
+        if self.current_channel in (CHANNEL_WIFI, CHANNEL_CLOUDFLARE):
+            # WiFi / Cloudflare 通道：手机通过 /api/download_file 轮询拉取
             pass
         elif self.current_channel == CHANNEL_ADB and self.adb_device_id:
-            pass
-        elif self.current_channel == CHANNEL_PAW and self.paw_device_id:
             pass
         else:
             return False
@@ -1843,29 +1609,10 @@ class ConnectionManager(QObject):
             }
         }
 
-        if self.current_channel == CHANNEL_WIFI and self.phone_ip:
+        if self.current_channel in (CHANNEL_WIFI, CHANNEL_CLOUDFLARE):
             threading.Thread(target=self._send_file_wifi, args=(file_id, file_path, file_size, head_msg), daemon=True).start()
             # 看门狗：30秒后如果传输仍未完成，强制重置状态
             threading.Thread(target=self._file_transfer_watchdog, args=(file_id,), daemon=True).start()
-            return True
-        elif self.current_channel == CHANNEL_PAW:
-            # PAW 模式：通过中转服务器发送文件头消息（与 _send_to_phone 相同协议）
-            try:
-                requests.post(
-                    f"{self.paw_url}/api/send",
-                    json={
-                        "token": self.secret_token,
-                        "activate": "send",
-                        "source": "pc",
-                        "sender_id": self.paw_device_id,
-                        "target_id": getattr(self, 'paw_phone_id', None) or "",
-                        "data": head_msg.get('data', head_msg),
-                    },
-                    headers={"Authorization": f"Bearer {self.secret_token}"},
-                    timeout=10
-                )
-            except Exception as e:
-                logger.warning(f"PAW file head send failed: {e}")
             return True
         elif self.current_channel == CHANNEL_ADB and self.adb_device_id:
             threading.Thread(target=self._send_file_adb, args=(file_id, file_path, file_size, head_msg), daemon=True).start()
@@ -1881,7 +1628,9 @@ class ConnectionManager(QObject):
             if getattr(self, '_transfer_paused', False):
                 no_progress_seconds = 0
                 continue
-            if time.time() - self.last_transfer_progress_time > 5:
+            # last_transfer_progress_time == 0 表示手机尚未开始下载（用户还未点"开始下载"），
+            # 等待用户确认期间不计入超时，否则用户稍后点击会因状态被清空而 404
+            if self.last_transfer_progress_time > 0 and time.time() - self.last_transfer_progress_time > 5:
                 no_progress_seconds += self.WATCHDOG_INTERVAL
             else:
                 no_progress_seconds = 0

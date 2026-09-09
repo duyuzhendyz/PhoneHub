@@ -75,6 +75,7 @@ class CameraWindow(QWidget):
             self.setWindowTitle("电脑摄像头预览")
         self._pix = QPixmap()
         self._latest_frame = None
+        self._last_pc_frame_ref = None  # 上次解码的电脑摄像头帧引用（判重，避免同帧重复解码）
         self._last_frame_time = 0  # 上次收到帧的时间
         self._aspect_ratio = 16.0 / 9.0
         self._resizing = False

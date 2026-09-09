@@ -180,7 +180,7 @@
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:background="#2d2d2d"
-            android:hint="https://yourname.pythonanywhere.com"
+            android:hint="https://xxx.trycloudflare.com"
             android:textColorHint="#666666"
             android:textColor="#ffffff"
             android:textSize="14sp"

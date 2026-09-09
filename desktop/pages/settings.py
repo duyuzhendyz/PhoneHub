@@ -128,11 +128,11 @@ class SettingsPage(QWidget):
         conn_layout.addLayout(token_row)
 
         paw_url_row = QHBoxLayout()
-        paw_url_row.addWidget(BodyLabel("PAW 服务器地址:"))
+        paw_url_row.addWidget(BodyLabel("Cloudflare 隧道:"))
         self.paw_url_input = LineEdit()
-        _paw_url = self.settings_data.get("paw_url", self.manager.DEFAULT_PAW_URL)
+        _paw_url = self.settings_data.get("paw_url", "")
         self.paw_url_input.setText(_paw_url)
-        self.paw_url_input.setPlaceholderText("https://yourname.pythonanywhere.com")
+        self.paw_url_input.setPlaceholderText("https://xxx.trycloudflare.com")
         self.paw_url_input.setMinimumWidth(300)
         paw_url_row.addWidget(self.paw_url_input)
         paw_url_row.addStretch()
@@ -287,15 +287,11 @@ class SettingsPage(QWidget):
                     return
                 self.manager.port = port
             paw_token = self.paw_token_input.text().strip()
-            paw_url = self.paw_url_input.text().strip()
             if paw_token:
                 self.manager.secret_token = paw_token
                 self.settings_data["paw_token"] = paw_token
-            if paw_url:
-                self.manager.paw_url = paw_url
-                self.settings_data["paw_url"] = paw_url
-            # 同步到 ConnectionManager 实际读取的配置缓存，确保 PAW 连接使用新值
-            self.manager._save_settings_cache(paw_url=paw_url or None, secret_token=paw_token or None)
+            # 同步到 ConnectionManager 实际读取的配置缓存
+            self.manager._save_settings_cache(secret_token=paw_token or None)
             self.settings_data["auto_start"] = self.auto_start_cb.isChecked()
             self.settings_data["auto_sync"] = self.auto_sync_cb.isChecked()
             self.settings_data["auto_open"] = self.auto_open_cb.isChecked()

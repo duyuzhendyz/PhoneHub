@@ -51,16 +51,6 @@ class StatProgressBar(QWidget):
     def setValue(self, pct):
         self.value_label.setText(f"{pct:.0f}%")
         self.progress.setValue(int(pct))
-        # 仅在档位跨越阈值时切换样式，避免每秒 setStyleSheet 重解析 QSS
-        tier = 0 if pct >= 90 else (1 if pct >= 70 else 2)
-        if getattr(self, '_color_tier', None) != tier:
-            self._color_tier = tier
-            if tier == 0:
-                self._apply_color("#FF6B6B", "#FF8A80")
-            elif tier == 1:
-                self._apply_color("#FFB74D", "#FFCC80")
-            else:
-                self._apply_color("#60CDFF", "#4FC3F7")
 
 
 class ConnectionDot(QWidget):
@@ -253,9 +243,6 @@ class DashboardPage(QWidget):
     def _on_phone_status(self, status):
         """手机端上报的状态数据"""
         try:
-            mem = status.get('memory_usage')
-            if mem is not None:
-                self.phone_mem_stat.setValue(float(mem))
             st = status.get('storage_total', 0)
             sf = status.get('storage_free', 0)
             if st and st > 0:

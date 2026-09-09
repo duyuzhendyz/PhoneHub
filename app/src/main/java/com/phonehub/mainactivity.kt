@@ -54,6 +54,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -96,6 +97,8 @@ class MainActivity : AppCompatActivity() {
     // 自研投屏：MediaProjection 截图
     private var mediaProjection: android.media.projection.MediaProjection? = null
     private var screenCaptureRunning = false
+    // 声音传输需要 MediaProjection 采集系统内录；为声音而发起的授权完成后只启动音频，不启动投屏循环
+    private var pendingAudioStart = false
     private var screenCaptureThread: Thread? = null
     private var virtualDisplay: android.hardware.display.VirtualDisplay? = null
     private var screenWidth = 0
@@ -197,13 +200,28 @@ class MainActivity : AppCompatActivity() {
     ) { result ->
         try {
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                // 缓存 MediaProjection token 供后台静默截图复用
+                // 缓存 MediaProjection token 供后台静默截图/声音内录复用
                 ConnectionManager.cacheMediaProjectionToken(result.resultCode, result.data!!)
+                // 投影就绪后的统一处理：若本次授权是为声音传输发起的，则只启动音频，不启动投屏循环
+                val onProjectionReady = {
+                    try {
+                        // Android 14+ 时 mediaProjection 来自 ScreenCaptureService 持有的实例
+                        if (android.os.Build.VERSION.SDK_INT >= 34) {
+                            ConnectionManager.getCachedMediaProjection()?.let { mediaProjection = it }
+                        }
+                    } catch (_: Exception) {}
+                    if (pendingAudioStart) {
+                        pendingAudioStart = false
+                        startPhoneAudioCapture()
+                    } else {
+                        startCapturedProjection()
+                    }
+                }
                 if (android.os.Build.VERSION.SDK_INT >= 34) {
                     // Android 14+ 强制要求 MediaProjection 在已声明 mediaProjection 类型的前台服务中创建
                     // 通过 ScreenCaptureService 创建并复用其投影实例，Activity 内不可直接 getMediaProjection()
                     ConnectionManager.attachScreenCaptureService(this, result.resultCode, result.data!!) {
-                        startCapturedProjection()
+                        onProjectionReady()
                     }
                 } else {
                     val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
@@ -214,9 +232,11 @@ class MainActivity : AppCompatActivity() {
                             stopPhoneScreenCapture()
                         }
                     }, android.os.Handler(android.os.Looper.getMainLooper()))
-                    startCapturedProjection()
+                    onProjectionReady()
                 }
             } else {
+                // 用户拒绝了屏幕录制授权：声音内录无法启动，清除待启动状态
+                pendingAudioStart = false
                 Toast.makeText(this, "屏幕录制权限被拒绝", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
@@ -297,15 +317,18 @@ class MainActivity : AppCompatActivity() {
         val cachedToken = prefs.getString("cached_token", "")
         if (!cachedToken.isNullOrEmpty()) tokenInput.setText(cachedToken) else tokenInput.setText("541881452418845")
 
-        // PAW 配置
+        // Cloudflare 隧道配置（临时隧道地址每次会变，交给用户手动填写）
         val cachedPawUrl = prefs.getString("cached_paw_url", "")
         if (!cachedPawUrl.isNullOrEmpty()) pawUrlInput.setText(cachedPawUrl)
-        if (pawUrlInput.text.isBlank()) pawUrlInput.setText("https://duyuzhendyz.pythonanywhere.com")
+        if (pawUrlInput.text.isBlank()) {
+            pawUrlInput.setText("")
+            pawUrlInput.hint = "例如 https://xxx.trycloudflare.com"
+        }
         val cachedPawToken = prefs.getString("cached_paw_token", "")
         if (!cachedPawToken.isNullOrEmpty()) pawTokenInput.setText(cachedPawToken)
         if (pawTokenInput.text.isBlank()) pawTokenInput.setText("541881452418845")
 
-        // PAW 保存按钮
+        // Cloudflare 配置保存按钮
         findViewById<Button>(R.id.savePawBtn)?.setOnClickListener {
             val url = pawUrlInput.text.toString().trim()
             val token = pawTokenInput.text.toString().trim()
@@ -315,20 +338,20 @@ class MainActivity : AppCompatActivity() {
                     .putString("cached_paw_url", url)
                     .putString("cached_paw_token", token)
                     .apply()
-                Toast.makeText(this, "PAW 设置已保存", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Cloudflare 隧道设置已保存", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(this, "地址和令牌不能为空", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "隧道地址和令牌不能为空", Toast.LENGTH_SHORT).show()
             }
         }
 
-        // PAW 连接按钮
+        // Cloudflare 隧道连接按钮
         pawConnectBtn = findViewById(R.id.pawConnectBtn)
         pawLoadingOverlay = findViewById(R.id.pawLoadingOverlay)
         pawConnectBtn.setOnClickListener {
             val url = pawUrlInput.text.toString().trim()
             val token = pawTokenInput.text.toString().trim()
             if (url.isEmpty() || token.isEmpty()) {
-                Toast.makeText(this, "请先填写 PAW 地址和 Token 并保存", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "请先填写隧道地址和 Token 并保存", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             ConnectionManager.setPawConfig(url, token)
@@ -338,7 +361,7 @@ class MainActivity : AppCompatActivity() {
                 .apply()
             // 显示加载遮罩，隐藏表单
             pawLoadingOverlay.visibility = View.VISIBLE
-            findViewById<TextView>(R.id.pawLoadingText).text = "正在通过 PAW 连接..."
+            findViewById<TextView>(R.id.pawLoadingText).text = "正在通过 Cloudflare 隧道连接..."
             ConnectionManager.connectPaw()
         }
 
@@ -358,10 +381,8 @@ class MainActivity : AppCompatActivity() {
         connectBtn.applyDarkTheme(primary = true)
         connectBtn.setOnClickListener { attemptConnect() }
 
-        // 启动时自动请求所有权限
-        requestAllPermissions()
-        // 请求忽略电池优化（防止后台被杀）
-        requestBatteryOptimization()
+        // 启动时自动请求所有权限（先弹说明弹窗，用户点"确定"后才发起授权跳转）
+        promptAndRequestAllPermissions()
 
         setupTabs()
         // 防止 SharedFlow replay 导致重启后重复弹窗：把上次收到的文字标记为已处理
@@ -605,6 +626,129 @@ class MainActivity : AppCompatActivity() {
         }, 2000)
     }
 
+    /**
+     * 先弹窗说明当前需要申请的权限，用户点"确定"后才真正发起授权跳转。
+     * 避免"一进入就蹦到权限授权界面"。
+     */
+    private fun promptAndRequestAllPermissions() {
+        val prefs = getSharedPreferences("phonehub_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("permissions_requested", false) && Build.VERSION.SDK_INT < 33) return
+
+        // 收集尚未开启的特殊权限，用于向用户说明
+        // 各检测独立 try-catch：部分 API（如 canRequestPackageInstalls）在 Manifest 未声明对应权限时会抛 SecurityException
+        val pending = mutableListOf<String>()
+        try {
+            if (!Settings.canDrawOverlays(this)) {
+                pending.add("悬浮窗（在其他应用上层显示）")
+            }
+        } catch (_: Exception) {}
+        try {
+            if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+                pending.add("所有文件访问权限（文件管理）")
+            }
+        } catch (_: Exception) {}
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+                pending.add("忽略电池优化（保持后台连接）")
+            }
+        } catch (_: Exception) {}
+        try {
+            if (!packageManager.canRequestPackageInstalls()) {
+                pending.add("安装未知应用（自动安装APK）")
+            }
+        } catch (_: Exception) {}
+
+        // 顶部：实时显示电脑状态
+        val statusTitle = TextView(this)
+        statusTitle.text = "电脑状态"
+        statusTitle.textSize = 16f
+        statusTitle.setTextColor(0xFFFFFFFF.toInt())
+        statusTitle.setTypeface(null, android.graphics.Typeface.BOLD)
+        statusTitle.setPadding(0, dp(6), 0, dp(4))
+
+        val statusView = TextView(this)
+        statusView.text = buildPcStatusText()
+        statusView.textSize = 14f
+        statusView.setTextColor(0xFFD0D0D0.toInt())
+        statusView.setPadding(0, 0, 0, dp(6))
+
+        // 分隔线
+        val divider = View(this)
+        divider.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+        divider.setBackgroundColor(0x1FFFFFFF.toInt())
+
+        // 权限说明
+        val msgView = TextView(this)
+        msgView.text = buildString {
+            append("需要以下权限才能正常工作：\n\n")
+            append("• 存储：读写手机文件\n")
+            append("• 位置：位置同步\n")
+            append("• 相机/麦克风：摄像头共享 / 语音\n")
+            append("• 电话：来电等基础信息\n")
+            if (pending.isNotEmpty()) {
+                append("\n以下还需在系统设置中手动开启：\n")
+                pending.forEach { append("• $it\n") }
+            }
+            append("\n点击「确定」后将依次引导你开启。")
+        }
+        msgView.textSize = 14f
+        msgView.setTextColor(0xFFB0B0B0.toInt())
+        msgView.setPadding(0, dp(8), 0, 0)
+        msgView.setLineSpacing(0f, 1.2f)
+
+        val content = LinearLayout(this)
+        content.orientation = LinearLayout.VERTICAL
+        content.setPadding(dp(24), dp(12), dp(24), dp(4))
+        content.addView(statusTitle)
+        content.addView(statusView)
+        content.addView(divider)
+        content.addView(msgView)
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(content)
+            .setCancelable(false)
+            .setPositiveButton("确定") { _, _ -> requestAllPermissions() }
+            .setNegativeButton("暂不", null)
+            .create()
+        dialog.show()
+
+        // 实时刷新电脑状态：连接状态/通道/IP 任一变化即更新
+        val statusJob = lifecycleScope.launch {
+            kotlinx.coroutines.flow.combine(
+                ConnectionManager.connectionState,
+                ConnectionManager.currentChannel,
+                ConnectionManager.connectionMessage
+            ) { _, _, _ -> Unit }
+                .collect { statusView.text = buildPcStatusText() }
+        }
+        dialog.setOnDismissListener { statusJob.cancel() }
+    }
+
+    /** 组装电脑状态的实时展示文本 */
+    private fun buildPcStatusText(): String {
+        val stateName = when (ConnectionManager.connectionState.value) {
+            ConnectionManager.ConnectionState.CONNECTED -> "已连接"
+            ConnectionManager.ConnectionState.CONNECTING -> "连接中"
+            else -> {
+                val m = ConnectionManager.connectionMessage.value
+                if (!m.isNullOrBlank() && m != "未连接") m else "未连接"
+            }
+        }
+        val channelName = when (ConnectionManager.currentChannel.value) {
+            ConnectionManager.ChannelType.WIFI -> "WiFi 直连"
+            ConnectionManager.ChannelType.PAW -> "Cloudflare 隧道"
+            ConnectionManager.ChannelType.ADB -> "USB 数据线"
+            else -> ""
+        }
+        val ip = ConnectionManager.getPcIp()
+        return buildString {
+            append("状态：$stateName")
+            if (channelName.isNotEmpty()) append(" · $channelName")
+            if (!ip.isNullOrBlank()) append("\n电脑IP：$ip")
+        }
+    }
+
     // ============================== Tab 栏 ==============================
 
     private fun setupTabs() {
@@ -749,7 +893,8 @@ class MainActivity : AppCompatActivity() {
         FuncInfo("剪贴板", "📋", 4),
         FuncInfo("文字互传", "💬", -1),
         FuncInfo("远程控制", "🎮", 2),
-        FuncInfo("投屏", "🖥️", 8),
+        // 投屏已迁移到电脑端独立网页 web_pcscreen.py(端口1845)，手机端投屏入口暂移除
+        // FuncInfo("投屏", "🖥️", 8),
         FuncInfo("摄像头", "📷", 9),
         FuncInfo("通知", "🔔", 10),
         FuncInfo("路线图", "🗺️", 6),
@@ -1164,36 +1309,50 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             ConnectionManager.pendingFileReceive.collect { pending ->
                 val v2 = pageCache[1] ?: return@collect
-                v2.findViewById<TextView>(R.id.fileNameText)?.text = pending.fileName
-                v2.findViewById<LinearLayout>(R.id.fileProgressContainer)?.visibility = View.VISIBLE
-                v2.findViewById<LinearLayout>(R.id.fileTransferBtnContainer)?.visibility = View.VISIBLE
-                v2.findViewById<ProgressBar>(R.id.fileProgress)?.progress = 0
-                v2.findViewById<TextView>(R.id.fileProgressText)?.text = "待确认下载"
-                v2.findViewById<TextView>(R.id.fileSpeedText)?.text = ""
-                v2.findViewById<Button>(R.id.selectFileBtn)?.isEnabled = false
-                v2.findViewById<Button>(R.id.pauseFileBtn)?.isEnabled = false
-                v2.findViewById<Button>(R.id.cancelFileBtn)?.isEnabled = true
-                v2.findViewById<Button>(R.id.cancelFileBtn)?.text = "取消"
-                // 将"完成"按钮改为"开始下载"
-                v2.findViewById<Button>(R.id.doneFileBtn)?.text = "开始下载"
-                v2.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.VISIBLE
-                v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = true
-                // 重新绑定"开始下载"按钮点击事件
-                v2.findViewById<Button>(R.id.doneFileBtn)?.setOnClickListener {
-                    ConnectionManager.startFileDownloadFromNotification(pending.fileId, pending.fileName, pending.fileSize)
-                    v2.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.GONE
-                    v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = false
-                    v2.findViewById<TextView>(R.id.fileProgressText)?.text = "下载中..."
-                }
-                // "取消"按钮点击：取消待接收
-                v2.findViewById<Button>(R.id.cancelFileBtn)?.setOnClickListener {
-                    ConnectionManager.cancelFileTransferNotification()
+                if (pending == null) {
+                    // 待确认状态被清除（已开始下载/已取消/已断开）：恢复默认界面
                     resetFileTransferUi(v2)
+                    return@collect
                 }
+                renderPendingFileReceive(v2, pending)
             }
         }
+        // 页面创建时同步恢复：进程被杀后从持久化/内存恢复待确认文件，无需等待 SharedFlow replay
+        ConnectionManager.getPendingFileTransfer()?.let { renderPendingFileReceive(v, it) }
 
         return v
+    }
+
+    /**
+     * 渲染"待确认接收"界面：显示文件名 + "开始下载"/"取消"按钮
+     */
+    private fun renderPendingFileReceive(v2: View, pending: ConnectionManager.PendingFileTransfer) {
+        v2.findViewById<TextView>(R.id.fileNameText)?.text = pending.fileName
+        v2.findViewById<LinearLayout>(R.id.fileProgressContainer)?.visibility = View.VISIBLE
+        v2.findViewById<LinearLayout>(R.id.fileTransferBtnContainer)?.visibility = View.VISIBLE
+        v2.findViewById<ProgressBar>(R.id.fileProgress)?.progress = 0
+        v2.findViewById<TextView>(R.id.fileProgressText)?.text = "待确认下载"
+        v2.findViewById<TextView>(R.id.fileSpeedText)?.text = ""
+        v2.findViewById<Button>(R.id.selectFileBtn)?.isEnabled = false
+        v2.findViewById<Button>(R.id.pauseFileBtn)?.isEnabled = false
+        v2.findViewById<Button>(R.id.cancelFileBtn)?.isEnabled = true
+        v2.findViewById<Button>(R.id.cancelFileBtn)?.text = "取消"
+        // 将"完成"按钮改为"开始下载"
+        v2.findViewById<Button>(R.id.doneFileBtn)?.text = "开始下载"
+        v2.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.VISIBLE
+        v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = true
+        // 重新绑定"开始下载"按钮点击事件
+        v2.findViewById<Button>(R.id.doneFileBtn)?.setOnClickListener {
+            ConnectionManager.startFileDownloadFromNotification(pending.fileId, pending.fileName, pending.fileSize)
+            v2.findViewById<Button>(R.id.doneFileBtn)?.visibility = View.GONE
+            v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = false
+            v2.findViewById<TextView>(R.id.fileProgressText)?.text = "下载中..."
+        }
+        // "取消"按钮点击：取消待接收
+        v2.findViewById<Button>(R.id.cancelFileBtn)?.setOnClickListener {
+            ConnectionManager.cancelFileTransferNotification()
+            resetFileTransferUi(v2)
+        }
     }
 
     // ============================== 遥控 ==============================
@@ -3393,11 +3552,11 @@ class MainActivity : AppCompatActivity() {
         val etPawToken = v.findViewById<EditText>(R.id.etPawToken)
         val btnSavePaw = v.findViewById<Button>(R.id.btnSavePaw)
 
-        // 加载已保存的 PAW 配置
+        // 加载已保存的隧道配置
         val prefs = getSharedPreferences("phonehub_prefs", Context.MODE_PRIVATE)
         prefs.getString("cached_paw_url", "")?.let { etPawUrl.setText(it) }
         prefs.getString("cached_paw_token", "")?.let { etPawToken.setText(it) }
-        if (etPawUrl.text.isBlank()) etPawUrl.setText("https://duyuzhendyz.pythonanywhere.com")
+        if (etPawUrl.text.isBlank()) etPawUrl.setText("")
         if (etPawToken.text.isBlank()) etPawToken.setText("541881452418845")
 
         btnSavePaw?.applyDarkTheme(primary = true)
@@ -3410,9 +3569,9 @@ class MainActivity : AppCompatActivity() {
                     .putString("cached_paw_url", url)
                     .putString("cached_paw_token", token)
                     .apply()
-                Toast.makeText(this, "PAW 设置已保存", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Cloudflare 隧道设置已保存", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(this, "地址和令牌不能为空", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "隧道地址和令牌不能为空", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -3446,7 +3605,7 @@ class MainActivity : AppCompatActivity() {
         val channel = ConnectionManager.currentChannel.value
         val channelName = when (channel) {
             ConnectionManager.ChannelType.WIFI -> "WiFi 直连"
-            ConnectionManager.ChannelType.PAW -> "PAW 中转"
+            ConnectionManager.ChannelType.PAW -> "Cloudflare 隧道"
             ConnectionManager.ChannelType.ADB -> "USB 数据线"
             else -> "无"
         }
@@ -3631,7 +3790,7 @@ class MainActivity : AppCompatActivity() {
             ConnectionManager.currentChannel.collect { channel ->
                 val channelName = when (channel) {
                     ConnectionManager.ChannelType.WIFI -> "WiFi 直连"
-                    // ConnectionManager.ChannelType.PAW -> "PAW 中转"  // 【禁止删除】PAW 通道显示
+                    // ConnectionManager.ChannelType.PAW -> "Cloudflare 隧道"  // 【禁止删除】PAW 通道显示
                     ConnectionManager.ChannelType.ADB -> "USB 数据线"
                     else -> "无"
                 }
@@ -4279,17 +4438,18 @@ class MainActivity : AppCompatActivity() {
         }
         val bufferSize = maxOf(minBufferSize, 4096)
 
-        // 必须使用 AudioPlaybackCaptureConfiguration 捕获系统媒体声音；无 MediaProjection 时先引导授权
+        // 必须使用 AudioPlaybackCaptureConfiguration 捕获系统媒体声音；无 MediaProjection 时先自动拉起授权
         if (mediaProjection == null) {
             val cached = ConnectionManager.getCachedMediaProjection()
             mediaProjection = cached
         }
         if (mediaProjection == null) {
+            // 声音传输不再要求"必须先投过屏"：自动发起一次性屏幕录制授权，授权完成后自动开始内录
+            pendingAudioStart = true
             runOnUiThread {
-                Toast.makeText(this@MainActivity, "请先启动手机投屏或进行一次截图授权，以获取系统内录权限", Toast.LENGTH_LONG).show()
-                audioCaptureRunning = false
-                pageCache[8]?.findViewById<Button>(R.id.btnAudio)?.text = "声音传输"
+                Toast.makeText(this@MainActivity, "正在请求录制屏幕，用于捕获手机声音...", Toast.LENGTH_SHORT).show()
             }
+            startPhoneScreenCapture()
             return
         }
         // 优先使用 AudioPlaybackCaptureConfiguration 捕获系统内音（需要 MediaProjection）
@@ -4390,22 +4550,5 @@ class MainActivity : AppCompatActivity() {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
-    }
-
-    /** 请求忽略电池优化（防止后台被杀） */
-    private fun requestBatteryOptimization() {
-        try {
-            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
-            if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
-                val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = android.net.Uri.parse("package:$packageName")
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                startActivity(intent)
-                Log.i("PhoneHub", "已请求忽略电池优化")
-            }
-        } catch (e: Exception) {
-            Log.w("PhoneHub", "请求电池优化白名单失败: ${e.message}")
-        }
     }
 }

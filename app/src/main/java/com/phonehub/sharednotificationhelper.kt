@@ -30,24 +30,29 @@ object SharedNotificationHelper {
 
     /**
      * 构建基础通知（点击打开 MainActivity）
+     * @param title 通知标题，可传空字符串以隐藏通知文字（前台服务通知不能删除，只能隐藏文案）
+     * @param withContentIntent 是否绑定点击打开 MainActivity；保活通知可设 false 进一步减重量
      */
-    fun buildNotification(context: Context, channelId: String, text: String, priority: Int): Notification {
-        val mainIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pi = PendingIntent.getActivity(
-            context, 0, mainIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        return androidx.core.app.NotificationCompat.Builder(context, channelId)
-            .setContentTitle("PhoneHub")
+    fun buildNotification(context: Context, channelId: String, text: String, priority: Int,
+                          title: String = "PhoneHub", withContentIntent: Boolean = true): Notification {
+        val builder = androidx.core.app.NotificationCompat.Builder(context, channelId)
+            .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
             .setSilent(true)
-            .setContentIntent(pi)
             .setPriority(priority)
             .setCategory(androidx.core.app.NotificationCompat.CATEGORY_SERVICE)
-            .build()
+        if (withContentIntent) {
+            val mainIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pi = PendingIntent.getActivity(
+                context, 0, mainIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.setContentIntent(pi)
+        }
+        return builder.build()
     }
 }

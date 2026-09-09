@@ -92,14 +92,17 @@ class PhoneHubService : Service() {
                 mgr, CHANNEL_ID,
                 "PhoneHub 保活",
                 "保持 PhoneHub 与电脑持续连接",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_MIN  // 静默：不打断，仅保留必要的前台通知
             )
         }
 
         fun buildNotification(context: Context): Notification {
+            // 前台服务通知无法删除，只能做到最细：无任何文字、无点击跳转，仅保留一条空图标
             return SharedNotificationHelper.buildNotification(
-                context, CHANNEL_ID, "PhoneHub 保活中",
-                androidx.core.app.NotificationCompat.PRIORITY_MIN
+                context, CHANNEL_ID, "",
+                androidx.core.app.NotificationCompat.PRIORITY_MIN,
+                "",
+                withContentIntent = false
             )
         }
     }

@@ -69,7 +69,7 @@ object ConnectionManager {
     private const val DEFAULT_SECRET_TOKEN = "541881452418845"
     private const val DEFAULT_PORT = 58627
     private const val CHUNK_SIZE = 524288  // 512KB，与PC端保持一致，减少HTTP请求数量
-    private const val DEFAULT_PAW_URL = "https://duyuzhendyz.pythonanywhere.com"
+    private const val DEFAULT_PAW_URL = ""  // Cloudflare 隧道地址由用户在设置页手动填写（临时隧道会变动，不写死）
     private const val DEFAULT_IP = "192.168.3.9"
 
     // 重连参数
@@ -84,9 +84,13 @@ object ConnectionManager {
     private const val KEY_CACHED_IP = "cached_pc_ip"
     private const val KEY_PAW_URL = "paw_url"
     private const val KEY_PAW_TOKEN = "paw_token"
-    private var pawDeviceId: String? = null
-
+    // 待确认文件持久化键：进程被杀后单击通知进入文件页仍能恢复"开始下载"状态
+    private const val KEY_PENDING_FILE_ID = "pending_file_id"
+    private const val KEY_PENDING_FILE_NAME = "pending_file_name"
+    private const val KEY_PENDING_FILE_SIZE = "pending_file_size"
+    @Volatile
     private var secretToken: String = DEFAULT_SECRET_TOKEN
+    @Volatile
     private var pawUrl: String = DEFAULT_PAW_URL
 
     fun getPawUrl(): String = pawUrl
@@ -194,8 +198,9 @@ object ConnectionManager {
     val audioControl: SharedFlow<AudioControlCommand> = _audioControl
 
     // S4: 待用户确认接收的文件（PC端发送文件时，先通知用户，用户点击"开始下载"后才真正接收）
-    private val _pendingFileReceive = MutableSharedFlow<PendingFileTransfer>(extraBufferCapacity = 4)
-    val pendingFileReceive: SharedFlow<PendingFileTransfer> = _pendingFileReceive
+    // replay=1：通知弹出时 app 可能在后台或页面未创建，保证进入文件传输页时仍能拿到最新待确认状态
+    private val _pendingFileReceive = MutableSharedFlow<PendingFileTransfer?>(replay = 1)
+    val pendingFileReceive: SharedFlow<PendingFileTransfer?> = _pendingFileReceive
 
     private val _receivedClipboard = MutableStateFlow<String?>(null)
     val receivedClipboard: StateFlow<String?> = _receivedClipboard
@@ -263,6 +268,7 @@ object ConnectionManager {
     var lastPcHeartbeatAt = 0L
         private set
 
+    @Volatile
     private var reconnectFailCount = 0
 
     // 远程控制：记录上次触摸按下位置（归一化坐标→像素坐标后缓存）
@@ -271,12 +277,12 @@ object ConnectionManager {
     @Volatile
     private var _lastTouchDownY = -1f
 
+    @Volatile
     private var pcIp: String? = null
+    @Volatile
     private var connectPort: Int = DEFAULT_PORT
 
     fun getPcIp(): String? = pcIp
-    private var pawPollingJob: Job? = null
-    private var pawStatusReportJob: Job? = null
     private var statusJob: Job? = null
     private var msgPollingJob: Job? = null
     private var statusReportJob: Job? = null
@@ -308,14 +314,18 @@ object ConnectionManager {
     private var locationStoreDir: File? = null
     
     // 音量静音状态跟踪
+    @Volatile
     private var isMuted = false
     private val _mutedState = MutableStateFlow(false)
     val mutedState: StateFlow<Boolean> = _mutedState
     
     // 音量更新防抖：避免音量调节反馈循环
+    @Volatile
     private var lastVolumeSendTime = 0L
     private const val VOL_UPDATE_DEBOUNCE_MS = 300L
+    @Volatile
     private var userVerifiedConnection = false
+    @Volatile
     private var lastPcCpuAt = 0L
 
     // 文件接收状态（断点续传）
@@ -443,6 +453,15 @@ object ConnectionManager {
             }
             defaultRequest {
                 header("Authorization", "Bearer ${this@ConnectionManager.secretToken}")
+                // 上报当前通道类型，供桌面端区分 Cloudflare 隧道（本机回环 127.0.0.1 与 ADB 混淆）与 ADB 通道
+                header(
+                    "X-Channel",
+                    when (_currentChannel.value) {
+                        ChannelType.PAW -> "cloudflare"
+                        ChannelType.ADB -> "adb"
+                        else -> "wifi"
+                    }
+                )
             }
         }
         receiveDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "").apply { mkdirs() }
@@ -594,11 +613,11 @@ object ConnectionManager {
                 } else {
                     val reason = lastConnectFailReason ?: "未知错误"
                     _connectionMessage.value = "WiFi 连接失败: $reason"
-                    // 尝试 PAW 中转
-                    _connectionMessage.value = "直连失败，尝试 PAW 中转..."
+                    // 尝试 Cloudflare 隧道
+                    _connectionMessage.value = "直连失败，尝试 Cloudflare 隧道..."
                     val pawSuccess = testPawConnection()
                     if (pawSuccess) {
-                        _connectionMessage.value = "PAW 中转连接成功"
+                        _connectionMessage.value = "Cloudflare 隧道连接成功"
                         startChannel(ChannelType.PAW)
                     } else {
                         if (isActive && _currentChannel.value == ChannelType.NONE) {
@@ -633,6 +652,7 @@ object ConnectionManager {
             s.close()
             true
         } catch (e: Exception) {
+            Log.w(TAG, "ADB server 5037 检测失败: ${e.message}")
             false
         }
         if (serverAvailable) return true
@@ -647,6 +667,7 @@ object ConnectionManager {
             conn.disconnect()
             ok
         } catch (e: Exception) {
+            Log.w(TAG, "ADB 通道状态探测失败: ${e.message}")
             false
         }
     }
@@ -699,8 +720,8 @@ object ConnectionManager {
             ChannelType.PAW -> {
                 _currentChannel.value = ChannelType.PAW
                 _connectionState.value = ConnectionState.CONNECTED
-                _connectionMessage.value = "已连接 - PAW 中转"
-                startPawPolling()
+                _connectionMessage.value = "已连接 - Cloudflare 隧道"
+                startStatusPolling(ChannelType.PAW)
             }
             else -> {}
         }
@@ -723,7 +744,6 @@ object ConnectionManager {
         if (cur == target) return
         Log.i(TAG, "通道切换: $cur -> $target")
         statusJob?.cancel()
-        pawPollingJob?.cancel()
         _currentChannel.value = target
         startChannel(target)
     }
@@ -736,8 +756,7 @@ object ConnectionManager {
             var failCount = 0
             while (isActive) {
                 try {
-                    val ip = pcIp ?: DEFAULT_IP
-                    val baseUrl = if (channel == ChannelType.ADB) "http://127.0.0.1:$connectPort" else "http://$ip:$connectPort"
+                    val baseUrl = getBaseUrl()
                     // 合并轮询：一次请求同时获取状态和消息，减轻网络负担
                     val t0 = System.currentTimeMillis()
                     val response = client?.get("$baseUrl/api/poll") {
@@ -812,8 +831,12 @@ object ConnectionManager {
             when (channel) {
                 ChannelType.ADB -> downgradeFromAdb()
                 ChannelType.WIFI -> {
-                    _connectionMessage.value = "WiFi 重连失败，尝试 PAW 中转..."
-                    startPawPolling()
+                    _connectionMessage.value = "WiFi 重连失败，尝试 Cloudflare 隧道..."
+                    if (testPawConnection()) {
+                        startChannel(ChannelType.PAW)
+                    } else {
+                        _connectionMessage.value = "Cloudflare 隧道连接失败"
+                    }
                 }
                 else -> {}
             }
@@ -1230,154 +1253,6 @@ object ConnectionManager {
         }
     }
 
-    private fun startPawPolling() {
-        pawPollingJob?.cancel()
-        statusJob?.cancel()
-        _currentChannel.value = ChannelType.PAW
-
-        // 顺序执行：先注册拿 pawDeviceId，再启动状态上报与轮询，避免 get_msg 空 device_id 返回 400
-        pawPollingJob = scope.launch {
-            // 1) 确保设备已注册
-            if (pawDeviceId == null) {
-                try {
-                    val phoneId = android.provider.Settings.Secure.getString(context?.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone_${System.currentTimeMillis()}"
-                    val conn = URL("$pawUrl/api/register").openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Authorization", "Bearer $secretToken")
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.doOutput = true
-                    conn.outputStream.use { os ->
-                        os.write("""{"device_id":"$phoneId","type":"phone","paired_id":""}""".toByteArray(Charsets.UTF_8))
-                    }
-                    if (conn.responseCode == 200) {
-                        val resp = BufferedReader(InputStreamReader(conn.inputStream)).readText()
-                        val json = Json.parseToJsonElement(resp).jsonObject
-                        pawDeviceId = json["device_id"]?.jsonPrimitive?.contentOrNull ?: phoneId
-                        Log.i(TAG, "PAW registered: ${pawDeviceId}")
-                    }
-                    conn.disconnect()
-                } catch (e: Exception) {
-                    Log.e(TAG, "PAW register failed: ${e.message}", e)
-                    pawDeviceId = "phone_${System.currentTimeMillis()}"
-                }
-            }
-            // 2) 注册完成后启动独立的状态上报
-            startPawStatusReport()
-            // 3) 短轮询收电脑端消息
-            while (isActive) {
-                try {
-                    val url = "$pawUrl/api/get_msg?device_id=${pawDeviceId}"
-                    val conn = URL(url).openConnection() as HttpURLConnection
-                    conn.requestMethod = "GET"
-                    conn.setRequestProperty("Authorization", "Bearer $secretToken")
-                    conn.readTimeout = 15000
-                    conn.connectTimeout = 10000
-
-                    val resp = BufferedReader(InputStreamReader(conn.inputStream)).readText()
-                    conn.disconnect()
-
-                    // 短轮询：服务器立即返回 {"messages":[...]}，无消息则为空数组
-                    if (resp.isNotBlank()) {
-                        val root = Json.parseToJsonElement(resp).jsonObject
-                        val messages = root["messages"]?.jsonArray
-                        messages?.forEach { elem ->
-                            try {
-                                val msg = elem.jsonObject
-                                if (msg["activate"]?.jsonPrimitive?.contentOrNull == "ping") return@forEach
-                                handlePawMessage(msg)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Parse PAW message failed", e)
-                            }
-                        }
-                    }
-                    _connectionState.value = ConnectionState.CONNECTED
-                    _connectionMessage.value = "已连接 - PAW 中转"
-                    userVerifiedConnection = true
-                    lastPcCpuAt = System.currentTimeMillis()
-                    reconnectFailCount = 0
-                    delay(2000L)
-                } catch (e: Exception) {
-                    delay(2000L)
-                }
-            }
-        }
-    }
-
-    /**
-     * PAW 通道状态上报：每5秒向PC发送一次手机状态
-     */
-    private fun startPawStatusReport() {
-        pawStatusReportJob?.cancel()
-        pawStatusReportJob = scope.launch {
-            while (isActive) {
-                try {
-                    delay(5000)  // 每5秒上报一次
-                    sendPawStatusReport()
-                } catch (e: Exception) {
-                    Log.e(TAG, "PAW status report failed", e)
-                }
-            }
-        }
-    }
-
-    /**
-     * 通过 PAW 发送手机状态到 PC
-     */
-    private suspend fun sendPawStatusReport() {
-        val ctx = context ?: return
-        try {
-            val battery = getBatteryStatus(ctx)
-            val temp = getBatteryTemperature(ctx)
-            val net = getNetworkType(ctx)
-            val storage = getStorageInfo()
-            val mem = getMemUsage()
-
-            val msg = buildJsonMessage {
-                put("source", "phone")
-                putJsonObject("data") {
-                    put("action", "status")
-                    put("battery", battery)
-                    put("temperature", temp)
-                    put("network", net)
-                    put("storage_total", storage.first)
-                    put("storage_free", storage.second)
-                    put("memory_usage", mem)
-                    put("device_model", android.os.Build.MODEL)
-                    put("android_version", android.os.Build.VERSION.RELEASE)
-                    put("volume", getCurrentMusicVolume())
-                    // 添加静音状态信息
-                    put("muted", isMuted)
-                }
-            }
-
-            // 通过 PAW 发送（必须带 X-Device-Id 头，服务器据此识别 sender 并配对 target）
-            val conn = URL("$pawUrl/api/send").openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Authorization", "Bearer $secretToken")
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("X-Device-Id", pawDeviceId ?: "")
-            conn.doOutput = true
-            conn.outputStream.use { os ->
-                os.write(msg.toString().toByteArray(Charsets.UTF_8))
-            }
-            val responseCode = conn.responseCode
-            conn.disconnect()
-
-            if (responseCode == 200) {
-                lastPcHeartbeatAt = System.currentTimeMillis()
-                lastPcCpuAt = System.currentTimeMillis()
-                _phoneMemUsage.value = mem
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "sendPawStatusReport failed", e)
-        }
-    }
-
-    private fun handlePawMessage(msg: JsonObject) {
-        // PAW 通道消息通过 handlePcMessage 处理
-        handlePcMessage(msg)
-    }
-
     private suspend fun testPawConnection(): Boolean {
         return try {
             val conn = URL("$pawUrl/api/status").openConnection() as HttpURLConnection
@@ -1396,7 +1271,7 @@ object ConnectionManager {
 
     private fun channelName(c: ChannelType): String = when (c) {
         ChannelType.WIFI -> "WiFi 直连"
-        ChannelType.PAW -> "PAW 中转"
+        ChannelType.PAW -> "Cloudflare 隧道"
         ChannelType.ADB -> "USB 数据线"
         ChannelType.NONE -> "无"
     }
@@ -1800,7 +1675,55 @@ object ConnectionManager {
     fun startFileDownloadFromNotification(fileId: String, fileName: String, fileSize: Long) {
         Log.i(TAG, "用户点击通知开始下载: $fileName")
         showToast("开始下载: $fileName")
+        // 清除待确认状态（含持久化），让文件传输页同步隐藏"开始下载"按钮
+        pendingFileTransfer = null
+        clearPersistedPendingFile()
+        _pendingFileReceive.tryEmit(null)
         startReceiveFile(fileId, fileName, fileSize)
+    }
+
+    /** 当前待确认接收的文件（进程被杀后重启时从持久化恢复），供文件传输页同步渲染 */
+    fun getPendingFileTransfer(): PendingFileTransfer? {
+        pendingFileTransfer?.let { return it }
+        return getPersistedPendingFile()
+    }
+
+    /** 持久化待确认文件（进程被杀后仍能恢复"开始下载"状态） */
+    private fun persistPendingFile(info: PendingFileTransfer) {
+        val ctx = context ?: return
+        try {
+            ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_PENDING_FILE_ID, info.fileId)
+                .putString(KEY_PENDING_FILE_NAME, info.fileName)
+                .putLong(KEY_PENDING_FILE_SIZE, info.fileSize)
+                .apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "持久化待确认文件失败: ${e.message}")
+        }
+    }
+
+    /** 读取持久化的待确认文件；返回时清理，避免陈旧状态残留 */
+    private fun getPersistedPendingFile(): PendingFileTransfer? {
+        val ctx = context ?: return null
+        val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val id = prefs.getString(KEY_PENDING_FILE_ID, "") ?: ""
+        val name = prefs.getString(KEY_PENDING_FILE_NAME, "") ?: ""
+        val size = prefs.getLong(KEY_PENDING_FILE_SIZE, 0L)
+        if (id.isEmpty() || name.isEmpty()) return null
+        clearPersistedPendingFile()
+        return PendingFileTransfer(id, name, size)
+    }
+
+    /** 清除持久化的待确认文件 */
+    fun clearPersistedPendingFile() {
+        val ctx = context ?: return
+        try {
+            ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+                .remove(KEY_PENDING_FILE_ID)
+                .remove(KEY_PENDING_FILE_NAME)
+                .remove(KEY_PENDING_FILE_SIZE)
+                .apply()
+        } catch (_: Exception) {}
     }
 
     /**
@@ -1889,6 +1812,8 @@ object ConnectionManager {
                 try { mgr.cancel(FILE_TRANSFER_NOTIF_ID) } catch (_: Exception) {}
             }
             pendingFileTransfer = null
+            clearPersistedPendingFile()
+            _pendingFileReceive.tryEmit(null)
         } catch (e: Exception) {
             Log.w(TAG, "显示完成通知失败: ${e.message}")
         }
@@ -1904,6 +1829,8 @@ object ConnectionManager {
             mgr.cancel(FILE_TRANSFER_NOTIF_ID)
         } catch (_: Exception) {}
         pendingFileTransfer = null
+        clearPersistedPendingFile()
+        _pendingFileReceive.tryEmit(null)
     }
 
     /** 格式化文件大小（用于通知显示） */
@@ -2117,7 +2044,9 @@ object ConnectionManager {
             val am = context?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
             val dir = if (up) android.media.AudioManager.ADJUST_RAISE else android.media.AudioManager.ADJUST_LOWER
             am?.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, dir, 0)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "adjustVolume failed (up=$up)", e)
+        }
     }
 
     private fun toggleMute() {
@@ -3037,12 +2966,7 @@ object ConnectionManager {
         pcFrameControlMode = controlMode
         pcFrameJob?.cancel()
         pcFrameJob = scope.launch {
-            val ip = pcIp ?: DEFAULT_IP
-            val baseUrl = if (isAdbAvailable() && _currentChannel.value == ChannelType.ADB) {
-                "http://127.0.0.1:$connectPort"
-            } else {
-                "http://$ip:$connectPort"
-            }
+            val baseUrl = getBaseUrl()
             while (isActive) {
                 try {
                     val resp = client?.get("$baseUrl/api/frame") {
@@ -3114,12 +3038,7 @@ object ConnectionManager {
             Log.e(TAG, "AudioTrack init failed", e)
         }
         pcAudioJob = scope.launch {
-            val ip = pcIp ?: DEFAULT_IP
-            val baseUrl = if (isAdbAvailable() && _currentChannel.value == ChannelType.ADB) {
-                "http://127.0.0.1:$connectPort"
-            } else {
-                "http://$ip:$connectPort"
-            }
+            val baseUrl = getBaseUrl()
             while (isActive) {
                 try {
                     val resp = client?.get("$baseUrl/api/audio") {
@@ -4251,18 +4170,11 @@ object ConnectionManager {
                     }
                 }
                 ChannelType.PAW -> {
-                    // 通过 PAW 发送业务指令，带 X-Device-Id 头供服务器识别 sender
-                    val conn = java.net.URL("$pawUrl/api/send").openConnection() as java.net.HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Authorization", "Bearer $secretToken")
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.setRequestProperty("X-Device-Id", pawDeviceId ?: "")
-                    conn.doOutput = true
-                    conn.outputStream.use { os ->
-                        os.write(payload.toByteArray(Charsets.UTF_8))
+                    // Cloudflare 隧道：与 WiFi 直连一致，指令直接发给电脑 /api/cmd（不再走中继邮箱）
+                    client?.post("${getBaseUrl()}/api/cmd") {
+                        contentType(ContentType.Application.Json)
+                        setBody(payload)
                     }
-                    conn.responseCode
-                    conn.disconnect()
                 }
                 else -> {}
             }
@@ -4282,11 +4194,11 @@ object ConnectionManager {
     // ============================== 自研投屏/音频传输 ==============================
 
     private fun getBaseUrl(): String {
-        val ip = pcIp ?: DEFAULT_IP
-        return if (_currentChannel.value == ChannelType.ADB) {
-            "http://127.0.0.1:$connectPort"
-        } else {
-            "http://$ip:$connectPort"
+        return when (_currentChannel.value) {
+            ChannelType.ADB -> "http://127.0.0.1:$connectPort"
+            // PAW 现为 Cloudflare 隧道：手机直连该公网地址，即可访问电脑全部 /api/*
+            ChannelType.PAW -> pawUrl.trimEnd('/')
+            else -> "http://${pcIp ?: DEFAULT_IP}:$connectPort"
         }
     }
 
@@ -4546,9 +4458,7 @@ object ConnectionManager {
         lastPcHeartbeatAt = 0L
         statusJob?.cancel()
         msgPollingJob?.cancel()
-        // pawPollingJob?.cancel()  // 【禁止删除】PAW 轮询停止（PAW 通道常驻，勿删）
         statusReportJob?.cancel()
-        pawStatusReportJob?.cancel()  // PAW 状态上报
         // 停止其余后台轮询/监控，避免"断开"后仍持续空转探测、采集与推流
         adbWatchdogJob?.cancel()
         mediaMonitorJob?.cancel()
@@ -4565,6 +4475,10 @@ object ConnectionManager {
         receiveJob?.cancel()
         ackTracker.clear()
         fileReceiveState.clear()
+        // 断连时清除待确认的接收状态，避免重连后页面残留"开始下载"
+        pendingFileTransfer = null
+        clearPersistedPendingFile()
+        _pendingFileReceive.tryEmit(null)
         _connectionState.value = ConnectionState.DISCONNECTED
         _currentChannel.value = ChannelType.NONE
         _connectionMessage.value = "未连接"
@@ -4572,19 +4486,27 @@ object ConnectionManager {
     }
 
     /**
-     * 通过 PAW 中转服务器连接
+     * 通过 Cloudflare 隧道连接
      */
     fun connectPaw() {
         userConnectedIntent = true
         lastConnectFailReason = null
-        // 取消正在进行的自动连接，防止其失败后覆盖 PAW 的 CONNECTED 状态
+        // 取消正在进行的自动连接，防止其失败后覆盖隧道的 CONNECTED 状态
         connectJob?.cancel()
-        connectJob = null
-        _connectionState.value = ConnectionState.CONNECTING
-        _connectionMessage.value = "正在通过 PAW 连接..."
-        Log.i(TAG, "connectPaw() called")
-        // 启动 PAW 通道
-        startChannel(ChannelType.PAW)
+        connectJob = scope.launch {
+            _connectionState.value = ConnectionState.CONNECTING
+            _connectionMessage.value = "正在通过 Cloudflare 隧道连接..."
+            Log.i(TAG, "connectPaw() called")
+            if (testPawConnection()) {
+                _connectionMessage.value = "Cloudflare 隧道连接成功"
+                startChannel(ChannelType.PAW)
+            } else {
+                _connectionMessage.value = "隧道连接失败，请检查地址与电脑端隧道是否在线"
+                if (isActive && _currentChannel.value == ChannelType.NONE) {
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                }
+            }
+        }
     }
 
     fun runOnUiThread(block: () -> Unit) {

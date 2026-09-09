@@ -1,0 +1,12 @@
+fix(PAW): 手机端PAW发送补上X-Device-Id头，修复中转数据无法收发
+
+根因：手机端调 /api/send 时不带 X-Device-Id 头、消息体也无 device_id，
+服务器无法识别发送者身份与类型，导致 target 推断失败并返回
+400 "target_id required"，所有 PAW 上报/指令发送全部失败。
+连接测试仅探测 /api/status 可达，造成"已连接"假象。
+
+修复：
+- sendPawStatusReport 的 /api/send 请求添加 X-Device-Id 请求头
+- sendRaw 启用 PAW 通道分支，同样携带 X-Device-Id 头发送业务指令
+
+本地干净环境用 paw_relay_server.py 副本验证手机<->电脑双向收发均成功。
