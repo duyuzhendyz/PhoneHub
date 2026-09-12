@@ -675,13 +675,15 @@ class ScreenMirrorPage(QWidget):
                 self.audio_btn.setText("开始声音传输")
                 return
             src = getattr(self.manager, "_pc_audio_source", "unknown")
-            if src == "mic":
-                dark_msg_box(self, QMessageBox.Warning, "声音传输：当前抓的是麦克风",
-                             "未找到系统回环(loopback)设备，现在捕获的是麦克风输入。\n"
-                             "想传电脑正在播放的声音，请开启 Windows『立体声混音』，或安装虚拟音频线(VB-Cable)。")
+            if src == "loopback":
+                # 已抓到系统播放声音，无需提示
+                pass
             elif src == "none":
                 dark_msg_box(self, QMessageBox.Warning, "声音传输失败",
-                             "电脑端没有任何可用音频输入设备。")
+                             "电脑端无法捕获系统声音（sounddevice loopback 与系统回环设备都不可用）。\n\n"
+                             "请尝试：\n1. 确认电脑正在播放声音；\n"
+                             "2. 在 Windows『声音设置 → 更多声音设置 → 录制』中启用『立体声混音』；\n"
+                             "3. 或安装虚拟音频线 VB-Cable 并把它设为默认回环源。")
                 self.audio_btn.setText("开始声音传输")
         except Exception:
             pass

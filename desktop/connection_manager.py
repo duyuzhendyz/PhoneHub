@@ -203,11 +203,12 @@ class ConnectionManager(QObject):
         self._latest_phone_frame = None
         self._phone_frame_lock = threading.Lock()
 
-        # 电脑→手机声音传输：电脑端捕获音频
+        # 电脑→手机声音传输：电脑端捕获系统播放声音（WASAPI loopback，非麦克风）
         self._pc_audio_running = False
         self._pc_audio_thread = None
-        self._latest_pc_audio = None
+        self._pc_audio_queue = collections.deque(maxlen=200)  # 有界队列，连续推流
         self._pc_audio_lock = threading.Lock()
+        self._pc_audio_source = "none"  # none / loopback
 
         self.outgoing_file_path = None
         self.outgoing_file_id = None
@@ -2299,19 +2300,9 @@ class ConnectionManager(QObject):
     # 与 desktop/live_window.py，相关方法与状态在本类中已移除。
 
     def start_pc_audio(self):
-        """开始捕获电脑音频推流给手机"""
+        """开始捕获电脑音频（系统播放声音）推流给手机"""
         if self._pc_audio_running:
             return
-        # 提前检查pyaudio是否可用
-        try:
-            import pyaudio
-            p = pyaudio.PyAudio()
-            p.terminate()
-        except ImportError:
-            raise RuntimeError("pyaudio未安装，请运行: pip install pyaudio")
-        except Exception as e:
-            raise RuntimeError(f"无法初始化音频设备: {e}")
-        
         self._pc_audio_running = True
         self._pc_audio_thread = threading.Thread(target=self._pc_audio_loop, daemon=True)
         self._pc_audio_thread.start()
@@ -2320,113 +2311,135 @@ class ConnectionManager(QObject):
         """停止电脑音频推流"""
         self._pc_audio_running = False
         with self._pc_audio_lock:
-            self._latest_pc_audio = None
+            self._pc_audio_queue.clear()
 
     def _pc_audio_loop(self):
-        """电脑音频捕获循环：优先 WASAPI loopback 捕获系统输出声音，找不到回退麦克风。
-        采集到的 PCM 分块写入有界队列，由 /api/audio 路由 drain 给手机，保证连续推流（不再单块覆盖）。
-        """
-        self._pc_audio_source = "unknown"
+        """电脑音频捕获：用 WASAPI loopback 抓取『系统正在播放的声音』（扬声器/耳机输出），
+        而非麦克风输入。优先用 sounddevice 的 loopback=True（标准做法，无需在系统里开启立体声混音）；
+        失败再试 pyaudio 的 WASAPI loopback 回环设备；两者都失败才报错退出，绝不静默回退麦克风。
+        输出固定 单声道 44100Hz int16，匹配手机端 AudioTrack 期望格式。"""
+        self._pc_audio_source = "none"
+        try:
+            import array as _array
+        except Exception:
+            _array = None
+
+        # ===== 路径1：sounddevice WASAPI loopback（推荐，抓系统播放声）=====
+        try:
+            import sounddevice as sd
+            out_idx = None
+            try:
+                out_idx = sd.default.device[1]  # [0]=输入, [1]=输出
+            except Exception:
+                out_idx = None
+            try:
+                dev_name = sd.query_devices(out_idx)['name'] if out_idx is not None else '默认输出'
+            except Exception:
+                dev_name = '默认输出'
+            self.log(f"[audio] 尝试用 WASAPI loopback 捕获系统声音（输出设备: {dev_name}）")
+            stream = sd.RawInputStream(
+                device=out_idx,
+                loopback=True,
+                channels=2,
+                samplerate=44100,
+                dtype='int16',
+                blocksize=2048,
+            )
+            stream.start()
+            self._pc_audio_source = "loopback"
+            self.log("[audio] WASAPI loopback 已开启，正在捕获系统播放声音")
+            silent_streak = 0
+            while self._pc_audio_running:
+                try:
+                    data, _overflow = stream.read(2048)
+                except Exception as e:
+                    if any(k in str(e).lower() for k in ("stream", "device", "invalid", "error", "overflow")):
+                        self.log(f"[audio] 捕获中断: {e}")
+                        break
+                    continue
+                if not data:
+                    time.sleep(0.005)
+                    continue
+                # 立体声 int16 → 单声道（手机端收到后再复制成立体声播放）
+                mono = data
+                peak = 0
+                if _array is not None and len(data) >= 4:
+                    try:
+                        _buf = _array.array('h')
+                        _buf.frombytes(data)
+                        _n = len(_buf) // 2
+                        _mono = _array.array('h', ((_buf[2 * i] + _buf[2 * i + 1]) // 2 for i in range(_n)))
+                        mono = _mono.tobytes()
+                        peak = max((abs(x) for x in _mono), default=0)
+                    except Exception:
+                        mono = data
+                with self._pc_audio_lock:
+                    self._pc_audio_queue.append(mono)
+                if peak < 50:
+                    silent_streak += 1
+                else:
+                    silent_streak = 0
+                if silent_streak >= 200:
+                    self.log("[audio] 已连续约 9 秒接近静音。请确认：①电脑正在播放声音；"
+                             "②默认输出设备是有声的那一个（外放/耳机，而非无扬声器的显示器 HDMI 音频）。")
+                    silent_streak = 0
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            self.log(f"[audio] sounddevice loopback 不可用，回退 pyaudio: {e}")
+
+        # ===== 路径2：pyaudio WASAPI loopback 回环输入设备（系统已存在时才走通）=====
         try:
             import pyaudio
             p = pyaudio.PyAudio()
-
-            # 定位 WASAPI 主机（loopback 设备只在 WASAPI 下可靠捕获系统声音）
-            try:
-                for hi in range(p.get_host_api_count()):
-                    hi_info = p.get_host_api_info_by_index(hi)
-                    if 'wasapi' in str(hi_info.get('name', '')).lower():
-                        break
-            except Exception:
-                pass
-
-            default_output_name = ''
-            try:
-                default_output_name = p.get_default_output_device_info().get('name', '')
-            except Exception:
-                pass
-
-            # 候选回环设备：优先与默认输出设备同名，确保抓的是当前扬声器在放的声音
             loopback_candidates = []
             for i in range(p.get_device_count()):
                 try:
                     d = p.get_device_info_by_index(i)
                     if int(d.get('max_input_channels', 0)) <= 0:
                         continue
-                    name = d.get('name', '')
-                    low = name.lower()
-                    is_loop = ('loopback' in low or '循环' in name
-                               or 'stereo mix' in low or '立体声混音' in name
-                               or 'what u hear' in low)
-                    if is_loop:
-                        if default_output_name and default_output_name in name:
-                            loopback_candidates.insert(0, i)
-                        else:
-                            loopback_candidates.append(i)
+                    low = d.get('name', '').lower()
+                    if any(k in low for k in ('loopback', '循环', 'stereo mix',
+                                              '立体声混音', 'what u hear')):
+                        loopback_candidates.append(i)
                 except Exception:
                     continue
-
-            chosen = None
-            if loopback_candidates:
-                chosen = loopback_candidates[0]
-                self._pc_audio_source = "loopback"
-                self.log(f"[audio] 使用系统回环设备捕获电脑声音: index={chosen}")
-            else:
-                # 没找到回环设备：回退到默认输入（麦克风），并明确提示用户可能无声
-                try:
-                    chosen = p.get_default_input_device_info()['index']
-                    self._pc_audio_source = "mic"
-                    self.log("[audio] 未找到系统回环(loopback)设备，已回退到麦克风输入。"
-                             "若手机听不到电脑声音，请开启 Windows『立体声混音』或安装虚拟音频线(VB-Cable)。")
-                except Exception:
-                    chosen = None
-
+            chosen = loopback_candidates[0] if loopback_candidates else None
             if chosen is None:
                 self._pc_audio_source = "none"
-                self.log("[audio] 无任何可用音频输入设备，声音传输中止")
+                self.log("[audio] 本机无系统回环设备且 sounddevice loopback 不可用，无法捕获系统声音。"
+                         "请开启 Windows『立体声混音』，或安装虚拟音频线(VB-Cable)后重试。")
                 self._pc_audio_running = False
-                return
-
-            CHUNK = 4096
-            FORMAT = pyaudio.paInt16
-            CHANNELS = 1
-            RATE = 44100
-            try:
-                stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE,
-                                input=True, input_device_index=chosen,
-                                frames_per_buffer=CHUNK)
-            except Exception as e:
-                # 指定设备打开失败，再尝试默认参数
-                self.log(f"[audio] 以指定设备打开失败({e})，尝试默认输入设备")
                 try:
-                    stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE,
-                                    input=True, frames_per_buffer=CHUNK)
-                    self._pc_audio_source = "mic"
-                except Exception as e2:
-                    self._pc_audio_source = "none"
-                    self.log(f"[audio] 音频设备彻底不可用: {e2}")
-                    self._pc_audio_running = False
-                    return
-
+                    p.terminate()
+                except Exception:
+                    pass
+                return
+            stream = p.open(format=pyaudio.paInt16, channels=1, rate=44100,
+                            input=True, input_device_index=chosen, frames_per_buffer=4096)
+            self._pc_audio_source = "loopback"
+            self.log(f"[audio] 使用 pyaudio 回环设备捕获系统声音: index={chosen}")
             silent_streak = 0
             while self._pc_audio_running:
                 try:
-                    data = stream.read(CHUNK, exception_on_overflow=False)
+                    data = stream.read(4096, exception_on_overflow=False)
                     if data:
                         with self._pc_audio_lock:
                             self._pc_audio_queue.append(data)
-                        head = data[:min(64, len(data))]
-                        if all(b == 0 for b in head):
+                        if all(b == 0 for b in data[:64]):
                             silent_streak += 1
                         else:
                             silent_streak = 0
-                        if silent_streak == 200:
-                            self.log("[audio] 提示：已连续约 9 秒静音。请确认电脑正在播放声音，"
-                                     "或回环设备选错（抓到了麦克风/无信号源）。")
+                        if silent_streak >= 200:
+                            self.log("[audio] 已连续约 9 秒接近静音，请确认电脑正在播放声音。")
                             silent_streak = 0
                 except Exception as e:
                     if any(k in str(e).lower() for k in ("stream", "device", "winerror", "portaudio")):
-                        self.log(f"[audio] 音频捕获中断: {e}")
+                        self.log(f"[audio] 捕获中断: {e}")
                         break
                     time.sleep(0.01)
             try:
@@ -2440,7 +2453,7 @@ class ConnectionManager(QObject):
                 pass
         except ImportError:
             self._pc_audio_source = "none"
-            self.log("pyaudio未安装，无法进行声音传输。请运行: pip install pyaudio")
+            self.log("[audio] 缺少音频库（sounddevice/pyaudio），无法捕获系统声音。请 pip install sounddevice pyaudio")
             self._pc_audio_running = False
         except Exception as e:
             self._pc_audio_source = "none"
