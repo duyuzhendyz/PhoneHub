@@ -656,9 +656,32 @@ class ScreenMirrorPage(QWidget):
                 self.manager.start_pc_audio()
                 self.manager.send_action("audio_start")
                 self.audio_btn.setText("停止声音传输")
+                # 启动后稍等，检查采集是否真的在跑、用的是哪种音源，给用户明确反馈
+                QTimer.singleShot(1500, self._check_audio_source)
         except RuntimeError as e:
             dark_msg_box(self, QMessageBox.Warning, "音频启动失败",
                          f"{str(e)}\n\n请检查:\n1. 是否已安装pyaudio (pip install pyaudio)\n"
                          "2. 音频设备是否被其他程序占用\n3. 是否需要以管理员身份运行")
         except Exception as e:
             dark_msg_box(self, QMessageBox.Warning, "操作失败", f"声音传输操作出错: {e}")
+
+    def _check_audio_source(self):
+        """声音传输启动后检查采集状态，反馈回环/麦克风/失败，便于排查无声"""
+        try:
+            if not self.manager._pc_audio_running:
+                dark_msg_box(self, QMessageBox.Warning, "声音传输未启动",
+                             "电脑端音频采集未能开始（可能 pyaudio 未安装、设备被占用或无输入设备）。\n"
+                             "请查看电脑端日志。")
+                self.audio_btn.setText("开始声音传输")
+                return
+            src = getattr(self.manager, "_pc_audio_source", "unknown")
+            if src == "mic":
+                dark_msg_box(self, QMessageBox.Warning, "声音传输：当前抓的是麦克风",
+                             "未找到系统回环(loopback)设备，现在捕获的是麦克风输入。\n"
+                             "想传电脑正在播放的声音，请开启 Windows『立体声混音』，或安装虚拟音频线(VB-Cable)。")
+            elif src == "none":
+                dark_msg_box(self, QMessageBox.Warning, "声音传输失败",
+                             "电脑端没有任何可用音频输入设备。")
+                self.audio_btn.setText("开始声音传输")
+        except Exception:
+            pass
