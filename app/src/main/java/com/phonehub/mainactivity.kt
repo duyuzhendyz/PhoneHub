@@ -935,8 +935,8 @@ class MainActivity : AppCompatActivity() {
         FuncInfo("剪贴板", "📋", 4),
         FuncInfo("文字互传", "💬", -1),
         FuncInfo("远程控制", "🎮", 2),
-        // 投屏已迁移到电脑端独立网页 web_pcscreen.py(端口1845)，手机端投屏入口暂移除
-        // FuncInfo("投屏", "🖥️", 8),
+        // 投屏页：手机→电脑(5423) 与 电脑→手机(58627) 双向都在本页；电脑→手机进页自动拉取显示
+        FuncInfo("投屏", "🖥️", 8),
         FuncInfo("摄像头", "📷", 9),
         FuncInfo("通知", "🔔", 10),
         FuncInfo("路线图", "🗺️", 6),
