@@ -198,15 +198,10 @@ class ConnectionManager(QObject):
         self._latest_camera_frame = None  # bytes (JPEG)
         self._camera_lock = threading.Lock()
 
-        # 手机→电脑投屏：手机端上传JPEG帧
+        # 手机→电脑投屏与内录音频**不再走本服务**：那套已按原样搬进 desktop/mirror_server.py
+        # （独立端口 5423，协议见 cs_apps/Screen_mirroring）。这里只保留摄像头预览帧。
         self._latest_phone_frame = None
         self._phone_frame_lock = threading.Lock()
-        self._phone_mirror_running = False
-
-        # 手机→电脑声音传输：手机端上传音频
-        self._phone_audio_running = False
-        self._phone_audio_buffer = bytearray()
-        self._phone_audio_lock = threading.Lock()
 
         # 电脑→手机声音传输：电脑端捕获音频
         self._pc_audio_running = False
@@ -889,27 +884,20 @@ class ConnectionManager(QObject):
 
         @self.app.route('/api/phone_frame', methods=['POST'])
         def receive_phone_frame():
-            self.log_phone_request("上传手机画面帧", f"type={request.args.get('type', 'mirror')}")
-            """手机投屏：接收手机端上传的 JPEG 帧，通过 ?type=camera 或 ?type=mirror 区分来源"""
+            """手机画面帧（`?type=camera` = 摄像头预览帧）。
+
+            注意：手机→电脑**投屏**不再走这里 —— 投屏画面/内录音频由
+            `desktop/mirror_server.py` 在 5423 端口按参考工程协议（`/upload`、`/audio`）收发。
+            """
             frame_data = request.get_data()
-            frame_type = request.args.get('type', 'mirror')  # 区分投屏帧和摄像头帧
+            frame_type = request.args.get('type', 'camera')
             if frame_data:
                 with self._phone_frame_lock:
                     self._latest_phone_frame = frame_data
-                # 根据帧类型发射不同信号，避免投屏帧和摄像头帧冲突
                 if frame_type == 'camera':
                     self.camera_frame_received.emit(frame_data)
                 else:
                     self.phone_frame_received.emit(frame_data)
-            return jsonify({'status': 'ok'})
-
-        @self.app.route('/api/phone_audio', methods=['POST'])
-        def receive_phone_audio():
-            self.log_phone_request("上传手机音频")
-            """声音传输：接收手机端上传的音频数据"""
-            audio_data = request.get_data()
-            if audio_data and self._phone_audio_running:
-                self._play_audio_data(audio_data)
             return jsonify({'status': 'ok'})
 
         @self.app.route('/api/audio', methods=['GET'])
@@ -1873,18 +1861,16 @@ class ConnectionManager(QObject):
                 key_name = cmd[4:]
                 self._send_keys(key_name)
             # ===== 手机端投屏/摄像头页面发起的请求（手机→电脑，单向）=====
+            # 手机→电脑的投屏/内录已改走参考工程协议（手机直接 POST 本机 5423 的
+            # /upload、/audio_start、/audio、/stop），不再经本服务的这些命令。
             elif cmd == 'mirror_start':
-                # 手机请求启动投屏（自研：手机端 MediaProjection 推流）
-                self.start_phone_mirror()
+                self.log("[mirror] 手机端通知开始投屏（画面/声音走 5423，本服务无需处理）")
             elif cmd == 'mirror_stop':
-                # 手机请求停止投屏
-                self.stop_phone_mirror()
+                self.log("[mirror] 手机端通知停止投屏（画面/声音走 5423，本服务无需处理）")
             elif cmd == 'audio_start':
-                self.start_phone_audio()
                 # 同时启动电脑音频推流到手机
                 self.start_pc_audio()
             elif cmd == 'audio_stop':
-                self.stop_phone_audio()
                 self.stop_pc_audio()
             elif cmd == 'pc_stream_start':
                 # 手机端请求电脑推流画面
@@ -2302,53 +2288,9 @@ class ConnectionManager(QObject):
             time.sleep(0.1)  # 10fps
         cap.release()
 
-    def _play_audio_data(self, audio_data):
-        """播放手机端传来的音频数据（PCM 16bit 44100Hz mono）- 使用 pyaudio 流式播放"""
-        try:
-            import pyaudio
-            if not hasattr(self, '_phone_audio_pa') or self._phone_audio_pa is None:
-                self._phone_audio_pa = pyaudio.PyAudio()
-            if not hasattr(self, '_phone_audio_stream') or self._phone_audio_stream is None:
-                self._phone_audio_stream = self._phone_audio_pa.open(
-                    format=pyaudio.paInt16, channels=1, rate=44100, output=True,
-                    frames_per_buffer=1024)
-            try:
-                self._phone_audio_stream.write(audio_data)
-            except Exception:
-                pass
-        except ImportError:
-            pass
-        except Exception:
-            pass
-
-    def start_phone_mirror(self):
-        """开始接收手机投屏画面"""
-        self._phone_mirror_running = True
-
-    def stop_phone_mirror(self):
-        """停止接收手机投屏画面"""
-        self._phone_mirror_running = False
-        with self._phone_frame_lock:
-            self._latest_phone_frame = None
-
-    def start_phone_audio(self):
-        """开始接收手机声音"""
-        self._phone_audio_running = True
-
-    def stop_phone_audio(self):
-        """停止接收手机声音"""
-        self._phone_audio_running = False
-        # 关闭 pyaudio 播放流
-        try:
-            if hasattr(self, '_phone_audio_stream') and self._phone_audio_stream is not None:
-                self._phone_audio_stream.stop_stream()
-                self._phone_audio_stream.close()
-                self._phone_audio_stream = None
-            if hasattr(self, '_phone_audio_pa') and self._phone_audio_pa is not None:
-                self._phone_audio_pa.terminate()
-                self._phone_audio_pa = None
-        except Exception:
-            pass
+    # 说明：手机→电脑的投屏画面/内录音频、PC 端录制、反控坐标校准，曾在这里实现；
+    # 现已按用户要求"照原样重移"，整体搬到 desktop/mirror_server.py（端口 5423）
+    # 与 desktop/live_window.py，相关方法与状态在本类中已移除。
 
     def start_pc_audio(self):
         """开始捕获电脑音频推流给手机"""
@@ -2394,13 +2336,12 @@ class ConnectionManager(QObject):
                 try:
                     info = p.get_device_info_by_index(i)
                     name = info.get('name', '')
-                    # 优先查找 WASAPI loopback 设备
-                    if 'Loopback' in name or 'loopback' in name:
+                    # 优先查找 WASAPI loopback 设备（覆盖中英文 Windows 常见命名）
+                    if ('Loopback' in name or 'loopback' in name or '循环' in name
+                            or 'Stereo Mix' in name or '立体声混音' in name
+                            or 'What U Hear' in name):
                         loopback_dev = i
                         break
-                    # 备选：立体声混响（Stereo Mix）
-                    if 'Stereo Mix' in name or '立体声混音' in name:
-                        loopback_dev = i
                 except Exception:
                     continue
 
@@ -2547,99 +2488,9 @@ class ConnectionManager(QObject):
         except Exception as e:
             print(f"PC click failed: {e}")
 
-    def _perform_screen_touch(self, norm_x, norm_y, op='click'):
-        """操控模式：通过 ADB 或 WiFi 控制手机屏幕触摸操作（不再使用 pyautogui 点击电脑屏幕）"""
-        try:
-            if self.current_channel == CHANNEL_ADB and self.adb_device_id:
-                # ADB 通道：通过 adb shell input 命令控制手机
-                # 获取手机屏幕尺寸（缓存，避免每次查询）
-                if not hasattr(self, '_phone_screen_w') or not hasattr(self, '_phone_screen_h'):
-                    self._phone_screen_w = 1080
-                    self._phone_screen_h = 1920
-                    try:
-                        result = subprocess.run(
-                            ['adb', '-s', self.adb_device_id, 'shell', 'wm', 'size'],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3
-                        )
-                        # 输出格式: Physical size: 1080x1920
-                        if result.stdout:
-                            for line in result.stdout.strip().split('\n'):
-                                if 'Physical size' in line:
-                                    parts = line.split(':')[1].strip().split('x')
-                                    if len(parts) == 2:
-                                        self._phone_screen_w = int(parts[0])
-                                        self._phone_screen_h = int(parts[1])
-                                        break
-                    except Exception:
-                        pass
-                x = int(norm_x * self._phone_screen_w)
-                y = int(norm_y * self._phone_screen_h)
-                if op == 'down':
-                    # 按下：仅记录位置，不执行 tap
-                    self._last_touch_x = x
-                    self._last_touch_y = y
-                    self._touch_moved = False
-                elif op == 'move':
-                    # 节流合并：高频 move 事件若每个都 fork adb 子进程会严重卡顿，
-                    # 30ms 窗口内只发送一次（取窗口内最新坐标）
-                    self._pending_move = (x, y)
-                    now = time.time()
-                    if now - getattr(self, '_last_move_sent_time', 0) < 0.03:
-                        return
-                    self._last_move_sent_time = now
-                    nx, ny = self._pending_move
-                    self._pending_move = None
-                    last_x = self._last_touch_x if hasattr(self, '_last_touch_x') else nx
-                    last_y = self._last_touch_y if hasattr(self, '_last_touch_y') else ny
-                    subprocess.run(
-                        ['adb', '-s', self.adb_device_id, 'shell', 'input', 'swipe',
-                         str(last_x), str(last_y), str(nx), str(ny), '50'],
-                        capture_output=True, timeout=2
-                    )
-                    self._touch_moved = True
-                    self._last_touch_x = nx
-                    self._last_touch_y = ny
-                elif op == 'up':
-                    # 抬起：先补发最后挂起未发送的移动点，若无移动则执行 tap
-                    pending = getattr(self, '_pending_move', None)
-                    if pending:
-                        px, py = pending
-                        self._pending_move = None
-                        lx = getattr(self, '_last_touch_x', px)
-                        ly = getattr(self, '_last_touch_y', py)
-                        subprocess.run(
-                            ['adb', '-s', self.adb_device_id, 'shell', 'input', 'swipe',
-                             str(lx), str(ly), str(px), str(py), '50'],
-                            capture_output=True, timeout=2
-                        )
-                        self._last_touch_x = px
-                        self._last_touch_y = py
-                    elif not getattr(self, '_touch_moved', False):
-                        subprocess.run(
-                            ['adb', '-s', self.adb_device_id, 'shell', 'input', 'tap', str(x), str(y)],
-                            capture_output=True, timeout=2
-                        )
-                elif op == 'right':
-                    # 右键：返回键
-                    subprocess.run(
-                        ['adb', '-s', self.adb_device_id, 'shell', 'input', 'keyevent', 'KEYCODE_BACK'],
-                        capture_output=True, timeout=2
-                    )
-                else:  # click 及其他
-                    subprocess.run(
-                        ['adb', '-s', self.adb_device_id, 'shell', 'input', 'tap', str(x), str(y)],
-                        capture_output=True, timeout=2
-                    )
-                # 记录当前位置，供下次 move 使用
-                self._last_touch_x = x
-                self._last_touch_y = y
-            else:
-                # WiFi 通道：通过 msg_queue 发送 touch 命令给手机
-                msg = {"token": self.secret_token, "activate": "send", "source": "pc",
-                       "data": {"action": "screen_touch", "op": op, "x": norm_x, "y": norm_y}}
-                self._send_to_phone(msg)
-        except Exception as e:
-            print(f"Screen touch failed: {e}")
+    # 反向控制（点击/拖拽/两点滑动/坐标校准）已随投屏一起搬到参考工程那套：
+    # 窗口直接 POST 5423 的 /remote_tap、/remote_swipe，手机端 MirrorService 自己执行。
+    # 原来这里经 58627 下发 screen_touch / screen_swipe2 的实现已移除。
 
     def _handle_power_action(self, action_type):
         """执行电脑电源管理指令（所有通道均可用）"""

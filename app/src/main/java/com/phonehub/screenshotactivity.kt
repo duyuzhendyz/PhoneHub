@@ -57,6 +57,7 @@ class ScreenshotActivity : AppCompatActivity() {
 
     private var projectionManager: MediaProjectionManager? = null
     private var projection: MediaProjection? = null
+    private var projectionService: ScreenCaptureService? = null
     private lateinit var container: LinearLayout
     private lateinit var hint: TextView
     private lateinit var progress: ProgressBar
@@ -108,10 +109,28 @@ class ScreenshotActivity : AppCompatActivity() {
                 return
             }
             try {
-                projection = projectionManager?.getMediaProjection(resultCode, data)
                 // 缓存 token 供后台静默截图复用（下次无需再弹授权界面）
                 ConnectionManager.cacheMediaProjectionToken(resultCode, data)
-                doScreenshot()
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    // Android 10+ 同样要求先有 mediaProjection 类型前台服务，再创建投影。
+                    ConnectionManager.attachScreenCaptureService(
+                        this, resultCode, data,
+                        onProjectionReady = {
+                            if (!isFinishing && !isDestroyed) {
+                                projectionService = ScreenCaptureService.instance
+                                projection = projectionService?.acquireProjection(this)
+                                if (projection != null) doScreenshot() else finish()
+                            }
+                        },
+                        onFailure = { reason ->
+                            Log.e(TAG, "初始化截图失败: $reason")
+                            finish()
+                        }
+                    )
+                } else {
+                    projection = projectionManager?.getMediaProjection(resultCode, data)
+                    doScreenshot()
+                }
             } catch (e: SecurityException) {
                 Log.e(TAG, "getMediaProjection failed", e)
                 finish()
@@ -138,6 +157,12 @@ class ScreenshotActivity : AppCompatActivity() {
                 android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.surface, null, null
             )
+            if (virtualDisplay == null) {
+                imageReader.close()
+                releaseProjection()
+                finish()
+                return
+            }
 
             imageReader.setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
@@ -159,12 +184,13 @@ class ScreenshotActivity : AppCompatActivity() {
                 } finally {
                     image.close()
                     virtualDisplay?.release()
-                    projection?.stop()
+                    releaseProjection()
                     imageReader.close()
                 }
             }, Handler(Looper.getMainLooper()))
-        } catch (e: Exception) {
+        } catch (e: RuntimeException) {
             Log.e(TAG, "doScreenshot failed", e)
+            releaseProjection()
             finish()
         }
     }
@@ -219,8 +245,19 @@ class ScreenshotActivity : AppCompatActivity() {
         }
     }
 
+    /** 归还截图对共享投影的使用权；旧系统仍由 Activity 直接停止实例。 */
+    private fun releaseProjection() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            projectionService?.releaseProjection(this)
+            projectionService = null
+        } else {
+            try { projection?.stop() } catch (_: RuntimeException) {}
+        }
+        projection = null
+    }
+
     override fun onDestroy() {
-        try { projection?.stop() } catch (e: Exception) {}
+        releaseProjection()
         super.onDestroy()
     }
 }

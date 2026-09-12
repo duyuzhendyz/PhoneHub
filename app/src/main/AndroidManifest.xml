@@ -22,6 +22,8 @@
 
     <!-- 前台服务 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 13+ 不申请这个，前台服务通知不会显示（投屏服务要用） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
@@ -122,6 +124,14 @@
         <service
             android:name=".ScreenCaptureService"
             android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- 手机→电脑投屏（从 cs_apps/Screen_mirroring 原样搬入的引擎，自带投影管理）。
+             与上面的 ScreenCaptureService 并存：截图走前者，投屏走这个。 -->
+        <service
+            android:name=".PhoneHubMirrorService"
+            android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="mediaProjection" />
 
         <!-- GPS 定位 -->

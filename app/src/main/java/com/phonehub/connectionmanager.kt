@@ -170,7 +170,8 @@ object ConnectionManager {
     val cameraSwitchRequest: SharedFlow<Unit> = _cameraSwitchRequest
 
     // S5: 手机投屏命令（启动/停止）- PC→手机方向
-    data class MirrorCommand(val action: String) // "start" or "stop"
+    // ip/port 是电脑端随命令带下来的投屏目标（电脑可能不在默认网段），可为空
+    data class MirrorCommand(val action: String, val ip: String? = null, val port: Int? = null) // "start" or "stop"
 
     // S8a: 摄像头推送命令（启动/停止）- PC→手机方向
     data class CameraPushCommand(val action: String) // "start" or "stop"
@@ -184,6 +185,18 @@ object ConnectionManager {
     // 电脑端请求开始手机投屏（S5）
     private val _mirrorCommand = MutableSharedFlow<MirrorCommand>(extraBufferCapacity = 1)
     val mirrorCommand: SharedFlow<MirrorCommand> = _mirrorCommand
+
+    // 说明：画质/音质/模式档位、帧/音频上传、反向控制指令解析，原先都在这里实现；
+    // 现已按"照原样重移"搬到 PhoneHubMirrorService（引擎来自 cs_apps/Screen_mirroring）。
+
+    // 反向控制：手机端处理 PC 发来的点击/滑动（归一化坐标 + 偏移校准）
+    data class RemoteCmd(
+        val type: String,
+        val fx: Float = 0f, val fy: Float = 0f,
+        val fx2: Float = 0f, val fy2: Float = 0f,
+        val ms: Int = 400,
+        val offx: Int = 0, val offy: Int = 0
+    )
 
     // 电脑端请求开始手机摄像头推流（S8a）
     private val _cameraPushCommand = MutableSharedFlow<CameraPushCommand>(extraBufferCapacity = 1)
@@ -302,9 +315,6 @@ object ConnectionManager {
     @Volatile
     private var pendingWakeLock: PowerManager.WakeLock? = null
     // 使用 WeakReference 避免持有 MediaProjection 强引用导致内存泄漏
-    @Volatile
-    private var activeProjectionRef: java.lang.ref.WeakReference<MediaProjection>? = null
-
     // 分离发送和接收 Job，避免互相 cancel 导致闪退
     private var sendJob: Job? = null
     private var receiveJob: Job? = null
@@ -1022,7 +1032,12 @@ object ConnectionManager {
             // ===== 电脑端以顶层 action 发送的投屏/摄像头控制指令（S5/S8a/S8c）=====
             // 与 handleCommand 中的 cmd 处理对齐，保证 send_action 与 send_command 两种编码都能触发
             "mirror_start" -> {
-                _mirrorCommand.tryEmit(MirrorCommand("start"))
+                // 电脑端点「手机投屏到电脑」：把电脑自己的投屏地址一起带下来
+                _mirrorCommand.tryEmit(MirrorCommand(
+                    "start",
+                    data["mirror_ip"]?.jsonPrimitive?.contentOrNull,
+                    data["mirror_port"]?.jsonPrimitive?.intOrNull
+                ))
             }
             "mirror_stop" -> {
                 _mirrorCommand.tryEmit(MirrorCommand("stop"))
@@ -1041,6 +1056,14 @@ object ConnectionManager {
             "audio_stop" -> {
                 _audioControl.tryEmit(AudioControlCommand("stop"))
             }
+            // ===== 电脑→手机画面推流控制（功能7）：电脑端点「推流电脑画面到手机」后通知手机拉取 ====
+            "pc_stream_start" -> {
+                // 手机端启动轮询拉取电脑画面 JPEG（save.md 功能7），controlMode=true 支持反向点击
+                startPcFramePolling(controlMode = true)
+            }
+            "pc_stream_stop" -> {
+                stopPcFramePolling()
+            }
             "screen_touch" -> {
                 // 电脑端远程控制手机屏幕（归一化坐标）
                 val x = data["x"]?.jsonPrimitive?.floatOrNull
@@ -1052,9 +1075,26 @@ object ConnectionManager {
                         LogUtil.connE("screen_touch 缺少 y 坐标，跳过处理")
                     } else {
                         val op = data["op"]?.jsonPrimitive?.contentOrNull ?: "click"
-                        LogUtil.connI("收到screen_touch命令: x=$x, y=$y, op=$op, 通道=$currentChannel")
-                        performScreenTouch(x, y, op)
+                        val offx = data["offx"]?.jsonPrimitive?.intOrNull ?: 0
+                        val offy = data["offy"]?.jsonPrimitive?.intOrNull ?: 0
+                        LogUtil.connI("收到screen_touch命令: x=$x, y=$y, op=$op, off=($offx,$offy), 通道=$currentChannel")
+                        performScreenTouch(x, y, op, offx = offx, offy = offy)
                     }
+                }
+            }
+            "screen_swipe2" -> {
+                // 两点滑动：PC 右键点两个位置 = 从第一点滑到第二点
+                val x1 = data["x1"]?.jsonPrimitive?.floatOrNull
+                val y1 = data["y1"]?.jsonPrimitive?.floatOrNull
+                val x2 = data["x2"]?.jsonPrimitive?.floatOrNull
+                val y2 = data["y2"]?.jsonPrimitive?.floatOrNull
+                if (x1 == null || y1 == null || x2 == null || y2 == null) {
+                    LogUtil.connE("screen_swipe2 缺少坐标，跳过")
+                } else {
+                    val ms = data["ms"]?.jsonPrimitive?.intOrNull ?: 400
+                    val offx = data["offx"]?.jsonPrimitive?.intOrNull ?: 0
+                    val offy = data["offy"]?.jsonPrimitive?.intOrNull ?: 0
+                    performScreenTouch(x1, y1, "swipe2", x2, y2, ms, offx, offy)
                 }
             }
             "media_info" -> {
@@ -1321,7 +1361,12 @@ object ConnectionManager {
             }
             "mirror_start" -> {
                 // S5: 电脑端请求开始手机投屏 — 手机自动进入权限授予界面并开始投屏
-                _mirrorCommand.tryEmit(MirrorCommand("start"))
+                // 电脑端会带上自己的投屏地址（mirror_ip / mirror_port）
+                _mirrorCommand.tryEmit(MirrorCommand(
+                    "start",
+                    data["mirror_ip"]?.jsonPrimitive?.contentOrNull,
+                    data["mirror_port"]?.jsonPrimitive?.intOrNull
+                ))
             }
             "mirror_stop" -> {
                 // S5: 电脑端请求停止手机投屏
@@ -1331,7 +1376,19 @@ object ConnectionManager {
                 val x = data["x"]?.jsonPrimitive?.floatOrNull ?: return
                 val y = data["y"]?.jsonPrimitive?.floatOrNull ?: return
                 val op = data["op"]?.jsonPrimitive?.contentOrNull ?: "click"
-                performScreenTouch(x, y, op)
+                val offx = data["offx"]?.jsonPrimitive?.intOrNull ?: 0
+                val offy = data["offy"]?.jsonPrimitive?.intOrNull ?: 0
+                performScreenTouch(x, y, op, offx = offx, offy = offy)
+            }
+            "screen_swipe2" -> {
+                val x1 = data["x1"]?.jsonPrimitive?.floatOrNull ?: return
+                val y1 = data["y1"]?.jsonPrimitive?.floatOrNull ?: return
+                val x2 = data["x2"]?.jsonPrimitive?.floatOrNull ?: return
+                val y2 = data["y2"]?.jsonPrimitive?.floatOrNull ?: return
+                val ms = data["ms"]?.jsonPrimitive?.intOrNull ?: 400
+                val offx = data["offx"]?.jsonPrimitive?.intOrNull ?: 0
+                val offy = data["offy"]?.jsonPrimitive?.intOrNull ?: 0
+                performScreenTouch(x1, y1, "swipe2", x2, y2, ms, offx, offy)
             }
             "open_app" -> {
                 val pkg = data["package"]?.jsonPrimitive?.contentOrNull ?: return
@@ -3405,49 +3462,56 @@ object ConnectionManager {
     }
 
     /**
-     * Android 14+：启动 ScreenCaptureService（mediaProjection 前台服务）并在服务内创建 MediaProjection，
-     * 就绪后回调 onProjectionReady()。Activity 内不可直接 getMediaProjection()。
-     * @param ctx 用于启动前台服务的 Context（通常为 Activity）
-     * @param resultCode MediaProjection 授权结果码
-     * @param data MediaProjection 授权 Intent
-     * @param onProjectionReady 投影就绪后的回调（主线程）
+     * Android 10+：授权后启动 mediaProjection 类型前台服务，再由服务创建 MediaProjection。
+     * 只等待服务就绪；创建失败立即上报，不反复消费同一个授权 Intent（Android 14+ 仅限一次）。
+     * 就绪与失败回调均在主线程执行。
      */
     fun attachScreenCaptureService(ctx: Context, resultCode: Int, data: Intent,
-                                   onProjectionReady: () -> Unit) {
-        // 服务已运行且已创建投影：直接回调
+                                   onProjectionReady: () -> Unit,
+                                   onFailure: ((String) -> Unit)? = null) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         if (ScreenCaptureService.isRunning && ScreenCaptureService.instance?.getProjection() != null) {
-            android.os.Handler(android.os.Looper.getMainLooper()).post(onProjectionReady)
+            mainHandler.post(onProjectionReady)
             return
         }
-        // 启动前台服务
+        // 注意：服务已存在时 start() 会重申前台状态而不是直接返回（见 ScreenCaptureService.start）。
         ScreenCaptureService.start(ctx)
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        val maxAttempts = 10
+        val maxAttempts = 25   // 最多等待 5 秒，仅等待前台服务启动。
         val retry = object : Runnable {
             var attempts = 0
             override fun run() {
                 attempts++
+                val startupFailure = ScreenCaptureService.startupFailure
+                if (startupFailure != null) {
+                    LogUtil.connE("ScreenCaptureService 启动失败: $startupFailure")
+                    onFailure?.invoke(startupFailure)
+                    return
+                }
                 val svc = ScreenCaptureService.instance
+                // 不再用 foregroundStarted 当作放行条件：它只是本地标志位，
+                // 能否通过由 startProjection 内部重申前台状态来决定。
                 if (svc != null && ScreenCaptureService.isRunning) {
                     try {
-                        // 在服务内创建 MediaProjection（满足前台服务类型要求）
                         svc.startProjection(resultCode, data)
-                        if (svc.getProjection() != null) {
-                            mainHandler.post(onProjectionReady)
-                            return
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "startProjection failed", e)
+                        check(svc.getProjection() != null) { "MediaProjection 创建失败" }
+                    } catch (e: RuntimeException) {
+                        LogUtil.connE("startProjection failed", e)
+                        onFailure?.invoke(e.message ?: "MediaProjection 创建失败")
+                        return
                     }
+                    mainHandler.post(onProjectionReady)
+                    return
                 }
                 if (attempts < maxAttempts) {
                     mainHandler.postDelayed(this, 200L)
                 } else {
-                    Log.e(TAG, "ScreenCaptureService 启动超时")
+                    val reason = "屏幕采集前台服务未能在限定时间内就绪"
+                    LogUtil.connE("attachScreenCaptureService 失败: $reason")
+                    onFailure?.invoke(reason)
                 }
             }
         }
-        mainHandler.postDelayed(retry, 200L)
+        mainHandler.post(retry)
     }
 
     /**
@@ -3458,46 +3522,26 @@ object ConnectionManager {
     }
 
     /**
-     * 从缓存 token 创建 MediaProjection 实例
-     * Android 14+ 同一 token 只能创建一个实例，若已有活跃实例则先释放
+     * Android 10+ 只借用已就绪前台服务持有的投影，不能用缓存 token 绕过服务另建实例。
+     * 低于 API 29 的系统保留原有 token 创建方式。
      */
     fun getCachedMediaProjection(): MediaProjection? {
         val ctx = context ?: return null
-
-        // Android 14+ 优先使用 ScreenCaptureService 中的 MediaProjection
-        if (android.os.Build.VERSION.SDK_INT >= 34 && ScreenCaptureService.isRunning) {
-            return ScreenCaptureService.instance?.getProjection()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            if (ScreenCaptureService.isRunning && ScreenCaptureService.foregroundStarted) {
+                return ScreenCaptureService.instance?.getProjection()
+            }
+            Log.d(TAG, "getCachedMediaProjection: 投屏前台服务未就绪，返回 null")
+            return null
         }
 
         val pm = projectionManager
             ?: (ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager)?.also { projectionManager = it }
             ?: return null
-        val rc = cachedProjectionResultCode
         val data = cachedProjectionData ?: return null
         return try {
-            // Android 14+: 先检查已有的 WeakReference 是否还有效
-            val existing = activeProjectionRef?.get()
-            if (existing != null) {
-                Log.d(TAG, "复用已有的 MediaProjection 实例")
-                existing
-            } else {
-                // Android 14+: 先释放已有的活跃实例（如果 WeakReference 指向的对象已被 GC 回收）
-                if (android.os.Build.VERSION.SDK_INT >= 34) {
-                    try { activeProjectionRef?.get()?.stop() } catch (_: Exception) {}
-                    activeProjectionRef = null
-                }
-                val projection = pm.getMediaProjection(rc, data)
-                if (android.os.Build.VERSION.SDK_INT >= 34) {
-                    activeProjectionRef = java.lang.ref.WeakReference(projection)
-                    projection?.registerCallback(object : MediaProjection.Callback() {
-                        override fun onStop() {
-                            activeProjectionRef = null
-                        }
-                    }, android.os.Handler(android.os.Looper.getMainLooper()))
-                }
-                projection
-            }
-        } catch (e: Exception) {
+            pm.getMediaProjection(cachedProjectionResultCode, data)
+        } catch (e: RuntimeException) {
             Log.e(TAG, "getCachedMediaProjection failed", e)
             null
         }
@@ -3505,51 +3549,21 @@ object ConnectionManager {
 
     fun triggerScreenshot() {
         val ctx = context ?: return
-
-        // Android 14+: 通过 ScreenCaptureService 执行截图（需要前台服务）
-        if (android.os.Build.VERSION.SDK_INT >= 34) {
-            if (hasCachedProjectionToken() && ScreenCaptureService.isRunning) {
-                scope.launch(Dispatchers.IO) {
-                    val success = performBackgroundScreenshot()
-                    if (!success) {
-                        Log.w(TAG, "后台截图失败，启动 ScreenCaptureService 后重试")
-                        ScreenCaptureService.start(ctx)
-                        // 等待服务启动后重试
-                        kotlinx.coroutines.delay(1000)
-                        val retrySuccess = performBackgroundScreenshot()
-                        if (!retrySuccess) {
-                            launchScreenshotActivity(ctx)
-                        }
-                    }
+        // API 29+ 只能复用正在运行的投影；仅保存了旧授权不代表可以在后台重建服务。
+        val canCapture = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            getCachedMediaProjection() != null
+        } else {
+            hasCachedProjectionToken()
+        }
+        if (canCapture) {
+            scope.launch(Dispatchers.IO) {
+                if (!performBackgroundScreenshot()) {
+                    Log.w(TAG, "后台截图失败，回退到 Activity 授权截图")
+                    launchScreenshotActivity(ctx)
                 }
-            } else if (hasCachedProjectionToken()) {
-                // 启动 ScreenCaptureService
-                ScreenCaptureService.start(ctx)
-                scope.launch(Dispatchers.IO) {
-                    // 等待服务启动
-                    kotlinx.coroutines.delay(1000)
-                    val success = performBackgroundScreenshot()
-                    if (!success) {
-                        launchScreenshotActivity(ctx)
-                    }
-                }
-            } else {
-                // 没有缓存 token，需要 Activity 引导授权
-                launchScreenshotActivity(ctx)
             }
         } else {
-            // Android 13 及以下：原有逻辑
-            if (hasCachedProjectionToken()) {
-                scope.launch(Dispatchers.IO) {
-                    val success = performBackgroundScreenshot()
-                    if (!success) {
-                        Log.w(TAG, "后台截图失败，回退到 Activity 授权截图")
-                        launchScreenshotActivity(ctx)
-                    }
-                }
-            } else {
-                launchScreenshotActivity(ctx)
-            }
+            launchScreenshotActivity(ctx)
         }
     }
 
@@ -3561,26 +3575,20 @@ object ConnectionManager {
     }
 
     /**
-     * 后台静默截图：复用缓存 token 创建 MediaProjection，截取一帧
-     * 保存到相册 + 临时文件 + 发送给电脑
-     * Android 14+ 必须在前台服务中执行
+     * 后台截图：API 29+ 借用服务中已有的投影，低版本使用缓存授权。
+     * 保存到相册 + 临时文件 + 发送给电脑；缺少投影时回到 Activity 请求授权。
      * @return true 成功，false 失败（token 失效、设备锁定等）
      */
     private suspend fun performBackgroundScreenshot(): Boolean {
         return withContext(Dispatchers.IO) {
             val ctx = context ?: return@withContext false
             
-            // Android 14+: 确保 ScreenCaptureService 正在运行
-            if (android.os.Build.VERSION.SDK_INT >= 34) {
-                if (!ScreenCaptureService.isRunning) {
-                    ScreenCaptureService.start(ctx)
-                    kotlinx.coroutines.delay(1500) // 等待服务启动
-                }
-                if (!ScreenCaptureService.isRunning) {
-                    Log.w(TAG, "ScreenCaptureService 未启动，无法截图")
-                    scope.launch { _screenshotResult.emit("截图服务未就绪") }
-                    return@withContext false
-                }
+            // API 29+ 仅借用已就绪的前台服务会话，不在后台尝试复用旧 token 新建会话。
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q
+                && (!ScreenCaptureService.isRunning || !ScreenCaptureService.foregroundStarted)) {
+                Log.w(TAG, "ScreenCaptureService 未就绪，无法后台截图")
+                scope.launch { _screenshotResult.emit("截图服务未就绪") }
+                return@withContext false
             }
 
             // 检查设备是否解锁且处于可交互状态
@@ -3593,11 +3601,19 @@ object ConnectionManager {
             }
 
             var projection: MediaProjection? = null
+            var projectionService: ScreenCaptureService? = null
+            val projectionOwner = Any()
             var imageReader: ImageReader? = null
             var virtualDisplay: android.hardware.display.VirtualDisplay? = null
             try {
-                projection = getCachedMediaProjection() ?: run {
-                    Log.w(TAG, "无可用 MediaProjection token")
+                projection = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    ScreenCaptureService.instance?.also { projectionService = it }
+                        ?.acquireProjection(projectionOwner)
+                } else {
+                    getCachedMediaProjection()
+                }
+                if (projection == null) {
+                    Log.w(TAG, "无可用 MediaProjection")
                     scope.launch { _screenshotResult.emit("需要先授权屏幕录制权限") }
                     return@withContext false
                 }
@@ -3668,10 +3684,13 @@ object ConnectionManager {
                 scope.launch { _screenshotResult.emit("截图失败: ${e.message ?: "未知错误"}") }
                 false
             } finally {
-                try { virtualDisplay?.release() } catch (e: Exception) {}
-                try { imageReader?.close() } catch (e: Exception) {}
-                try { projection?.stop() } catch (e: Exception) {}
-                activeProjectionRef = null  // Always clear to avoid using stopped projection (fix M11/S7c)
+                try { virtualDisplay?.release() } catch (_: RuntimeException) {}
+                try { imageReader?.close() } catch (_: RuntimeException) {}
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    projectionService?.releaseProjection(projectionOwner)
+                } else {
+                    try { projection?.stop() } catch (_: RuntimeException) {}
+                }
             }
         }
     }
@@ -3860,8 +3879,14 @@ object ConnectionManager {
 
     /**
      * 将归一化坐标 (0-1) 转为像素坐标并执行触摸操作
+     * @param normX2/normY2/ms 用于两点滑动（swipe2）
+     * @param offx/offy 桌面端校准偏移（方向键微调），单位像素
      */
-    private fun performScreenTouch(normX: Float, normY: Float, op: String) {
+    private fun performScreenTouch(
+        normX: Float, normY: Float, op: String,
+        normX2: Float = 0f, normY2: Float = 0f, ms: Int = 0,
+        offx: Int = 0, offy: Int = 0
+    ) {
         LogUtil.connI("收到屏幕操控指令: op=$op, norm=($normX, $normY)")
         
         val ctx = context ?: run {
@@ -3878,9 +3903,9 @@ object ConnectionManager {
         val screenHeight = metrics.heightPixels
         LogUtil.connD("屏幕尺寸: ${screenWidth}x${screenHeight}")
         
-        val px = normX * screenWidth
-        val py = normY * screenHeight
-        LogUtil.connI("归一化坐标 (${normX}, ${normY}) -> 像素坐标 ($px, $py)")
+        val px = (normX * screenWidth).toInt() + offx
+        val py = (normY * screenHeight).toInt() + offy
+        LogUtil.connI("归一化坐标 (${normX}, ${normY}) +偏移($offx,$offy) -> 像素坐标 ($px, $py)")
         
         val acc = PhoneHubAccessibilityService.instance
         if (acc == null) {
@@ -3896,11 +3921,12 @@ object ConnectionManager {
             when (op) {
             "click" -> {
                 LogUtil.connD("执行点击操作")
-                acc.performTap(px, py)
+                acc.performTap(px.toFloat(), py.toFloat())
+                showTapMarker(px.toFloat(), py.toFloat())
             }
             "down" -> {
-                _lastTouchDownX = px
-                _lastTouchDownY = py
+                _lastTouchDownX = px.toFloat()
+                _lastTouchDownY = py.toFloat()
                 LogUtil.connD("触摸按下: ($px, $py)")
             }
             "move" -> {
@@ -3908,12 +3934,12 @@ object ConnectionManager {
                 val lastY = _lastTouchDownY
                 LogUtil.connD("触摸移动: ($lastX,$lastY) -> ($px,$py)")
                 if (lastX >= 0 && lastY >= 0) {
-                    acc.performSwipe(lastX, lastY, px, py, 50)
+                    acc.performSwipe(lastX, lastY, px.toFloat(), py.toFloat(), 50)
                 } else {
                     LogUtil.connW("没有有效的按下位置，跳过移动")
                 }
-                _lastTouchDownX = px
-                _lastTouchDownY = py
+                _lastTouchDownX = px.toFloat()
+                _lastTouchDownY = py.toFloat()
             }
             "up" -> {
                 val lastX = _lastTouchDownX
@@ -3925,10 +3951,12 @@ object ConnectionManager {
                     LogUtil.connD("移动距离: dx=$dx, dy=$dy")
                     if (dx < 10 && dy < 10) {
                         LogUtil.connI("移动距离小于10像素，执行点击")
-                        acc.performTap(px, py)
+                        acc.performTap(px.toFloat(), py.toFloat())
+                        showTapMarker(px.toFloat(), py.toFloat())
                     } else {
                         LogUtil.connI("移动距离大于10像素，执行滑动")
-                        acc.performSwipe(lastX, lastY, px, py, 100)
+                        acc.performSwipe(lastX, lastY, px.toFloat(), py.toFloat(), 100)
+                        showTapMarker(px.toFloat(), py.toFloat())
                     }
                 } else {
                     LogUtil.connW("没有有效的按下位置")
@@ -3936,18 +3964,72 @@ object ConnectionManager {
                 _lastTouchDownX = -1f
                 _lastTouchDownY = -1f
             }
+            "swipe2" -> {
+                // 两点滑动：从 (normX,normY) 滑到 (normX2,normY2)
+                val x2 = (normX2 * screenWidth).toInt() + offx
+                val y2 = (normY2 * screenHeight).toInt() + offy
+                val dur = ms.toLong().coerceIn(150, 1200)
+                LogUtil.connI("两点滑动: ($px,$py) -> ($x2,$y2), ${dur}ms")
+                acc.performSwipe(px.toFloat(), py.toFloat(), x2.toFloat(), y2.toFloat(), dur)
+                showTapMarker(px.toFloat(), py.toFloat())
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    showTapMarker(x2.toFloat(), y2.toFloat())
+                }, dur.coerceAtMost(800))
+            }
             "right" -> {
                 LogUtil.connI("执行右键（返回键）操作")
                 acc.performBack()
             }
             else -> {
                 LogUtil.connW("未知操作类型: $op，默认执行点击")
-                acc.performTap(px, py)
+                acc.performTap(px.toFloat(), py.toFloat())
+                showTapMarker(px.toFloat(), py.toFloat())
             }
             }
         }
         LogUtil.connI("屏幕操控指令执行完毕: $op ($px, $py)")
     }
+
+    /**
+     * 在手机屏幕上叠加一个绿色圆形标记，提示 PC 端点击/滑动的落点（约 450ms 后消失）。
+     * 需 SYSTEM_ALERT_WINDOW 权限（Manifest 已声明）。
+     */
+    private fun showTapMarker(x: Float, y: Float) {
+        val ctx = context ?: return
+        try {
+            val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager ?: return
+            val size = 56
+            val v = android.view.View(ctx).apply {
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(0x3300E676)
+                    setStroke(4, 0xFF00E676.toInt())
+                }
+            }
+            val lp = android.view.WindowManager.LayoutParams(
+                size, size,
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O)
+                    android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else
+                    android.view.WindowManager.LayoutParams.TYPE_PHONE,
+                android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                android.graphics.PixelFormat.TRANSLUCENT
+            )
+            lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            lp.x = (x - size / 2).toInt().coerceAtLeast(0)
+            lp.y = (y - size / 2).toInt().coerceAtLeast(0)
+            wm.addView(v, lp)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try { wm.removeView(v) } catch (_: Throwable) {}
+            }, 450)
+        } catch (e: Throwable) {
+            LogUtil.connW("悬浮标记失败: ${e.message}")
+        }
+    }
+
+    // 说明：搭帧/音频响应顺风车下发的反向控制指令（execRemoteCmds）已随投屏一起
+    // 搬到 PhoneHubMirrorService —— 那套协议由参考工程自己解析执行。
 
     // ============================== 通知监听 ===============================
 
@@ -4204,7 +4286,21 @@ object ConnectionManager {
 
     fun getBaseUrlPublic(): String = getBaseUrl()
 
-    fun sendFrameToPc(frameData: ByteArray, type: String = "mirror") {
+    /**
+     * 投屏引擎（参考工程那套）要用的电脑地址。
+     *
+     * 只有 LAN/WiFi 直连时才有真实的电脑 IP 可用：ADB 通道下 pcIp 是 adb forward 的
+     * 127.0.0.1（只有本 app 的 HTTP 请求有意义，投屏的 /upload 走不通），PAW 是云端隧道
+     * 地址，二者都不适用 —— 这时返回 null，让投屏页用参考工程的默认地址（用户自己填）。
+     */
+    fun getPcHostForMirror(): String? {
+        return when (_currentChannel.value) {
+            ChannelType.ADB, ChannelType.PAW -> null
+            else -> pcIp?.takeIf { it.isNotBlank() }
+        }
+    }
+
+    fun sendFrameToPc(frameData: ByteArray, type: String = "camera") {
         try {
             val url = URL("${getBaseUrl()}/api/phone_frame?type=$type")
             val conn = url.openConnection() as HttpURLConnection
@@ -4226,27 +4322,9 @@ object ConnectionManager {
         }
     }
 
-    fun sendAudioToPc(audioData: ByteArray) {
-        try {
-            val url = URL("${getBaseUrl()}/api/phone_audio")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Authorization", "Bearer $secretToken")
-            conn.setRequestProperty("Content-Type", "application/octet-stream")
-            conn.doOutput = true
-            conn.connectTimeout = 1000
-            conn.readTimeout = 1000
-            conn.useCaches = false
-            conn.setFixedLengthStreamingMode(audioData.size)
-            conn.outputStream.write(audioData)
-            conn.outputStream.flush()
-            conn.outputStream.close()
-            conn.responseCode
-            conn.disconnect()
-        } catch (e: Exception) {
-            // ignore
-        }
-    }
+    // 说明：手机→电脑的帧/音频上传（sendFrameToPc 的 mirror 分支、sendAudioToPc）
+    // 已随投屏搬到 PhoneHubMirrorService：它直接按参考工程协议 POST 电脑的 5423
+    // （/upload、/audio_start、/audio）。摄像头预览帧仍走 sendFrameToPc(type="camera")。
 
     // S8b: 发送电脑摄像头推流控制命令（start/stop）- 手机→PC方向
     fun sendPcCameraCommand(action: String) {

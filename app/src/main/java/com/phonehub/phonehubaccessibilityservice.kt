@@ -155,7 +155,9 @@ class PhoneHubAccessibilityService : AccessibilityService() {
     fun performTap(x: Float, y: Float) {
         LogUtil.inpI("执行点击: ($x, $y)")
         try {
-            val path = Path().apply { moveTo(x, y) }
+            // 关键：必须 moveTo + lineTo（即便同一点）。仅 moveTo 的路径在部分 ROM（如 EMUI）
+            // 会被 framework 判定为"空手势"直接丢弃——返回 true 但实际不点击。
+            val path = Path().apply { moveTo(x, y); lineTo(x, y) }
             val stroke = GestureDescription.StrokeDescription(path, 0, 100)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
             LogUtil.inpD("GestureDescription 构建成功, 持续时间: 100ms")

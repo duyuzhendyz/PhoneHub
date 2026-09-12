@@ -90,21 +90,17 @@ class MainActivity : AppCompatActivity() {
 
     // 摄像头画面超时清理：2秒无新帧则清空画面
     private val frameTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val screenCaptureHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var mirrorFrameTimeoutRunnable: Runnable? = null
     private var cameraFrameTimeoutRunnable: Runnable? = null
 
-    // 自研投屏：MediaProjection 截图
-    private var mediaProjection: android.media.projection.MediaProjection? = null
-    private var screenCaptureRunning = false
-    // 声音传输需要 MediaProjection 采集系统内录；为声音而发起的授权完成后只启动音频，不启动投屏循环
-    private var pendingAudioStart = false
-    private var screenCaptureThread: Thread? = null
-    private var virtualDisplay: android.hardware.display.VirtualDisplay? = null
-    private var screenWidth = 0
-    private var screenHeight = 0
-    private var screenDensity = 0
-    private var imageReader: android.media.ImageReader? = null
+    // ───────────── 手机→电脑投屏（引擎整段来自 cs_apps/Screen_mirroring，端口 5423）─────────────
+    // 采集/上传/内录/反向控制全在 PhoneHubMirrorService 里；这里只留界面用的状态。
+    @Volatile private var mirrorRunning = false
+    private var mirrorPendingIp = ""            // 授权回来后要用的目标地址
+    private var mirrorPendingPort = 5423
+    private var mirrorUiStatus: TextView? = null
+    private var mirrorUiFps: TextView? = null
+
     private var isMirrorFullscreen = false
     private var mirrorFullscreenComponents: List<View?>? = null
     private var mirrorOriginalLp: android.view.ViewGroup.LayoutParams? = null
@@ -117,11 +113,6 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var cameraPreviewRunning = false
     private var cameraExecutor: java.util.concurrent.ExecutorService? = null
     private var cameraPreviewView: androidx.camera.view.PreviewView? = null
-
-    // 自研声音传输
-    private var audioRecord: android.media.AudioRecord? = null
-    private var audioCaptureRunning = false
-    private var audioCaptureThread: Thread? = null
 
     private val SELECT_FILE_CODE = 1001
     private val SELECT_APK_CODE = 1002
@@ -180,9 +171,8 @@ class MainActivity : AppCompatActivity() {
     ) { granted ->
         if (granted) {
             Toast.makeText(this, "录音权限已授予", Toast.LENGTH_SHORT).show()
-            startPhoneAudioCapture()
         } else {
-            Toast.makeText(this, "录音权限被拒绝，声音传输功能不可用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "录音权限被拒绝：投屏只能传画面，声音不可用", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -194,74 +184,124 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { /* 结果忽略 */ }
 
-    // 自研投屏：MediaProjection 截图权限
-    private val screenCaptureLauncher = registerForActivityResult(
+    // ============================== 手机 → 电脑投屏（参考工程引擎）==============================
+    // 引擎整段来自 cs_apps/Screen_mirroring：手机把画面/内录推到电脑 5423 端口
+    // （POST /upload、/audio_start、/audio、/stop），协议与端口与参考工程完全一致。
+    // 这里只做四件事：连接探测、档位设置、屏幕录制授权、启停服务与状态显示。
+
+    /** 屏幕录制授权回调：拿到 token 后交给 PhoneHubMirrorService 起投屏 */
+    private val mirrorConsentLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        try {
-            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                // 缓存 MediaProjection token 供后台静默截图/声音内录复用
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            try {
                 ConnectionManager.cacheMediaProjectionToken(result.resultCode, result.data!!)
-                // 投影就绪后的统一处理：若本次授权是为声音传输发起的，则只启动音频，不启动投屏循环
-                val onProjectionReady = {
-                    try {
-                        // Android 14+ 时 mediaProjection 来自 ScreenCaptureService 持有的实例
-                        if (android.os.Build.VERSION.SDK_INT >= 34) {
-                            ConnectionManager.getCachedMediaProjection()?.let { mediaProjection = it }
-                        }
-                    } catch (_: Exception) {}
-                    if (pendingAudioStart) {
-                        pendingAudioStart = false
-                        startPhoneAudioCapture()
-                    } else {
-                        startCapturedProjection()
-                    }
-                }
-                if (android.os.Build.VERSION.SDK_INT >= 34) {
-                    // Android 14+ 强制要求 MediaProjection 在已声明 mediaProjection 类型的前台服务中创建
-                    // 通过 ScreenCaptureService 创建并复用其投影实例，Activity 内不可直接 getMediaProjection()
-                    ConnectionManager.attachScreenCaptureService(this, result.resultCode, result.data!!) {
-                        onProjectionReady()
-                    }
-                } else {
-                    val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
-                        as android.media.projection.MediaProjectionManager
-                    mediaProjection = mpManager.getMediaProjection(result.resultCode, result.data!!)
-                    mediaProjection?.registerCallback(object : android.media.projection.MediaProjection.Callback() {
-                        override fun onStop() {
-                            stopPhoneScreenCapture()
-                        }
-                    }, android.os.Handler(android.os.Looper.getMainLooper()))
-                    onProjectionReady()
-                }
-            } else {
-                // 用户拒绝了屏幕录制授权：声音内录无法启动，清除待启动状态
-                pendingAudioStart = false
-                Toast.makeText(this, "屏幕录制权限被拒绝", Toast.LENGTH_SHORT).show()
+                PhoneHubMirrorService.setPendingResult(result.resultCode, result.data!!)
+                PhoneHubMirrorService.saveProjectionResult(this, result.resultCode, result.data!!)
+                launchMirrorService(mirrorPendingIp, mirrorPendingPort)
+            } catch (e: RuntimeException) {
+                LogUtil.scrE("[投屏] 授权结果处理失败", e)
+                setMirrorStatus("授权结果处理失败: ${e.message}")
             }
-        } catch (e: Exception) {
-            Toast.makeText(this, "初始化投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
+        } else {
+            setMirrorStatus("屏幕录制授权被拒绝，可再点「开始投屏」重试")
         }
     }
 
-    /**
-     * 使用已就绪的 MediaProjection 启动投屏循环
-     * Android 14+ 时 mediaProjection 来自 ScreenCaptureService 持有的实例
-     */
-    private fun startCapturedProjection() {
-        val proj = if (android.os.Build.VERSION.SDK_INT >= 34) {
-            ConnectionManager.getCachedMediaProjection()
-        } else {
-            mediaProjection
+    /** 状态栏文案（页面可能还没创建，判空处理） */
+    private fun setMirrorStatus(msg: String) {
+        mirrorUiStatus?.text = msg
+        LogUtil.scrI("[投屏][UI] $msg")
+    }
+
+    /** 目标电脑 IP 默认值：优先用主工程已知的电脑地址，其次参考工程的默认值 */
+    private fun defaultMirrorIp(): String {
+        val fromConn = try { ConnectionManager.getPcHostForMirror() } catch (_: Exception) { null }
+        return if (!fromConn.isNullOrBlank()) fromConn else "192.168.3.9"
+    }
+
+    /** 手机端点「开始投屏」和电脑端下发 mirror_start 都汇到这里 */
+    private fun startMirrorFlow(ip: String?, port: Int?) {
+        val useIp = if (ip.isNullOrBlank()) defaultMirrorIp() else ip
+        val usePort = port ?: 5423
+        mirrorPendingIp = useIp
+        mirrorPendingPort = usePort
+        // Android 13+ 前台服务通知需要通知权限（没有就退化成没有通知，不阻塞投屏）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            try { notifPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS) } catch (_: Exception) {}
         }
-        if (proj == null) {
-            screenCaptureHandler.post {
-                Toast.makeText(this, "初始化投屏失败: 无法获取 MediaProjection", Toast.LENGTH_LONG).show()
-            }
+        // 内录需要 RECORD_AUDIO（没有就静默地只投画面）
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            try { audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO) } catch (_: Exception) {}
+        }
+        setMirrorStatus("正在启动投屏 → $useIp:$usePort ...")
+        if (PhoneHubMirrorService.pendingResultData != null || PhoneHubMirrorService.hasProjection()) {
+            launchMirrorService(useIp, usePort)
             return
         }
-        mediaProjection = proj
-        startScreenCaptureLoop()
+        try {
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                as android.media.projection.MediaProjectionManager
+            mirrorConsentLauncher.launch(mpm.createScreenCaptureIntent())
+        } catch (e: RuntimeException) {
+            LogUtil.scrE("[投屏] 请求屏幕录制授权失败", e)
+            setMirrorStatus("请求屏幕录制授权失败: ${e.message}")
+        }
+    }
+
+    private fun launchMirrorService(ip: String, port: Int) {
+        val svc = Intent(this, PhoneHubMirrorService::class.java).apply {
+            action = PhoneHubMirrorService.ACTION_START_MIRROR
+            putExtra(PhoneHubMirrorService.EXTRA_PC_IP, ip)
+            putExtra(PhoneHubMirrorService.EXTRA_PC_PORT, port)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svc)
+            } else {
+                startService(svc)
+            }
+            mirrorRunning = true
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            setMirrorStatus("投屏中 → $ip:$port（电脑上会弹出「手机屏幕」窗口）")
+        } catch (e: RuntimeException) {
+            LogUtil.scrE("[投屏] 启动投屏服务失败", e)
+            mirrorRunning = false
+            setMirrorStatus("启动投屏服务失败: ${e.message}")
+        }
+    }
+
+    private fun stopMirrorFlow() {
+        val svc = Intent(this, PhoneHubMirrorService::class.java).apply {
+            action = PhoneHubMirrorService.ACTION_STOP_MIRROR
+        }
+        // 停止指令优先用 startService：Activity 在前台时它合法，也不会触发
+        // startForegroundService 那条"5 秒内必须 startForeground"的约束
+        var sent = false
+        try {
+            startService(svc)
+            sent = true
+        } catch (_: Exception) {
+        }
+        if (!sent) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(svc)
+                } else {
+                    startService(svc)
+                }
+            } catch (e: RuntimeException) {
+                LogUtil.scrE("[投屏] 停止投屏服务失败", e)
+            }
+        }
+        mirrorRunning = false
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setMirrorStatus("已发送停止指令")
     }
 
     // 文字保存：用系统文件选择器（ACTION_CREATE_DOCUMENT）选择保存路径
@@ -441,12 +481,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        // 投屏（手机→电脑）跑在 PhoneHubMirrorService 前台服务里，退出界面不停它；
+        // 需要停的时候点页面上的「停止投屏」。
         // 注销音量广播接收器，防止 Activity 内存泄漏
         try {
             volumeReceiver?.let { unregisterReceiver(it) }
-        } catch (_: Exception) {}
+        } catch (_: IllegalArgumentException) {}
         volumeReceiver = null
+        super.onDestroy()
     }
 
     private fun enterMirrorFullscreen(mirrorFrame: FrameLayout?, allUiComponents: List<View?>) {
@@ -822,11 +864,11 @@ class MainActivity : AppCompatActivity() {
     private fun cleanupPageResources(oldIndex: Int) {
         when (oldIndex) {
             8 -> { // 投屏页
-                ConnectionManager.sendMediaCommand("mirror_stop")
+                // 手机→电脑的投屏由 PhoneHubMirrorService 前台服务负责，离开页面不停它
+                // （要停请点页面上的「停止投屏」）；这里只收掉「电脑→手机」那路。
                 ConnectionManager.sendMediaCommand("pc_stream_stop")
                 ConnectionManager.stopPcFramePolling()
                 ConnectionManager.stopPcAudioPolling()
-                stopPhoneScreenCapture()
                 // 退出全屏并隐藏画面区域
                 if (isMirrorFullscreen) exitMirrorFullscreen()
                 pageCache[8]?.findViewById<FrameLayout>(R.id.mirrorFrame)?.visibility = View.GONE
@@ -2124,26 +2166,62 @@ class MainActivity : AppCompatActivity() {
 
     private fun getMirrorView(): View {
         val v = LayoutInflater.from(this).inflate(R.layout.page_screen_mirror, null)
-        // Buttons removed per S5/S6: auto-start on page load instead
-        
+
+        // ===== 手机 → 电脑投屏（参考工程那套引擎，端口 5423）=====
+        val mirStatus = v.findViewById<TextView>(R.id.mirStatus)
+        val mirFps = v.findViewById<TextView>(R.id.mirFps)
+        val ipEdit = v.findViewById<android.widget.EditText>(R.id.mirPcIp)
+        val portEdit = v.findViewById<android.widget.EditText>(R.id.mirPort)
+        mirrorUiStatus = mirStatus
+        mirrorUiFps = mirFps
+        ipEdit.setText(defaultMirrorIp())
+        portEdit.setText("5423")
+        setupMirrorSpinners(v)
+
+        // 服务回传的状态/帧率（参考工程是 LocalBroadcastManager 广播，这里换成 StateFlow）
+        lifecycleScope.launch {
+            PhoneHubMirrorService.resultFlow.collect { msg ->
+                if (msg.isNotEmpty()) mirStatus.text = msg
+            }
+        }
+        lifecycleScope.launch {
+            PhoneHubMirrorService.fpsFlow.collect { txt ->
+                if (txt.isNotEmpty()) mirFps.text = txt
+            }
+        }
+
+        v.findViewById<Button>(R.id.mirBtnConnect)?.setOnClickListener {
+            connectMirrorPc(ipEdit.text.toString().trim(), portEdit.text.toString().toIntOrNull() ?: 5423)
+        }
+        v.findViewById<Button>(R.id.mirBtnStart)?.setOnClickListener {
+            startMirrorFlow(ipEdit.text.toString().trim(), portEdit.text.toString().toIntOrNull())
+        }
+        v.findViewById<Button>(R.id.mirBtnStop)?.setOnClickListener { stopMirrorFlow() }
+        v.findViewById<Button>(R.id.mirBtnClearCache)?.setOnClickListener {
+            PhoneHubMirrorService.clearProjectionResult(this)
+            Toast.makeText(this, "已清除授权缓存，下次投屏需要重新授权", Toast.LENGTH_SHORT).show()
+            setMirrorStatus("授权缓存已清除")
+        }
+        v.findViewById<Button>(R.id.mirBtnAccessibility)?.setOnClickListener {
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                Toast.makeText(this, "找到「PhoneHub」并开启，反向控制才能注入点击", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+            }
+        }
+        v.findViewById<Button>(R.id.mirBtnDisconnectAll)?.setOnClickListener {
+            PhoneHubMirrorService.clearSavedPcEndpoints(this)
+            setMirrorStatus("已清空电脑列表（下次投屏前请重新连接）")
+        }
+
         // Find UI components
         val fullscreenBtn = v.findViewById<Button>(R.id.btnFullscreen)
         // 全屏按钮：恢复显示，点击进入全屏投屏（Task 18.5）
         fullscreenBtn?.visibility = View.VISIBLE
-        
+
         val status = v.findViewById<TextView>(R.id.mirrorStatus)
         val mirrorFrame = v.findViewById<FrameLayout>(R.id.mirrorFrame)
 
-        // ===== 手机→电脑投屏：自动启动（S5）=====
-        // Auto-start screen capture when page is loaded
-        status.text = "正在初始化..."
-        // Directly request screen capture permission (shows system dialog if not granted)
-        startPhoneScreenCapture()
-
-        // 声音传输：自动启动（S6），无需用户点击按钮
-        // Per S6: auto-start sound transmission after permission granted, no button needed
-        // Audio handling integrated with screen capture (needs MediaProjection for system audio)
-        
         // ===== 电脑→手机投屏：自动启动（S7）=====
         // Auto-start PC screen mirroring when page is loaded, removing redundant btnFullscreen button per S7
         status.text = "正在连接电脑画面..."
@@ -3763,28 +3841,27 @@ class MainActivity : AppCompatActivity() {
             ConnectionManager.mirrorCommand.collect { cmd ->
                 when (cmd.action) {
                     "start" -> {
-                        // 电脑端请求开始投屏：自动触发屏幕录制权限请求
-                        if (!screenCaptureRunning) {
-                            // S5: 检查无障碍服务是否开启，未开启则引导进入设置
+                        // 电脑端请求开始投屏：和手机端点「开始投屏」走同一条路
+                        // （没有授权时手机会弹系统授权框，地址由电脑端随命令带下来）
+                        if (!mirrorRunning) {
                             if (PhoneHubAccessibilityService.instance == null) {
                                 Toast.makeText(this@MainActivity, "无障碍服务未开启，正在引导开启...", Toast.LENGTH_LONG).show()
                                 try {
                                     startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
                                 } catch (_: Exception) {}
                             }
-                            // 启动屏幕录制权限请求
-                            startPhoneScreenCapture()
+                            startMirrorFlow(cmd.ip, cmd.port)
                         }
                     }
                     "stop" -> {
-                        // 电脑端请求停止投屏
-                        if (screenCaptureRunning) {
-                            stopPhoneScreenCapture()
-                        }
+                        if (mirrorRunning) stopMirrorFlow()
                     }
                 }
             }
         }
+
+        // 画质/音质/模式不再由电脑端下发：档位存在 PhoneHubMirrorService 里，
+        // 由本页的三个下拉框直接写入（参考工程的做法）。
 
         lifecycleScope.launch {
             ConnectionManager.currentChannel.collect { channel ->
@@ -3800,17 +3877,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // S6: 全局监听电脑端发来的声音传输控制指令（开始/停止声音传输）
+        // S6: 全局监听电脑端发来的声音传输控制指令（开始/停止「电脑声音→手机」）
         lifecycleScope.launch {
             ConnectionManager.audioControl.collect { cmd ->
                 when (cmd.action) {
                     "start" -> {
-                        startPhoneAudioCapture()
                         ConnectionManager.startPcAudioPolling()
                         ConnectionManager.sendMediaCommand("audio_start")
                     }
                     "stop" -> {
-                        stopPhoneAudioCapture()
                         ConnectionManager.stopPcAudioPolling()
                         ConnectionManager.sendMediaCommand("audio_stop")
                     }
@@ -4248,307 +4323,115 @@ class MainActivity : AppCompatActivity() {
         pageCache[4]?.findViewById<TextView>(R.id.currentClipText)?.text = text
     }
 
-    // ============================== 自研投屏：MediaProjection 截图 ==============================
+    // ============================== 投屏页的档位与连接（UI 逻辑来自参考工程）==============================
 
-    private fun startPhoneScreenCapture() {
-        if (screenCaptureRunning) return
-        // 投屏期间保持屏幕常亮，防止观看时息屏
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        try {
-            val dm = resources.displayMetrics
-            screenWidth = dm.widthPixels
-            screenHeight = dm.heightPixels
-            screenDensity = dm.densityDpi
+    /** 三个下拉框：清晰度 / 音质 / 模式。值与参考工程一致，存在 PhoneHubMirrorService 的 prefs 里。 */
+    private fun setupMirrorSpinners(v: View) {
+        val quality = v.findViewById<android.widget.Spinner>(R.id.mirQuality)
+        val audio = v.findViewById<android.widget.Spinner>(R.id.mirAudio)
+        val mode = v.findViewById<android.widget.Spinner>(R.id.mirMode)
 
-            // 缩放到最高720p，防止高分辨率设备OOM
-            val maxDim = 1280
-            if (screenWidth > maxDim || screenHeight > maxDim) {
-                val ratio = screenWidth.toFloat() / screenHeight.toFloat()
-                if (screenWidth > screenHeight) {
-                    screenWidth = maxDim
-                    screenHeight = (maxDim / ratio).toInt()
-                } else {
-                    screenHeight = maxDim
-                    screenWidth = (maxDim * ratio).toInt()
-                }
+        val qualityOptions = arrayOf("流畅 · 400宽", "标清 · 720宽", "高清 · 1080宽", "原生 · 2340宽")
+        val qAdapter = android.widget.ArrayAdapter(this, android.R.layout.simple_spinner_item, qualityOptions)
+        qAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        quality.adapter = qAdapter
+        quality.setSelection(PhoneHubMirrorService.getQualityLevel(this))
+        quality.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                PhoneHubMirrorService.setQualityLevel(this@MainActivity, position)
             }
 
-            val intent = android.media.projection.MediaProjectionManager::class.java
-                .let { getSystemService(it) as android.media.projection.MediaProjectionManager }
-                .createScreenCaptureIntent()
-            screenCaptureLauncher.launch(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "启动推流失败: ${e.message}", Toast.LENGTH_LONG).show()
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+
+        val audioOptions = arrayOf("标准 · 48k", "高 · 96k", "很高 · 192k")
+        val aAdapter = android.widget.ArrayAdapter(this, android.R.layout.simple_spinner_item, audioOptions)
+        aAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        audio.adapter = aAdapter
+        audio.setSelection(PhoneHubMirrorService.getAudioLevel(this))
+        audio.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                PhoneHubMirrorService.setAudioLevel(this@MainActivity, position)
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+
+        val modeOptions = arrayOf("音视频", "仅音频", "仅画面")
+        val mAdapter = android.widget.ArrayAdapter(this, android.R.layout.simple_spinner_item, modeOptions)
+        mAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        mode.adapter = mAdapter
+        mode.setSelection(PhoneHubMirrorService.getMirrorMode(this))
+        mode.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                PhoneHubMirrorService.setMirrorMode(this@MainActivity, position)
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }
     }
 
-    private fun startScreenCaptureLoop() {
-        if (mediaProjection == null) {
-            runOnUiThread {
-                Toast.makeText(this, "屏幕录制权限未获取，请重试", Toast.LENGTH_SHORT).show()
-            }
+    /** 「连接」按钮：探一下电脑上的投屏服务（参考工程同款，支持连多台，投屏时同时推流） */
+    private fun connectMirrorPc(ip: String, port: Int) {
+        if (ip.isBlank()) {
+            Toast.makeText(this, "请输入电脑 IP 地址", Toast.LENGTH_SHORT).show()
             return
         }
-        screenCaptureRunning = true
+        // 华为/荣耀：没豁免电池优化时先申请，否则后台投屏会被冻结（表现为周期性卡 ~1s）
         try {
-            imageReader = android.media.ImageReader.newInstance(
-                screenWidth, screenHeight, android.graphics.PixelFormat.RGBA_8888, 3
-            )
-
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "PhoneHubMirror", screenWidth, screenHeight, screenDensity,
-                android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface, null, null
-            )
-            if (virtualDisplay == null) {
-                screenCaptureRunning = false
-                runOnUiThread {
-                    Toast.makeText(this, "创建虚拟显示失败", Toast.LENGTH_LONG).show()
-                }
-                return
-            }
-        } catch (e: Exception) {
-            screenCaptureRunning = false
-            runOnUiThread {
-                Toast.makeText(this, "创建虚拟显示失败: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-            return
-        }
-
-        screenCaptureThread = Thread {
-            val conn = ConnectionManager
-            // 每帧复用 ByteArrayOutputStream，减少 GC 压力
-            val reuseBaos = java.io.ByteArrayOutputStream(512 * 1024)
-            while (screenCaptureRunning) {
-                var image: android.media.Image? = null
-                var bitmap: android.graphics.Bitmap? = null
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 try {
-                    image = imageReader?.acquireLatestImage()
-                    if (image == null) {
-                        // 防止CPU空转
-                        try { Thread.sleep(16) } catch (ie: InterruptedException) { break }
-                        continue
-                    }
-                    val planes = image.planes
-                    if (planes.isEmpty()) {
-                        try { Thread.sleep(16) } catch (ie: InterruptedException) { break }
-                        continue
-                    }
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * screenWidth
-
-                    bitmap = if (rowPadding == 0) {
-                        // 无行填充：直接从buffer创建bitmap
-                        android.graphics.Bitmap.createBitmap(
-                            screenWidth, screenHeight,
-                            android.graphics.Bitmap.Config.ARGB_8888
-                        ).also {
-                            buffer.rewind()
-                            it.copyPixelsFromBuffer(buffer)
-                        }
-                    } else {
-                        // 有行填充：按行拷贝，去除padding
-                        val paddedBitmap = android.graphics.Bitmap.createBitmap(
-                            screenWidth + rowPadding / pixelStride, screenHeight,
-                            android.graphics.Bitmap.Config.ARGB_8888
+                    startActivity(
+                        Intent(
+                            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            android.net.Uri.parse("package:$packageName")
                         )
-                        buffer.rewind()
-                        paddedBitmap.copyPixelsFromBuffer(buffer)
-                        val cropped = android.graphics.Bitmap.createBitmap(paddedBitmap, 0, 0, screenWidth, screenHeight)
-                        paddedBitmap.recycle()
-                        cropped
-                    }
-
-                    reuseBaos.reset()
-                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, reuseBaos)
-                    val jpegData = reuseBaos.toByteArray()
-
-                    conn.sendFrameToPc(jpegData)
-
-                    try { Thread.sleep(16) } catch (ie: InterruptedException) { break } // ~60fps
-                } catch (e: Exception) {
-                    if (screenCaptureRunning) {
-                        try {
-                            Thread.sleep(200)
-                        } catch (ie: InterruptedException) {
-                            break
-                        }
-                    }
-                } finally {
-                    // 关键：无论处理成功或异常都必须关闭 image，否则 ImageReader 的 maxImages
-                    // 耗尽后 acquireLatestImage 恒返回 null，投屏会假死为空转
-                    try { image?.close() } catch (_: Exception) {}
-                    if (bitmap != null && !bitmap.isRecycled) {
-                        try { bitmap.recycle() } catch (_: Exception) {}
-                    }
+                    )
+                    setMirrorStatus("请在弹窗中点「允许」，然后重新点「连接」")
+                    return
+                } catch (_: Exception) {
+                    // 个别 ROM 没有这个入口，直接连
                 }
             }
+        } catch (_: Exception) {
         }
-        screenCaptureThread?.start()
-    }
 
-    private fun stopPhoneScreenCapture() {
-        screenCaptureRunning = false
-        // 停止投屏后恢复系统屏幕超时
-        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        screenCaptureThread?.interrupt()
-        // 清理超时回调
-        mirrorFrameTimeoutRunnable?.let { frameTimeoutHandler.removeCallbacks(it) }
-        mirrorFrameTimeoutRunnable = null
-        // 等待线程退出后再释放资源，防止竞态
-        try {
-            screenCaptureThread?.join(500)
-        } catch (e: InterruptedException) {
-        }
-        screenCaptureThread = null
-        virtualDisplay?.release()
-        virtualDisplay = null
-        imageReader?.close()
-        imageReader = null
-        mediaProjection?.stop()
-        mediaProjection = null
-    }
-
-    // ============================== 自研声音传输 ==============================
-
-    private fun startPhoneAudioCapture() {
-        if (audioCaptureRunning) return
-        
-        // Check RECORD_AUDIO permission before starting audio capture
-        val hasPermission = ContextCompat.checkSelfPermission(
-            this,
-            android.Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-        
-        if (!hasPermission) {
-            audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        
-        val sampleRate = 44100
-        val minBufferSize = android.media.AudioRecord.getMinBufferSize(
-            sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO,
-            android.media.AudioFormat.ENCODING_PCM_16BIT
-        )
-        if (minBufferSize == android.media.AudioRecord.ERROR_BAD_VALUE || minBufferSize == android.media.AudioRecord.ERROR) {
-            runOnUiThread { Toast.makeText(this, "音频参数不支持", Toast.LENGTH_SHORT).show() }
-            return
-        }
-        val bufferSize = maxOf(minBufferSize, 4096)
-
-        // 必须使用 AudioPlaybackCaptureConfiguration 捕获系统媒体声音；无 MediaProjection 时先自动拉起授权
-        if (mediaProjection == null) {
-            val cached = ConnectionManager.getCachedMediaProjection()
-            mediaProjection = cached
-        }
-        if (mediaProjection == null) {
-            // 声音传输不再要求"必须先投过屏"：自动发起一次性屏幕录制授权，授权完成后自动开始内录
-            pendingAudioStart = true
+        setMirrorStatus("正在连接 $ip:$port ...")
+        Thread {
+            val err = probeMirrorServer(ip, port)
             runOnUiThread {
-                Toast.makeText(this@MainActivity, "正在请求录制屏幕，用于捕获手机声音...", Toast.LENGTH_SHORT).show()
-            }
-            startPhoneScreenCapture()
-            return
-        }
-        // 优先使用 AudioPlaybackCaptureConfiguration 捕获系统内音（需要 MediaProjection）
-        // 直接复用投屏的 mediaProjection，避免 getCachedMediaProjection() 释放已有实例导致投屏断开
-        try {
-            val mp = mediaProjection
-            if (mp != null) {
-                val config = android.media.AudioPlaybackCaptureConfiguration.Builder(mp)
-                    .addMatchingUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                    .addMatchingUsage(android.media.AudioAttributes.USAGE_GAME)
-                    .addMatchingUsage(android.media.AudioAttributes.USAGE_UNKNOWN)
-                    .build()
-                audioRecord = android.media.AudioRecord.Builder()
-                    .setAudioFormat(android.media.AudioFormat.Builder()
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(android.media.AudioFormat.CHANNEL_IN_MONO)
-                        .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
-                        .build())
-                    .setBufferSizeInBytes(bufferSize)
-                    .setAudioPlaybackCaptureConfig(config)
-                    .build()
-                Log.i("MainActivity", "AudioPlaybackCapture 已启动（系统内音）")
-            } else {
-                Log.w("MainActivity", "MediaProjection 不可用，回退到 MIC 录音")
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "AudioPlaybackCapture 失败，回退到 MIC: ${e.message}")
-            audioRecord = null
-        }
-
-        // 不再回退到麦克风：用户需求为手机媒体声音（系统内录），授权失败则停止
-        if (audioRecord == null) {
-            Log.e("MainActivity", "无法创建 AudioPlaybackCapture，未回退到 MIC")
-            runOnUiThread { Toast.makeText(this@MainActivity, "系统内录不可用，请重新启动投屏后重试", Toast.LENGTH_LONG).show() }
-            audioCaptureRunning = false
-            pageCache[8]?.findViewById<Button>(R.id.btnAudio)?.text = "声音传输"
-            return
-        }
-
-        // 检查 AudioRecord 是否初始化成功
-        if (audioRecord?.state != android.media.AudioRecord.STATE_INITIALIZED) {
-            Log.e("MainActivity", "AudioRecord 初始化失败，state=${audioRecord?.state}")
-            audioRecord?.release()
-            audioRecord = null
-            runOnUiThread { Toast.makeText(this, "系统内录不可用，请确保已授权投屏权限", Toast.LENGTH_SHORT).show() }
-            return
-        }
-
-        audioCaptureRunning = true
-        audioRecord?.startRecording()
-
-        // 使用独立线程池，避免与投屏帧竞争
-        audioCaptureThread = Thread {
-            val buffer = ByteArray(bufferSize)
-            val conn = ConnectionManager
-            val batchBuffers = mutableListOf<ByteArray>()
-            while (audioCaptureRunning) {
-                try {
-                    val read = audioRecord?.read(buffer, 0, bufferSize) ?: 0
-                    if (read > 0) {
-                        batchBuffers.add(buffer.copyOf(read))
-                        // 累积 5 个 buffer（约 100ms 音频）后批量发送
-                        if (batchBuffers.size >= 5) {
-                            val merged = ByteArray(batchBuffers.sumOf { it.size })
-                            var offset = 0
-                            for (b in batchBuffers) {
-                                System.arraycopy(b, 0, merged, offset, b.size)
-                                offset += b.size
-                            }
-                            batchBuffers.clear()
-                            conn.sendAudioToPc(merged)
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (audioCaptureRunning) Thread.sleep(100)
+                if (err == null) {
+                    val isNew = !PhoneHubMirrorService.getSavedPcEndpoints(this)
+                        .any { it.first == ip && it.second == port }
+                    PhoneHubMirrorService.addSavedPcEndpoint(this, ip, port)
+                    val n = PhoneHubMirrorService.savedPcCount(this)
+                    val multi = if (n > 1) "（共 $n 台，投屏时同时推流）" else ""
+                    val mfr = Build.MANUFACTURER ?: ""
+                    val hint = if (mfr.contains("HUAWEI", true) || mfr.contains("HONOR", true))
+                        " ｜建议:手机管家→应用启动管理→本应用→手动管理(开关全开)" else ""
+                    val added = if (isNew) "已添加" else "已在列表"
+                    setMirrorStatus("已连接 $ip:$port ✓ $added$multi 可以点「开始投屏」$hint")
+                } else {
+                    setMirrorStatus("连接失败: $err")
+                    Toast.makeText(this, "连接失败", Toast.LENGTH_SHORT).show()
                 }
             }
-            // 发送剩余数据
-            if (batchBuffers.isNotEmpty()) {
-                try {
-                    val merged = ByteArray(batchBuffers.sumOf { it.size })
-                    var offset = 0
-                    for (b in batchBuffers) {
-                        System.arraycopy(b, 0, merged, offset, b.size)
-                        offset += b.size
-                    }
-                    conn.sendAudioToPc(merged)
-                } catch (_: Exception) {}
-            }
-        }
-        audioCaptureThread?.start()
+        }.start()
     }
 
-    private fun stopPhoneAudioCapture() {
-        audioCaptureRunning = false
-        audioCaptureThread?.interrupt()
-        audioCaptureThread = null
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
+    /** 探活：GET http://ip:port/status；返回 null 表示通，否则是错误描述 */
+    private fun probeMirrorServer(ip: String, port: Int): String? {
+        return try {
+            val conn = java.net.URL("http://$ip:$port/status").openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 3000
+            conn.readTimeout = 3000
+            conn.requestMethod = "GET"
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code == 200) null else "HTTP $code"
+        } catch (e: Exception) {
+            "${e.javaClass.simpleName}: ${e.message}"
+        }
     }
 }
