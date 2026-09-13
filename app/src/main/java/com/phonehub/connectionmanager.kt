@@ -479,7 +479,7 @@ object ConnectionManager {
                 )
             }
         }
-        receiveDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "").apply { mkdirs() }
+        receiveDir = resolveWritableReceiveDir()
         locationStoreDir = File(ctx.getExternalFilesDir(null), "LocationCache")
         locationStoreDir?.mkdirs()
         loadClipboardStore()
@@ -490,6 +490,43 @@ object ConnectionManager {
         startMediaMonitoring()
         // 通知监听权限由用户在通知页手动开启，不在启动时自动检查或跳转设置页
         // 不再自动连接：由用户手动点击 WiFi 直连或 PAW 连接，避免 app 启动即抢占连接
+    }
+
+    /**
+     * 选一个「确实可写」的接收目录。
+     *
+     * 为什么需要探测：应用 targetSdk=36，在 Android 10+ 强制 Scoped Storage，
+     * 直接用 File 往公共 Download 目录写会抛 EACCES。这正是此前「电脑发文件到手机，
+     * 手机一直卡在暂停中、电脑端只发出 64KB」的根因——接收端一创建文件就失败、
+     * 立刻断开连接，服务端只来得及把第一块（65536 字节）写进 socket。
+     *
+     * 顺序：公共 Download（能写才用，覆盖 Android 11+ 已授「所有文件访问」的情况）
+     *      → 应用专属外部目录（无需任何权限，Scoped Storage 下必然可写）
+     *      → 应用内部目录（兜底）。
+     */
+    private fun resolveWritableReceiveDir(): File {
+        val candidates = listOfNotNull(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            context?.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+            context?.let { File(it.filesDir, "Download") }
+        )
+        for (dir in candidates) {
+            if (isDirWritable(dir)) return dir
+        }
+        return File(context?.filesDir ?: File("/data/local/tmp"), "Download").apply { mkdirs() }
+    }
+
+    /** 目录是否真的可写：创建目录 + 写一个探针文件再删除（不靠权限声明猜） */
+    private fun isDirWritable(dir: File): Boolean {
+        return try {
+            if (!dir.isDirectory && !dir.mkdirs()) return false
+            val probe = File(dir, ".ph_write_probe")
+            FileOutputStream(probe, false).use { it.write(0x31) }
+            probe.delete()
+            true
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     fun hasReceivedPcCpu(): Boolean {
@@ -933,6 +970,7 @@ object ConnectionManager {
                 val fileSize = data["file_size"]?.jsonPrimitive?.longOrNull ?: 0L
                 val fileId = data["file_id"]?.jsonPrimitive?.contentOrNull ?: ""
                 Log.i(TAG, "收到send_file_head: name=$fileName, size=$fileSize, id=$fileId, channel=${_currentChannel.value}")
+                LogUtil.connI("收到 send_file_head: $fileName($fileSize B) id=$fileId ch=${_currentChannel.value}")
                 // 新传输开始：清掉上一次传输遗留的暂停/取消状态，
                 // 否则上次"暂停后没恢复"会把这次 UI 永久卡在「已暂停(对端)」
                 cancelTransferStallWatchdog()   // 旧传输的自愈 watchdog 别残留
@@ -2738,18 +2776,22 @@ object ConnectionManager {
                 _transferPausedFromPc.value = false   // 清掉对端暂停显示，避免卡在「已暂停(对端)」
                 // 保存恢复信息（PC→手机方向暂停后继续时断点续传）
                 resumeInfo = ResumeInfo(fileId, fileName, fileSize)
-                // 确保接收目录存在（防止 ENOENT）
-                receiveDir?.mkdirs()
-                val dir = if (receiveDir != null && (receiveDir!!.exists() || receiveDir!!.mkdirs())) {
-                    receiveDir
-                } else {
-                    // 外部存储不可用时，回退到应用内部存储
-                    val fallback = context?.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                        ?: context?.filesDir
-                    fallback?.mkdirs()
-                    Log.w(TAG, "startReceiveFile: 外部存储不可用，回退到 $fallback")
-                    fallback
+                // 确保接收目录「可写」：Scoped Storage 下公共 Download 目录可能存在但不可写，
+                // 只判 exists() 会误以为可用，导致后面 FileOutputStream 直接 EACCES。
+                // 每次接收都实测一次，不可写就切换到应用专属外部目录。
+                val cachedDir = receiveDir
+                if (cachedDir == null || !isDirWritable(cachedDir)) {
+                    receiveDir = resolveWritableReceiveDir()
+                    Log.w(TAG, "startReceiveFile: 原接收目录不可写，改用 $receiveDir")
                 }
+                val dir = receiveDir
+                if (dir == null) {
+                    Log.e(TAG, "startReceiveFile: 找不到可写接收目录，放弃本次接收")
+                    showToast("接收失败：找不到可写的存储目录")
+                    _fileTransferProgress.value = null
+                    return@launch
+                }
+                dir.mkdirs()
                 val outFile = File(dir, fileName)
                 val progressFile = File(dir, "$fileName.progress")
                 Log.i(TAG, "startReceiveFile: outFile=${outFile.absolutePath}, progressFile=${progressFile.absolutePath}")
@@ -2779,6 +2821,7 @@ object ConnectionManager {
                     "http://127.0.0.1:$connectPort" else "http://$ip:$connectPort"
                 val url = URL("$base/api/download_file/$fileId")
                 Log.i(TAG, "startReceiveFile: 开始下载 $url, offset=$resumeOffset")
+                LogUtil.connI("PC→手机 接收开始: $fileName($fileSize B) → ${dir.absolutePath}, offset=$resumeOffset")
                 conn = url.openConnection() as HttpURLConnection
                 currentConn = conn
                 @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")
@@ -2833,10 +2876,17 @@ object ConnectionManager {
                         // 流中断（暂停/取消/网络异常）：记录状态，不当作错误
                         streamBroken = true
                         Log.w(TAG, "startReceiveFile: 流中断 received=$received/$fileSize, cancel=$fileTransferCancel, paused=$transferPaused, err=${e.message}")
+                        LogUtil.connW("PC→手机 流中断: received=$received/$fileSize err=${e.message}")
                         // 确保已接收字节写入 .progress 供断点续传
                         try { progressFile.writeText(received.toString()) } catch (_: Exception) {}
+                        // 一个字节都没收到 → 失败在「创建/写入文件」阶段（例如目录不可写），
+                        // 这不是暂停。直接把原因说出来，避免又被误显示成「已暂停」而查不出病因。
+                        if (received == 0L) {
+                            showToast("接收失败：${e.message ?: "无法写入 ${dir.absolutePath}"}")
+                        }
                     }
                     Log.i(TAG, "startReceiveFile: 数据流结束, received=$received/$fileSize, cancel=$fileTransferCancel, paused=$transferPaused, streamBroken=$streamBroken")
+                    LogUtil.connI("PC→手机 数据流结束: received=$received/$fileSize cancel=$fileTransferCancel paused=$transferPaused broken=$streamBroken")
 
                     if (fileTransferCancel && !transferPaused) {
                         // 真正取消（非暂停）：清空进度，删除不完整的文件
@@ -2864,7 +2914,8 @@ object ConnectionManager {
                         resumeInfo = null
                         sendAck(fileId)
                         Log.i(TAG, "startReceiveFile: 下载完成, received=$received")
-                        showToast("文件接收完成: $fileName")
+                        LogUtil.connI("PC→手机 接收完成: $fileName ($received B)")
+                        showToast("文件接收完成: $fileName → ${dir.absolutePath}")
                         _transferCompleted.value = true
                         _completedTransfer.tryEmit(CompletedTransfer(fileName, false))
                         _fileTransferProgress.value = null

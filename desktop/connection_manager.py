@@ -34,6 +34,17 @@ console_handler.setFormatter(log_format)
 
 if not logger.handlers:
     logger.addHandler(console_handler)
+    # 同时落盘：桌面端常用 pythonw 启动，控制台输出没人能看到。
+    # 出问题时（例如传文件只发出 64KB）必须能翻到日志，故补一个轮转文件 handler。
+    try:
+        from logging.handlers import RotatingFileHandler as _RFH
+        _fh = _RFH(os.path.join(os.path.expanduser("~"), "PhoneHub", "log_desktop.txt"),
+                   maxBytes=5 * 1024 * 1024, backupCount=2, encoding='utf-8')
+        _fh.setLevel(logging.INFO)
+        _fh.setFormatter(log_format)
+        logger.addHandler(_fh)
+    except Exception:
+        pass
 
 
 def _load_settings_from_file():
@@ -828,7 +839,8 @@ class ConnectionManager(QObject):
                                 except Exception:
                                     pass
                 except Exception as e:
-                    print(f"download_file generate error: {e}")
+                    # 生成器异常多半是「手机端提前断开」（例如接收端创建文件失败就掐了连接）
+                    self.log(f"[download_file] 生成器异常: {type(e).__name__}: {e}")
                 finally:
                     if sent < file_size:
                         self.log(f"[download_file] 提前结束: sent={sent}/{file_size} "
