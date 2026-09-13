@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>PhoneHub · 电脑声音</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0f1216; color: #e8eaed; text-align: center;
+  }
+  h1 { font-size: 20px; margin: 8px 0 4px; }
+  .sub { color: #8b95a1; font-size: 13px; margin-bottom: 28px; }
+  .btn {
+    display: inline-block; width: 78%; max-width: 340px; padding: 18px 0;
+    margin: 10px 0; border: none; border-radius: 14px; font-size: 18px; font-weight: 600;
+    color: #fff; background: #2f6df6; transition: .15s;
+  }
+  .btn:disabled { background: #2a2f37; color: #6b7480; }
+  .btn.stop { background: #d9534f; }
+  #status {
+    margin-top: 22px; font-size: 15px; padding: 12px; border-radius: 10px;
+    background: #1a1f27; min-height: 20px;
+  }
+  #info { margin-top: 10px; color: #8b95a1; font-size: 13px; }
+  .vol { margin-top: 24px; width: 78%; max-width: 340px; }
+  .vol label { display: block; font-size: 13px; color: #8b95a1; margin-bottom: 6px; }
+  input[type=range] { width: 100%; }
+</style>
+</head>
+<body>
+  <h1>电脑声音实时收听</h1>
+  <div class="sub">同一 WiFi 下，打开此页点「开始」即可用手机听电脑正在播放的声音</div>
+
+  <button id="start" class="btn">开始</button>
+  <button id="stop" class="btn stop" disabled>停止</button>
+
+  <div id="status">未连接</div>
+  <div id="info"></div>
+
+  <div class="vol">
+    <label>音量</label>
+    <input id="vol" type="range" min="0" max="1" step="0.01" value="1">
+  </div>
+
+<script>
+let audioCtx = null, scriptNode = null, gainNode = null, ws = null;
+let pending = [], readPos = 0, cfg = null, running = false;
+
+const $ = (id) => document.getElementById(id);
+const startBtn = $("start"), stopBtn = $("stop"), statusEl = $("status"),
+      infoEl = $("info"), volEl = $("vol");
+
+startBtn.onclick = async () => {
+  if (running) return;
+  statusEl.textContent = "连接中…";
+  // 必须在用户手势里创建/恢复 AudioContext
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  } catch (e) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  await audioCtx.resume();
+
+  const proto = (location.protocol === "https:") ? "wss://" : "ws://";
+  const wsPort = 4599;                       // 音频 WebSocket 端口（网页在 4598）
+  ws = new WebSocket(proto + location.hostname + ":" + wsPort + "/audio");
+  ws.binaryType = "arraybuffer";
+  ws.onopen   = () => { statusEl.textContent = "已连接，等待音频…"; };
+  ws.onmessage = onMsg;
+  ws.onclose  = () => {
+    statusEl.textContent = "已断开";
+    running = false; startBtn.disabled = false; stopBtn.disabled = true;
+  };
+  ws.onerror  = () => {
+    statusEl.textContent = "连接错误（确认电脑端 4598 已开放、防火墙放行）";
+  };
+};
+
+async function onMsg(ev) {
+  if (typeof ev.data === "string") {        // 配置帧
+    cfg = JSON.parse(ev.data);
+    // 浏览器不支持该采样率时重建（手势已发生，允许重建）
+    if (audioCtx.sampleRate !== cfg.rate) {
+      try {
+        const old = audioCtx;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: cfg.rate });
+        await audioCtx.resume();
+        old.close();
+      } catch (e) { /* 用默认率，音高可能略有偏差 */ }
+    }
+    setupGraph();
+    running = true; startBtn.disabled = true; stopBtn.disabled = false;
+    statusEl.textContent = "播放中";
+    infoEl.textContent = cfg.rate + "Hz / " + cfg.channels + "ch";
+    return;
+  }
+  // 二进制 PCM(int16) 写入环形缓冲
+  const arr = new Int16Array(ev.data);
+  for (let i = 0; i < arr.length; i++) pending.push(arr[i] / 32768);
+  const max = cfg.rate * cfg.channels * 2;     // 最多缓存 ~2s
+  if (pending.length - readPos > max) {
+    const drop = pending.length - readPos - max;
+    pending.splice(0, drop); readPos -= drop;
+  }
+}
+
+function setupGraph() {
+  scriptNode = audioCtx.createScriptProcessor(4096, 0, cfg.channels);
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = parseFloat(volEl.value);
+
+  scriptNode.onaudioprocess = (e) => {
+    const out = e.outputBuffer, frames = out.length;
+    for (let c = 0; c < cfg.channels; c++) {
+      const ch = out.getChannelData(c);
+      for (let i = 0; i < frames; i++) {
+        const idx = readPos + i * cfg.channels + c;
+        ch[i] = (idx < 0 || idx >= pending.length) ? 0 : pending[idx];
+      }
+    }
+    readPos += frames * cfg.channels;
+    if (readPos > pending.length * 0.5) { pending.splice(0, readPos); readPos = 0; }
+  };
+  scriptNode.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+}
+
+volEl.oninput = () => { if (gainNode) gainNode.gain.value = parseFloat(volEl.value); };
+
+stopBtn.onclick = () => {
+  if (ws) ws.close();
+  running = false;
+  if (scriptNode) { try { scriptNode.disconnect(); } catch (e) {} scriptNode = null; }
+  if (gainNode)   { try { gainNode.disconnect(); }   catch (e) {} gainNode = null; }
+  if (audioCtx) audioCtx.suspend();
+  pending = []; readPos = 0;
+  statusEl.textContent = "已停止"; startBtn.disabled = false; stopBtn.disabled = true;
+};
+</script>
+</body>
+</html>
