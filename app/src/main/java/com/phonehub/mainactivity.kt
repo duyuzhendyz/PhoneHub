@@ -508,6 +508,7 @@ class MainActivity : AppCompatActivity() {
         try { pcAudioWebView?.destroy() } catch (_: Exception) {}
         pcAudioWebView = null
         ConnectionManager.cancelPcMediaNotification()
+        ConnectionManager.setPcAudioKeepAlive(false)
         instance = null
         super.onDestroy()
     }
@@ -3694,7 +3695,14 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun setPlaying(playing: Boolean) {
             ConnectionManager.pcMediaPlaying = playing
+            // 播放期间持有唤醒/WiFi 锁，保证切后台/息屏后仍在收听
+            ConnectionManager.setPcAudioKeepAlive(playing)
             ConnectionManager.updatePcMediaNotification()
+        }
+
+        @JavascriptInterface
+        fun setMedia(title: String, artist: String, album: String, cover: String, status: String) {
+            ConnectionManager.updatePcMediaFromWeb(title, artist, album, cover, status)
         }
 
         @JavascriptInterface

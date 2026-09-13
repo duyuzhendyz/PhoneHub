@@ -3253,6 +3253,69 @@ object ConnectionManager {
         } catch (_: Exception) {}
     }
 
+    // ============================== 电脑声音后台保活锁 ==============================
+
+    private var pcAudioWakeLock: android.os.PowerManager.WakeLock? = null
+    private var pcAudioWifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+    /**
+     * 电脑声音播放期间持有 唤醒锁 + WiFi 锁：
+     * 防止切后台/息屏后 CPU 休眠、WiFi 省电导致 WebSocket 断流、音频停播。
+     */
+    @Suppress("DEPRECATION")
+    fun setPcAudioKeepAlive(active: Boolean) {
+        try {
+            if (active) {
+                val ctx = context ?: return
+                if (pcAudioWakeLock?.isHeld != true) {
+                    val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                    val wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "PhoneHub:PcAudio")
+                    wl.setReferenceCounted(false)
+                    wl.acquire()
+                    pcAudioWakeLock = wl
+                }
+                if (pcAudioWifiLock?.isHeld != true) {
+                    val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE)
+                        as android.net.wifi.WifiManager
+                    val lock = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        wm.createWifiLock(
+                            android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "PhoneHub:PcAudioWifi")
+                    } else {
+                        wm.createWifiLock(
+                            android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "PhoneHub:PcAudioWifi")
+                    }
+                    lock.setReferenceCounted(false)
+                    lock.acquire()
+                    pcAudioWifiLock = lock
+                }
+            } else {
+                try { if (pcAudioWakeLock?.isHeld == true) pcAudioWakeLock?.release() } catch (_: Exception) {}
+                pcAudioWakeLock = null
+                try { if (pcAudioWifiLock?.isHeld == true) pcAudioWifiLock?.release() } catch (_: Exception) {}
+                pcAudioWifiLock = null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "电脑声音保活锁设置失败", e)
+        }
+    }
+
+    /** 网页实时媒体信息 → 刷新电脑声音通知（标题/艺术家/封面），使通知跟随当前播放的歌曲 */
+    fun updatePcMediaFromWeb(title: String, artist: String, album: String,
+                             coverDataUrl: String, status: String) {
+        pcMediaTitle = title.ifEmpty { "未检测到媒体播放" }
+        pcMediaArtist = if (artist.isNotEmpty()) artist else "电脑声音播放"
+        if (coverDataUrl.isNotEmpty()) {
+            try {
+                val comma = coverDataUrl.indexOf(',')
+                val b64 = if (comma >= 0) coverDataUrl.substring(comma + 1) else coverDataUrl
+                pcMediaCover = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+            } catch (_: Exception) { pcMediaCover = null }
+        } else {
+            pcMediaCover = null
+        }
+        if (pcMediaNotifShown) updatePcMediaNotification()
+    }
+
     // ============================== 电脑摄像头画面拉取（save.md 功能8）==============================
 
     /**

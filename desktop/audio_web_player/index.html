@@ -27,13 +27,11 @@
   .mstatus.playing { color: #36d07b; }
 
   .controls { margin-top: 26px; }
-  /* 主按钮：播放中 / 开始播放电脑声音（随状态切换文字） */
   #toggleBtn {
     width: 100%; padding: 15px; font-size: 16px; font-weight: 600;
     color: #fff; background: #2f6df0; border: none; border-radius: 12px;
   }
   #toggleBtn.paused { background: #2a2f37; color: #cfd6df; }
-  /* 上一曲 / 下一曲 */
   .skipRow { margin-top: 12px; display: flex; gap: 12px; }
   .skipRow button {
     flex: 1; padding: 13px; font-size: 15px; color: #cfd6df;
@@ -69,10 +67,21 @@
 
 <script>
 let audioCtx = null, scriptNode = null, gainNode = null, ws = null;
-let pending = [], readPos = 0, cfg = null, running = false;
+let pending = [], readPos = 0, cfg = null;
+let running = false;        // 手机端是否正在播放
+let userPaused = false;     // 用户主动暂停（重连时不自动恢复）
+let lastAudioAt = 0;        // 最近一次「有声音」的时间戳
+let lastMsgAt = 0;          // 最近一次收到任意帧的时间戳
+let reconnectDelay = 1000, reconnectTimer = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status"), infoEl = $("info");
+
+// ===== 安卓 JS 桥（普通浏览器打开时为 undefined，需容错） =====
+function brSetPlaying(v) { try { if (window.PcAudioBridge) PcAudioBridge.setPlaying(!!v); } catch (e) {} }
+function brSetMedia(t, a, al, c, s) { try { if (window.PcAudioBridge) PcAudioBridge.setMedia(t || "", a || "", al || "", c || "", s || ""); } catch (e) {} }
+function brPrev() { try { if (window.PcAudioBridge) PcAudioBridge.prev(); } catch (e) {} }
+function brNext() { try { if (window.PcAudioBridge) PcAudioBridge.next(); } catch (e) {} }
 
 function updateToggleBtn() {
   const btn = $("toggleBtn");
@@ -92,10 +101,6 @@ function ensureCtx(rate) {
     old.close();
   }
   return audioCtx;
-}
-
-function tryResume() {
-  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
 }
 
 function setupGraph() {
@@ -119,53 +124,68 @@ function setupGraph() {
   gainNode.connect(audioCtx.destination);
 }
 
+// ===== 连接（含断线自动重连，保证切后台/息屏后能恢复）=====
 function connect() {
-  if (running && ws) return;
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;  // 正在连接/已连接
   statusEl.textContent = "连接中…";
   const proto = (location.protocol === "https:") ? "wss://" : "ws://";
-  const wsPort = 4599;                      // 音频 WebSocket 端口（网页在 4598）
-  ws = new WebSocket(proto + location.hostname + ":" + wsPort + "/audio");
+  const wsPort = 4599;
+  try {
+    ws = new WebSocket(proto + location.hostname + ":" + wsPort + "/audio");
+  } catch (e) { onSocketDown("连接失败"); return; }
   ws.binaryType = "arraybuffer";
-  ws.onopen   = () => { statusEl.textContent = "已连接，正在收听…"; };
+  ws.onopen = () => { reconnectDelay = 1000; lastMsgAt = Date.now(); statusEl.textContent = "已连接"; };
   ws.onmessage = onMsg;
-  ws.onclose  = () => { statusEl.textContent = "已断开"; running = false; updateToggleBtn(); };
-  ws.onerror  = () => { statusEl.textContent = "连接错误（确认电脑端 4598 已开放、防火墙放行）"; };
+  ws.onclose = () => onSocketDown("已断开");
+  ws.onerror = () => onSocketDown("连接错误");
+}
+
+function onSocketDown(msg) {
+  statusEl.textContent = msg + "，正在重连…";
+  if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+  scheduleReconnect();
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 8000);
 }
 
 async function onMsg(ev) {
-  if (typeof ev.data === "string") {        // 文本帧：config / media_info / media_status
-    const msg = JSON.parse(ev.data);
-    if (msg.type === "media_info") {        // 换曲：完整信息（含封面）
-      updateMedia(msg);
-      return;
-    }
-    if (msg.type === "media_status") {      // 仅播放状态变化：轻量帧，不重发封面
-      updateMedia({ status: msg.status });
-      return;
-    }
-    // 配置帧 → 自动开始播放（无需手动点击）
+  lastMsgAt = Date.now();
+  if (typeof ev.data === "string") {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg.type === "media_info") { updateMedia(msg); return; }
+    if (msg.type === "media_status") { updateMedia({ status: msg.status }); return; }
+    // 配置帧
     cfg = msg;
     ensureCtx(cfg.rate);
-    await audioCtx.resume();
+    if (!userPaused) { try { await audioCtx.resume(); } catch (e) {} }
     setupGraph();
-    running = true;
+    running = !userPaused;
     updateToggleBtn();
-    statusEl.textContent = "正在收听电脑声音";
     infoEl.textContent = cfg.rate + "Hz / " + cfg.channels + "ch";
-    // 若仍被系统挂起（极严格自动播放策略），监听首次触摸恢复
+    if (running) brSetPlaying(true);
     if (audioCtx.state === "suspended") {
       statusEl.textContent = "轻触屏幕任意处开始播放";
       document.addEventListener("touchstart", () => {
-        tryResume();
+        try { audioCtx.resume(); } catch (e) {}
         if (running) statusEl.textContent = "正在收听电脑声音";
       }, { once: true });
+    } else {
+      statusEl.textContent = "正在收听电脑声音";
     }
     return;
   }
-  // 二进制 PCM(int16) 写入环形缓冲
+  // 二进制 PCM(int16)：写入缓冲并检测「是否有声音」
   const arr = new Int16Array(ev.data);
+  let peak = 0;
+  for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (v > peak) peak = v; else if (-v > peak) peak = -v; }
+  if (peak > 400) lastAudioAt = Date.now();
   for (let i = 0; i < arr.length; i++) pending.push(arr[i] / 32768);
-  const max = cfg.rate * cfg.channels * 2;     // 最多缓存 ~2s
+  const max = cfg.rate * cfg.channels * 2;
   if (pending.length - readPos > max) {
     const drop = pending.length - readPos - max;
     pending.splice(0, drop); readPos -= drop;
@@ -174,28 +194,24 @@ async function onMsg(ev) {
 
 // ===== 供网页按钮 / 通知栏调用 =====
 window.pcAudioToggle = function () {
-  if (!audioCtx) return;                 // 尚未连接，忽略
+  if (!audioCtx) return;
   if (running) {
     try { audioCtx.suspend(); } catch (e) {}
-    running = false;
+    running = false; userPaused = true;
   } else {
     try { audioCtx.resume(); } catch (e) {}
-    running = true;
+    running = true; userPaused = false;
   }
   updateToggleBtn();
-  try { if (window.PcAudioBridge) PcAudioBridge.setPlaying(running); } catch (e) {}
+  brSetPlaying(running);
 };
 
-window.pcAudioPrev = function () {
-  try { if (window.PcAudioBridge) PcAudioBridge.prev(); } catch (e) {}
-};
+window.pcAudioPrev = function () { brPrev(); };
+window.pcAudioNext = function () { brNext(); };
 
-window.pcAudioNext = function () {
-  try { if (window.PcAudioBridge) PcAudioBridge.next(); } catch (e) {}
-};
-
-// ===== 媒体信息展示 =====
+// ===== 媒体信息展示 + 上报给安卓通知 =====
 let mediaState = { title: "", artist: "", album: "", thumbnail: "", status: "stopped" };
+let lastMediaCore = "";
 
 function updateMedia(m) {
   if (m.title !== undefined)     mediaState.title = m.title;
@@ -204,17 +220,22 @@ function updateMedia(m) {
   if (m.thumbnail !== undefined) mediaState.thumbnail = m.thumbnail;
   if (m.status !== undefined)    mediaState.status = m.status;
 
+  // 曲目变化时把最新媒体信息上报给安卓，用于实时刷新通知栏
+  const core = (mediaState.title || "") + "|" + (mediaState.artist || "") + "|" +
+               (mediaState.album || "") + "|" + (mediaState.thumbnail || "").length;
+  if (core !== lastMediaCore) {
+    lastMediaCore = core;
+    brSetMedia(mediaState.title, mediaState.artist, mediaState.album, mediaState.thumbnail, mediaState.status);
+  }
+
   const mediaEl = $("media");
   mediaEl.classList.remove("hidden");
-  const st = $("mStatus");
   const stopped = (mediaState.status === "stopped"
                    || (!mediaState.title && !mediaState.artist && !mediaState.thumbnail));
   if (stopped) {
     $("mTitle").textContent = mediaState.title || "未检测到媒体播放";
     $("mArtist").textContent = mediaState.artist || "";
     if ($("cover").style.display !== "none") $("cover").style.display = "none";
-    st.textContent = "未播放";
-    st.classList.remove("playing");
     return;
   }
   if (mediaState.thumbnail) {
@@ -225,9 +246,33 @@ function updateMedia(m) {
   }
   $("mTitle").textContent = mediaState.title || "未知曲目";
   $("mArtist").textContent = (mediaState.artist || "") + (mediaState.album ? " · " + mediaState.album : "");
-  if (mediaState.status === "paused") { st.textContent = "已暂停"; st.classList.remove("playing"); }
-  else { st.textContent = "播放中"; st.classList.add("playing"); }
 }
+
+// ===== 每秒刷新：真实播放状态（按是否有声音判断，避免「在放却显示已暂停」）=====
+setInterval(() => {
+  const now = Date.now();
+  // 播放状态：最近 2 秒内收到过有声帧即视为播放中
+  const playing = (now - lastAudioAt) < 2000;
+  const st = $("mStatus");
+  if (st) {
+    if (playing) { st.textContent = "播放中"; st.classList.add("playing"); }
+    else { st.textContent = mediaState.status === "stopped" ? "未播放" : "已暂停"; st.classList.remove("playing"); }
+  }
+  if (ws && ws.readyState === 1) {
+    statusEl.textContent = playing ? "正在收听电脑声音" : "已连接（电脑端暂无声音）";
+    // 连接超时（掉线但未触发 close）：主动重连
+    if (now - lastMsgAt > 8000) onSocketDown("连接超时");
+  } else if (!reconnectTimer && (!ws || ws.readyState === 3)) {
+    scheduleReconnect();
+  }
+}, 1000);
+
+// 回到前台时恢复音频上下文 / 断线重连
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  try { if (audioCtx && !userPaused) audioCtx.resume(); } catch (e) {}
+  if (!ws || ws.readyState > 1) connect();
+});
 
 updateToggleBtn();
 connect();

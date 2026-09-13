@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 电脑声音后台播放：WiFi 锁需要（配合 WAKE_LOCK，防止息屏后断流） -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
     <!-- 存储：targetSdk 33+ 下此权限无效，仅对 Android 10-12 有效 -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
