@@ -529,6 +529,107 @@ object ConnectionManager {
         }
     }
 
+    /** 目录是否就是系统公共 Download（是的话无需再发布，避免自我拷贝） */
+    private fun isPublicDownloadDir(dir: File): Boolean {
+        val pub = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        return try {
+            dir.canonicalPath == pub.canonicalPath
+        } catch (_: Exception) {
+            dir.absolutePath == pub.absolutePath
+        }
+    }
+
+    /**
+     * 把接收完成的文件发布到「系统 Download 文件夹」。
+     *
+     * 为什么必须走 MediaStore：应用 targetSdk=36，在 Android 10+ 强制 Scoped Storage，
+     * 裸 File 往 /sdcard/Download 写会抛 EACCES（这正是之前「只传 64KB 就卡暂停」的根因）。
+     * MediaStore 是官方通道，**不需要申请任何存储权限**，写入的文件所有文件管理器都能看到——
+     * 项目里「文件管理→下载电脑文件」用的就是同一套路。Android 9 及以下没有 Scoped Storage，
+     * 直接复制文件即可。
+     *
+     * @return 成功返回最终文件名（重名时系统会自动改名），失败返回 null
+     */
+    private fun publishToPublicDownload(src: File, displayName: String): String? {
+        val ctx = context ?: return null
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val resolver = ctx.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, guessMimeType(displayName))
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+                try {
+                    src.inputStream().use { ins ->
+                        val os = resolver.openOutputStream(uri)
+                            ?: throw java.io.IOException("MediaStore openOutputStream 返回 null")
+                        os.use { out -> ins.copyTo(out, 256 * 1024) }
+                    }
+                    resolver.update(
+                        uri,
+                        ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                        null, null
+                    )
+                } catch (e: Exception) {
+                    // 别留一个半截的隐藏条目
+                    try { resolver.delete(uri, null, null) } catch (_: Exception) {}
+                    throw e
+                }
+                resolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { c -> if (c.moveToFirst()) c.getString(0) else displayName } ?: displayName
+            } else {
+                @Suppress("DEPRECATION")
+                val destDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                destDir.mkdirs()
+                var target = File(destDir, displayName)
+                val base = displayName.substringBeforeLast('.', displayName)
+                val ext = displayName.substringAfterLast('.', "")
+                var i = 1
+                while (target.exists()) {
+                    target = File(destDir, if (ext.isEmpty()) "$base($i)" else "$base($i).$ext")
+                    i++
+                }
+                src.inputStream().use { ins ->
+                    target.outputStream().use { out -> ins.copyTo(out, 256 * 1024) }
+                }
+                target.name
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "publishToPublicDownload 失败: ${e.message}")
+            null
+        }
+    }
+
+    private fun guessMimeType(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: "application/octet-stream"
+    }
+
+    /** 在系统 Download（MediaStore）里按文件名找回已发布的文件，供传输历史「打开」使用 */
+    fun findPublicDownloadUri(fileName: String): Uri? {
+        val ctx = context ?: return null
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return null
+        return try {
+            ctx.contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns._ID),
+                "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                arrayOf(fileName),
+                "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+            )?.use { c ->
+                if (c.moveToFirst()) android.content.ContentUris.withAppendedId(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)
+                ) else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun hasReceivedPcCpu(): Boolean {
         return userConnectedIntent && lastPcHeartbeatAt > 0L
     }
@@ -2909,15 +3010,26 @@ object ConnectionManager {
                         // 通知显示"已暂停"状态（仍 ongoing）
                         updateFileTransferNotification(fileName, received, fileSize, paused = true)
                     } else if (received >= fileSize) {
-                        // 正常完成
+                        // 正常完成。分两步：先落到「可写的暂存目录」（保证断点续传能随机写），
+                        // 收完后再发布到系统 Download（走 MediaStore），然后删掉暂存副本——
+                        // 这样文件在系统 Download 里任何文件管理器都能看到，又不长期占两份空间。
                         progressFile.delete()
                         resumeInfo = null
                         sendAck(fileId)
                         Log.i(TAG, "startReceiveFile: 下载完成, received=$received")
                         LogUtil.connI("PC→手机 接收完成: $fileName ($received B)")
-                        showToast("文件接收完成: $fileName → ${dir.absolutePath}")
+                        val published: String? =
+                            if (isPublicDownloadDir(dir)) null else publishToPublicDownload(outFile, fileName)
+                        if (published != null) {
+                            try { outFile.delete() } catch (_: Exception) {}
+                            try { progressFile.delete() } catch (_: Exception) {}
+                            LogUtil.connI("PC→手机 已发布到系统 Download: $published")
+                            showToast("已保存到 Download: $published")
+                        } else {
+                            showToast("文件接收完成: $fileName → ${outFile.absolutePath}")
+                        }
                         _transferCompleted.value = true
-                        _completedTransfer.tryEmit(CompletedTransfer(fileName, false))
+                        _completedTransfer.tryEmit(CompletedTransfer(published ?: fileName, false))
                         _fileTransferProgress.value = null
                         // M1/S4: 只在应用不在前台时显示系统通知，前台仅用Toast即可
                         val ctx = context

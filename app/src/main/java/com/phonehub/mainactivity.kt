@@ -1303,7 +1303,25 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "无法打开文件: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             } else {
-                Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show()
+                // 接收完成后文件已发布到系统 Download（不在暂存目录里了），
+                // 先按文件名从 MediaStore 找回再打开，最后才报「文件不存在」
+                val pubUri = ConnectionManager.findPublicDownloadUri(item.text)
+                if (pubUri != null) {
+                    try {
+                        val ext = item.text.substringAfterLast('.', "").lowercase()
+                        val mime = android.webkit.MimeTypeMap.getSingleton()
+                            .getMimeTypeFromExtension(ext) ?: "*/*"
+                        startActivity(Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(pubUri, mime)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "无法打开文件: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    Toast.makeText(this, "文件不存在", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
