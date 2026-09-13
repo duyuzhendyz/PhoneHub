@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QSl
 
 from styles import dark_msg_box
 from qfluentwidgets import (CardWidget, TitleLabel, BodyLabel, SubtitleLabel,
-                            PushButton, PrimaryPushButton, setFont,
+                            PushButton, PrimaryPushButton, setFont, FlowLayout,
                             InfoBar, InfoBarPosition)
 
 try:
@@ -99,16 +99,17 @@ class ScreenMirrorPage(QWidget):
         self.svc_stat_label.setWordWrap(True)
         svc_layout.addWidget(self.svc_stat_label)
 
-        svc_btn_row = QHBoxLayout()
-        svc_btn_row.setSpacing(10)
+        svc_btn_flow = FlowLayout()
+        svc_btn_flow.setSpacing(10)
         self.btn_svc_start = PrimaryPushButton("启动投屏服务")
         self.btn_svc_stop = PushButton("停止投屏服务")
         self.btn_live_window = PushButton("打开手机屏幕窗口")
         self.btn_live_web = PushButton("浏览器打开 /live")
         for b in (self.btn_svc_start, self.btn_svc_stop, self.btn_live_window, self.btn_live_web):
-            svc_btn_row.addWidget(b)
-        svc_btn_row.addStretch()
-        svc_layout.addLayout(svc_btn_row)
+            b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            b.setMinimumHeight(33)
+            svc_btn_flow.addWidget(b)
+        svc_layout.addLayout(svc_btn_flow)
         layout.addWidget(svc_frame)
 
         # ---------- 卡片 2：本次投屏 ----------
@@ -119,17 +120,16 @@ class ScreenMirrorPage(QWidget):
 
         run_layout.addWidget(SubtitleLabel("本次投屏"))
 
-        run_btn_row = QHBoxLayout()
-        run_btn_row.setSpacing(10)
+        run_btn_flow = FlowLayout()
+        run_btn_flow.setSpacing(10)
         self.phone_to_pc_btn = PrimaryPushButton("手机投屏到电脑")
-        run_btn_row.addWidget(self.phone_to_pc_btn)
         self.rec_btn = PushButton("● 开始录制")
-        self.rec_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        run_btn_row.addWidget(self.rec_btn)
         self.btn_open_output = PushButton("打开录制目录")
-        self.btn_open_output.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        run_btn_row.addWidget(self.btn_open_output)
-        run_layout.addLayout(run_btn_row)
+        for b in (self.phone_to_pc_btn, self.rec_btn, self.btn_open_output):
+            b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            b.setMinimumHeight(33)
+            run_btn_flow.addWidget(b)
+        run_layout.addLayout(run_btn_flow)
 
         self.rec_status_label = BodyLabel("录制：未开始（默认不录制，点「开始录制」或窗口上的录制键）")
         self.rec_status_label.setWordWrap(True)
@@ -163,7 +163,8 @@ class ScreenMirrorPage(QWidget):
         vol_row.addStretch()
         control_layout.addLayout(vol_row)
 
-        btn_row = QHBoxLayout()
+        btn_flow = FlowLayout()
+        btn_flow.setSpacing(10)
         self.btn_lock = PushButton("锁屏")
         self.btn_back = PushButton("返回")
         self.btn_home = PushButton("主屏")
@@ -173,9 +174,10 @@ class ScreenMirrorPage(QWidget):
         self.btn_phone_screenshot = PushButton("手机截图")
         for b in (self.btn_lock, self.btn_back, self.btn_home, self.btn_recents,
                   self.btn_notif_panel, self.btn_control_center, self.btn_phone_screenshot):
-            btn_row.addWidget(b)
-        btn_row.addStretch()
-        control_layout.addLayout(btn_row)
+            b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            b.setMinimumHeight(33)
+            btn_flow.addWidget(b)
+        control_layout.addLayout(btn_flow)
         layout.addWidget(control_frame)
 
         # ---------- 卡片 4：反方向（电脑→手机）----------
@@ -378,6 +380,7 @@ class ScreenMirrorPage(QWidget):
 
     def _on_status(self, d):
         self._status_busy = False
+        self._check_live_window_closed()
         try:
             if not d:
                 if not self._svc_ok:
@@ -433,6 +436,34 @@ class ScreenMirrorPage(QWidget):
                 self._no_client_polls = 0
         except Exception:
             pass
+
+    def _check_live_window_closed(self):
+        """检测「手机屏幕」窗口是否已关闭：关闭且正处于投屏时，自动停止手机端投屏。
+
+        窗口是独立进程（mirror_server._live_window_proc），关闭后进程退出；
+        这里每秒轮询一次它的存活状态，避免引入跨进程回调。
+        """
+        if not self._live_window_opened:
+            return
+        try:
+            alive = bool(self._svc_module and self._svc_module.is_live_window_open())
+        except Exception:
+            alive = True      # 拿不到状态就当成还开着，避免误停
+        if alive:
+            return
+
+        # 窗口已退出：收掉"已打开"标记，若正在投屏则自动停止手机端投屏
+        self._live_window_opened = False
+        if self._mirror_on:
+            try:
+                self.manager.send_action("mirror_stop")
+            except Exception:
+                pass
+            self._mirror_on = False
+            self.phone_to_pc_btn.setText("手机投屏到电脑")
+            InfoBar.info("已停止投屏",
+                         "手机屏幕窗口已关闭，已自动停止投屏。",
+                         parent=self, duration=3000, position=InfoBarPosition.TOP)
 
     # ==================== 投屏启停（电脑端发起）====================
 
@@ -680,7 +711,8 @@ class ScreenMirrorPage(QWidget):
                 pass
             elif src == "none":
                 dark_msg_box(self, QMessageBox.Warning, "声音传输失败",
-                             "电脑端无法捕获系统声音（sounddevice loopback 与系统回环设备都不可用）。\n\n"
+                             "电脑端无法捕获系统声音（pyaudiowpatch WASAPI loopback、ctypes Core Audio "
+                             "与系统回环设备都不可用）。\n\n"
                              "请尝试：\n1. 确认电脑正在播放声音；\n"
                              "2. 在 Windows『声音设置 → 更多声音设置 → 录制』中启用『立体声混音』；\n"
                              "3. 或安装虚拟音频线 VB-Cable 并把它设为默认回环源。")

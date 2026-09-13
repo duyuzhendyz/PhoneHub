@@ -1451,6 +1451,12 @@ def open_live_window():
     _open_live_window(force=True)
 
 
+def is_live_window_open():
+    """「手机屏幕」窗口进程是否还活着（用于桌面页检测"关窗口自动停止投屏"）。"""
+    global _live_window_proc
+    return _live_window_proc is not None and _live_window_proc.poll() is None
+
+
 if __name__ == "__main__":
     _ensure_threads()
     print("=" * 50)
