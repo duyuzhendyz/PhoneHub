@@ -210,7 +210,7 @@ class ConnectionManager(QObject):
         # 电脑→手机声音传输：电脑端捕获系统播放声音（WASAPI loopback，非麦克风）
         self._pc_audio_running = False
         self._pc_audio_thread = None
-        self._pc_audio_queue = deque(maxlen=200)  # 有界队列，连续推流
+        self._pc_audio_queue = deque(maxlen=60)  # 有界队列，连续推流；封顶约 5s 防止断流后延迟累积
         self._pc_audio_lock = threading.Lock()
         self._pc_audio_source = "none"  # none / loopback
 

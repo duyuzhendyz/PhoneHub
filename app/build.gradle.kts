@@ -127,4 +127,6 @@ dependencies {
     // AndroidX Preference (styles.xml 引用了相关属性)
     implementation("androidx.preference:preference-ktx:1.2.1")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+    // 电脑声音媒体通知：MediaStyle 显示封面大图（音乐播放器样式）
+    implementation("androidx.media:media:1.7.0")
 }

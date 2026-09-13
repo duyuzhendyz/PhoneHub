@@ -3180,6 +3180,8 @@ object ConnectionManager {
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
+                .setShowActionsInCompactView(0, 1, 2))
         pcMediaCover?.let {
             try {
                 val bmp = android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)
