@@ -18,13 +18,13 @@ class MediaNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
         Log.i("PhoneHub", "MediaNotificationReceiver: action=$action")
-        val cmd = when (action) {
-            ACTION_TOGGLE -> "media_play_pause"
-            ACTION_PREV -> "media_prev"
-            ACTION_NEXT -> "media_next"
-            else -> return
+        when (action) {
+            // 播放/暂停：切换手机端收听状态（由网页里的 AudioContext 控制，不暂停电脑端媒体）
+            ACTION_TOGGLE -> MainActivity.instance?.togglePcAudioPlayback()
+            // 上一曲 / 下一曲：直接发送媒体键给电脑端
+            ACTION_PREV -> ConnectionManager.sendMediaCommand("media_prev")
+            ACTION_NEXT -> ConnectionManager.sendMediaCommand("media_next")
         }
-        ConnectionManager.sendMediaCommand(cmd)
     }
 
     companion object {

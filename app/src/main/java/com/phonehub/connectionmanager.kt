@@ -1116,7 +1116,8 @@ object ConnectionManager {
                 // 供电脑声音媒体通知使用
                 pcMediaTitle = title.ifEmpty { "未检测到媒体播放" }
                 pcMediaArtist = if (artist.isNotEmpty()) artist else "电脑声音播放"
-                pcMediaPlaying = status != "paused"
+                // 注意：pcMediaPlaying 表示「手机端是否正在收听」，由用户在网页/通知里控制，
+                // 不随电脑端媒体自身的播放/暂停状态改变，避免退出界面后通知按钮含义错乱。
                 // 解析封面图 Base64
                 if (thumbnailB64.isNotEmpty()) {
                     try {

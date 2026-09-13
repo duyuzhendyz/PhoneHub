@@ -13,10 +13,11 @@
     background: #0f1216; color: #e8eaed; text-align: center;
   }
   h1 { font-size: 20px; margin: 8px 0 4px; }
-  .sub { color: #8b95a1; font-size: 13px; margin-bottom: 28px; }
-  #status { margin-top: 22px; font-size: 15px; padding: 12px; border-radius: 10px; background: #1a1f27; min-height: 20px; }
+  .sub { color: #8b95a1; font-size: 13px; margin-bottom: 26px; }
+  #status { margin-top: 18px; font-size: 15px; padding: 12px; border-radius: 10px; background: #1a1f27; min-height: 20px; }
   #info { margin-top: 10px; color: #8b95a1; font-size: 13px; }
-  .media { margin-top: 22px; display: flex; align-items: center; gap: 14px; background: #1a1f27; padding: 14px; border-radius: 12px; text-align: left; }
+
+  .media { margin-top: 20px; display: flex; align-items: center; gap: 14px; background: #1a1f27; padding: 14px; border-radius: 12px; text-align: left; }
   .media.hidden { display: none; }
   .cover { width: 72px; height: 72px; border-radius: 8px; background: #2a2f37; object-fit: cover; flex: 0 0 auto; }
   .meta { min-width: 0; }
@@ -24,11 +25,27 @@
   .martist { font-size: 13px; color: #8b95a1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mstatus { margin-top: 6px; font-size: 12px; color: #6b7480; }
   .mstatus.playing { color: #36d07b; }
+
+  .controls { margin-top: 26px; }
+  /* 主按钮：播放中 / 开始播放电脑声音（随状态切换文字） */
+  #toggleBtn {
+    width: 100%; padding: 15px; font-size: 16px; font-weight: 600;
+    color: #fff; background: #2f6df0; border: none; border-radius: 12px;
+  }
+  #toggleBtn.paused { background: #2a2f37; color: #cfd6df; }
+  /* 上一曲 / 下一曲 */
+  .skipRow { margin-top: 12px; display: flex; gap: 12px; }
+  .skipRow button {
+    flex: 1; padding: 13px; font-size: 15px; color: #cfd6df;
+    background: #1a1f27; border: none; border-radius: 12px;
+  }
+  .skipRow button:active { background: #232a33; }
+  #toggleBtn:active { filter: brightness(0.92); }
 </style>
 </head>
 <body>
   <h1>电脑声音实时收听</h1>
-  <div class="sub">打开本页自动收听电脑正在播放的声音（无需点击）</div>
+  <div class="sub">打开本页自动收听电脑正在播放的声音</div>
 
   <div id="status">连接中…</div>
   <div id="info"></div>
@@ -42,12 +59,28 @@
     </div>
   </div>
 
+  <div class="controls">
+    <button id="toggleBtn" onclick="pcAudioToggle()">开始播放电脑声音</button>
+    <div class="skipRow">
+      <button onclick="pcAudioPrev()">上一曲</button>
+      <button onclick="pcAudioNext()">下一曲</button>
+    </div>
+  </div>
+
 <script>
 let audioCtx = null, scriptNode = null, gainNode = null, ws = null;
 let pending = [], readPos = 0, cfg = null, running = false;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status"), infoEl = $("info");
+
+function updateToggleBtn() {
+  const btn = $("toggleBtn");
+  if (!btn) return;
+  btn.textContent = running ? "播放中" : "开始播放电脑声音";
+  if (running) btn.classList.remove("paused");
+  else btn.classList.add("paused");
+}
 
 function ensureCtx(rate) {
   if (!audioCtx) {
@@ -63,58 +96,6 @@ function ensureCtx(rate) {
 
 function tryResume() {
   if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
-}
-
-function connect() {
-  if (running) return;
-  statusEl.textContent = "连接中…";
-  const proto = (location.protocol === "https:") ? "wss://" : "ws://";
-  const wsPort = 4599;                      // 音频 WebSocket 端口（网页在 4598）
-  ws = new WebSocket(proto + location.hostname + ":" + wsPort + "/audio");
-  ws.binaryType = "arraybuffer";
-  ws.onopen   = () => { statusEl.textContent = "已连接，等待音频…"; };
-  ws.onmessage = onMsg;
-  ws.onclose  = () => { statusEl.textContent = "已断开"; running = false; };
-  ws.onerror  = () => { statusEl.textContent = "连接错误（确认电脑端 4598 已开放、防火墙放行）"; };
-}
-
-async function onMsg(ev) {
-  if (typeof ev.data === "string") {        // 文本帧：config / media_info / media_status
-    const msg = JSON.parse(ev.data);
-    if (msg.type === "media_info") {        // 换曲：完整信息（含封面）
-      updateMedia(msg);
-      return;
-    }
-    if (msg.type === "media_status") {      // 仅播放状态变化：轻量帧，不重发封面
-      updateMedia({ status: msg.status });
-      return;
-    }
-    // 配置帧 → 自动开始播放（无需手动点击）
-    cfg = msg;
-    ensureCtx(cfg.rate);
-    await audioCtx.resume();
-    setupGraph();
-    running = true;
-    statusEl.textContent = "播放中";
-    infoEl.textContent = cfg.rate + "Hz / " + cfg.channels + "ch";
-    // 若仍被系统挂起（极严格自动播放策略），监听首次触摸恢复
-    if (audioCtx.state === "suspended") {
-      statusEl.textContent = "轻触屏幕任意处开始播放";
-      document.addEventListener("touchstart", () => {
-        tryResume();
-        if (running) statusEl.textContent = "播放中";
-      }, { once: true });
-    }
-    return;
-  }
-  // 二进制 PCM(int16) 写入环形缓冲
-  const arr = new Int16Array(ev.data);
-  for (let i = 0; i < arr.length; i++) pending.push(arr[i] / 32768);
-  const max = cfg.rate * cfg.channels * 2;     // 最多缓存 ~2s
-  if (pending.length - readPos > max) {
-    const drop = pending.length - readPos - max;
-    pending.splice(0, drop); readPos -= drop;
-  }
 }
 
 function setupGraph() {
@@ -138,21 +119,85 @@ function setupGraph() {
   gainNode.connect(audioCtx.destination);
 }
 
-// 供安卓端「停止」按钮调用
-window.stopAudio = function () {
-  if (ws) ws.close();
-  running = false;
-  if (scriptNode) { try { scriptNode.disconnect(); } catch (e) {} scriptNode = null; }
-  if (gainNode)   { try { gainNode.disconnect(); }   catch (e) {} gainNode = null; }
-  if (audioCtx) audioCtx.suspend();
-  pending = []; readPos = 0;
-  statusEl.textContent = "已停止";
+function connect() {
+  if (running && ws) return;
+  statusEl.textContent = "连接中…";
+  const proto = (location.protocol === "https:") ? "wss://" : "ws://";
+  const wsPort = 4599;                      // 音频 WebSocket 端口（网页在 4598）
+  ws = new WebSocket(proto + location.hostname + ":" + wsPort + "/audio");
+  ws.binaryType = "arraybuffer";
+  ws.onopen   = () => { statusEl.textContent = "已连接，正在收听…"; };
+  ws.onmessage = onMsg;
+  ws.onclose  = () => { statusEl.textContent = "已断开"; running = false; updateToggleBtn(); };
+  ws.onerror  = () => { statusEl.textContent = "连接错误（确认电脑端 4598 已开放、防火墙放行）"; };
+}
+
+async function onMsg(ev) {
+  if (typeof ev.data === "string") {        // 文本帧：config / media_info / media_status
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "media_info") {        // 换曲：完整信息（含封面）
+      updateMedia(msg);
+      return;
+    }
+    if (msg.type === "media_status") {      // 仅播放状态变化：轻量帧，不重发封面
+      updateMedia({ status: msg.status });
+      return;
+    }
+    // 配置帧 → 自动开始播放（无需手动点击）
+    cfg = msg;
+    ensureCtx(cfg.rate);
+    await audioCtx.resume();
+    setupGraph();
+    running = true;
+    updateToggleBtn();
+    statusEl.textContent = "正在收听电脑声音";
+    infoEl.textContent = cfg.rate + "Hz / " + cfg.channels + "ch";
+    // 若仍被系统挂起（极严格自动播放策略），监听首次触摸恢复
+    if (audioCtx.state === "suspended") {
+      statusEl.textContent = "轻触屏幕任意处开始播放";
+      document.addEventListener("touchstart", () => {
+        tryResume();
+        if (running) statusEl.textContent = "正在收听电脑声音";
+      }, { once: true });
+    }
+    return;
+  }
+  // 二进制 PCM(int16) 写入环形缓冲
+  const arr = new Int16Array(ev.data);
+  for (let i = 0; i < arr.length; i++) pending.push(arr[i] / 32768);
+  const max = cfg.rate * cfg.channels * 2;     // 最多缓存 ~2s
+  if (pending.length - readPos > max) {
+    const drop = pending.length - readPos - max;
+    pending.splice(0, drop); readPos -= drop;
+  }
+}
+
+// ===== 供网页按钮 / 通知栏调用 =====
+window.pcAudioToggle = function () {
+  if (!audioCtx) return;                 // 尚未连接，忽略
+  if (running) {
+    try { audioCtx.suspend(); } catch (e) {}
+    running = false;
+  } else {
+    try { audioCtx.resume(); } catch (e) {}
+    running = true;
+  }
+  updateToggleBtn();
+  try { if (window.PcAudioBridge) PcAudioBridge.setPlaying(running); } catch (e) {}
 };
 
+window.pcAudioPrev = function () {
+  try { if (window.PcAudioBridge) PcAudioBridge.prev(); } catch (e) {}
+};
+
+window.pcAudioNext = function () {
+  try { if (window.PcAudioBridge) PcAudioBridge.next(); } catch (e) {}
+};
+
+// ===== 媒体信息展示 =====
 let mediaState = { title: "", artist: "", album: "", thumbnail: "", status: "stopped" };
 
 function updateMedia(m) {
-  // 合并增量（media_status 只带 status；media_info 带完整字段）
   if (m.title !== undefined)     mediaState.title = m.title;
   if (m.artist !== undefined)    mediaState.artist = m.artist;
   if (m.album !== undefined)     mediaState.album = m.album;
@@ -172,7 +217,6 @@ function updateMedia(m) {
     st.classList.remove("playing");
     return;
   }
-  // 仅当封面串真正变化时才重新设置 src，避免重复解码大图
   if (mediaState.thumbnail) {
     if ($("cover").src !== mediaState.thumbnail) $("cover").src = mediaState.thumbnail;
     if ($("cover").style.display !== "block") $("cover").style.display = "block";
@@ -181,10 +225,11 @@ function updateMedia(m) {
   }
   $("mTitle").textContent = mediaState.title || "未知曲目";
   $("mArtist").textContent = (mediaState.artist || "") + (mediaState.album ? " · " + mediaState.album : "");
-  if (mediaState.status === "paused") { st.textContent = "⏸ 已暂停"; st.classList.remove("playing"); }
-  else { st.textContent = "▮ 播放中"; st.classList.add("playing"); }
+  if (mediaState.status === "paused") { st.textContent = "已暂停"; st.classList.remove("playing"); }
+  else { st.textContent = "播放中"; st.classList.add("playing"); }
 }
 
+updateToggleBtn();
 connect();
 </script>
 </body>

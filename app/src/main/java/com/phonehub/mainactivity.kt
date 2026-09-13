@@ -26,6 +26,7 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebSettings
+import android.webkit.JavascriptInterface
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -88,6 +89,16 @@ class MainActivity : AppCompatActivity() {
     private var currentTab = 0
     private var volumeReceiver: BroadcastReceiver? = null  // 音量变化广播接收器（onDestroy 注销防泄漏）
     private val pageCache = HashMap<Int, View>()
+
+    // 电脑声音：常驻 WebView（退出界面后仍在后台播放），以及其后台容器
+    private var pcAudioWebView: WebView? = null
+    private var pcAudioHost: FrameLayout? = null
+    private var rootFrame: FrameLayout? = null
+
+    companion object {
+        // 供电脑声音媒体通知的「播放/暂停」按钮回调到当前 Activity
+        var instance: MainActivity? = null
+    }
     private var mirrorImageView: android.widget.ImageView? = null  // save.md 功能7 电脑画面显示
     private var cameraImageView: android.widget.ImageView? = null  // save.md 功能8 电脑摄像头显示
 
@@ -350,6 +361,8 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         titleText = findViewById(R.id.titleText)
         pageContainer = findViewById(R.id.pageContainer)
+        rootFrame = findViewById(R.id.rootFrame)
+        instance = this
 
         // IP/端口/Token 缓存
         val prefs = getSharedPreferences("phonehub_prefs", Context.MODE_PRIVATE)
@@ -491,6 +504,11 @@ class MainActivity : AppCompatActivity() {
             volumeReceiver?.let { unregisterReceiver(it) }
         } catch (_: IllegalArgumentException) {}
         volumeReceiver = null
+        // 电脑声音 WebView 随 Activity 销毁；销毁前取消媒体通知，避免残留「正在播放」
+        try { pcAudioWebView?.destroy() } catch (_: Exception) {}
+        pcAudioWebView = null
+        ConnectionManager.cancelPcMediaNotification()
+        instance = null
         super.onDestroy()
     }
 
@@ -810,9 +828,9 @@ class MainActivity : AppCompatActivity() {
         }
         currentTab = index
 
-        // 进入「电脑声音」页：确保 WebView 重新连上音频服务（缓存页再次进入时也刷新）
+        // 进入「电脑声音」页：把常驻 WebView 从后台容器移回页面（连接保持不变，后台继续播放）
         if (index == 17) {
-            reloadPcAudioWebView()
+            reparentAudioWebViewToPage()
         }
 
         // 进入投屏页时检测无障碍服务是否开启
@@ -890,10 +908,8 @@ class MainActivity : AppCompatActivity() {
             11 -> { // 文件管理页
                 // 按需加载，离开时无需特殊处理
             }
-            17 -> { // 电脑声音页（WebView 收听）
-                // 离开页即停止收听并取消媒体通知
-                ConnectionManager.cancelPcMediaNotification()
-                pageCache[17]?.findViewById<WebView>(R.id.pcAudioWebView)?.loadUrl("about:blank")
+            17 -> { // 电脑声音页（WebView 收听）：退出界面后仍在后台播放，不停止、不取消通知
+                reparentAudioWebViewToHost()
             }
         }
     }
@@ -957,7 +973,7 @@ class MainActivity : AppCompatActivity() {
         FuncInfo("文件管理", "📂", 11),
         FuncInfo("电源管理", "⚡", 14),
         FuncInfo("推送网页", "🌐", 15),
-        FuncInfo("电脑声音", "🔊", 17),
+        FuncInfo("电脑声音", "♪", 17),
         FuncInfo("设置", "⚙️", 16)
     )
 
@@ -3609,6 +3625,14 @@ class MainActivity : AppCompatActivity() {
     private fun getPcAudioWebView(): View {
         val v = LayoutInflater.from(this).inflate(R.layout.page_pc_audio, null)
         val web = v.findViewById<WebView>(R.id.pcAudioWebView)
+        configurePcAudioWebView(web)
+        pcAudioWebView = web
+        // 进入页即显示「电脑声音」媒体通知（收听期间常驻，后台也保留）
+        ConnectionManager.showPcMediaNotification()
+        return v
+    }
+
+    private fun configurePcAudioWebView(web: WebView) {
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -3624,20 +3648,64 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_NO_CACHE
         }
         web.webViewClient = WebViewClient()
+        // JS 桥：网页里的播放/暂停/上一曲/下一曲按钮调用它来控制手机端与电脑端
+        web.addJavascriptInterface(PcAudioBridge(), "PcAudioBridge")
         web.setBackgroundColor(0xFF1e1e1e.toInt())
         // 打开即加载电脑声音网页（网页内 WebSocket 自动连、AudioContext 自动播放）
         web.loadUrl(ConnectionManager.getPcAudioWebUrl())
-        // 进入页即显示「电脑声音」媒体通知（收听期间常驻，退出页时取消）
-        ConnectionManager.showPcMediaNotification()
-        return v
     }
 
-    /** 重新加载电脑声音网页（每次进入该页时调用，确保连接最新） */
-    private fun reloadPcAudioWebView() {
-        pageCache[17]?.findViewById<WebView>(R.id.pcAudioWebView)?.let { wv ->
-            wv.loadUrl(ConnectionManager.getPcAudioWebUrl())
+    /** 创建常驻后台容器（置于 mainContainer 之下被遮挡，但 WebView 仍挂载在窗口上继续出声） */
+    private fun ensurePcAudioHost(): FrameLayout {
+        if (pcAudioHost != null) return pcAudioHost!!
+        val host = FrameLayout(this)
+        val lp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ).apply { topMargin = dp(56) }
+        rootFrame?.addView(host, 0, lp)
+        pcAudioHost = host
+        return host
+    }
+
+    /** 离开电脑声音页：把 WebView 移入后台容器，连接与播放均保持 */
+    private fun reparentAudioWebViewToHost() {
+        val web = pcAudioWebView ?: return
+        val host = ensurePcAudioHost()
+        (web.parent as? ViewGroup)?.removeView(web)
+        host.addView(web, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+    }
+
+    /** 进入电脑声音页：把 WebView 从后台容器移回页面（连接保持不变） */
+    private fun reparentAudioWebViewToPage() {
+        val web = pcAudioWebView ?: return
+        val page = pageCache[17] as? FrameLayout ?: return
+        (web.parent as? ViewGroup)?.removeView(web)
+        page.addView(web, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+    }
+
+    /** 通知栏「播放/暂停」点击 → 切换手机端播放状态（调用网页里的 pcAudioToggle） */
+    fun togglePcAudioPlayback() {
+        pcAudioWebView?.evaluateJavascript("if(window.pcAudioToggle)pcAudioToggle();") { _ -> }
+    }
+
+    /** 网页 ↔ 原生 桥：网页按钮调用，用于同步播放状态与控制电脑媒体键 */
+    private class PcAudioBridge : Any() {
+        @JavascriptInterface
+        fun setPlaying(playing: Boolean) {
+            ConnectionManager.pcMediaPlaying = playing
+            ConnectionManager.updatePcMediaNotification()
         }
-        ConnectionManager.showPcMediaNotification()
+
+        @JavascriptInterface
+        fun prev() {
+            ConnectionManager.sendMediaCommand("media_prev")
+        }
+
+        @JavascriptInterface
+        fun next() {
+            ConnectionManager.sendMediaCommand("media_next")
+        }
     }
 
     /** 刷新推送网页页面的历史列表显示 */
