@@ -153,7 +153,9 @@ async def pump():
 # 2.5) 当前播放媒体信息（winsdk，写法与桌面端 connection_manager 一致）
 # ----------------------------------------------------------------------------
 latest_media = {}
-media_dirty = False
+media_dirty = False      # 曲目内容（标题/艺术家/专辑/封面）变化 → 推完整帧
+status_dirty = False     # 仅播放状态(playing/paused/stopped)变化 → 推轻量帧
+last_status = None
 _media_lock = threading.Lock()
 
 
@@ -216,7 +218,8 @@ def get_media_info():
 
 
 def media_thread():
-    last = None
+    last_core = None   # (title, artist, album, thumbnail) 用于判断是否换曲
+    global media_dirty, status_dirty, last_status
     import concurrent.futures as _cf
     while running:
         info = None
@@ -229,28 +232,32 @@ def media_thread():
             info = {"title": "未检测到媒体播放", "artist": "", "album": "",
                     "thumbnail": "", "status": "stopped"}
         with _media_lock:
-            if info != last:
+            core = (info.get("title"), info.get("artist"),
+                    info.get("album"), info.get("thumbnail"))
+            if core != last_core:            # 换曲 → 推完整帧（含封面）
                 latest_media.clear()
                 latest_media.update(info)
-                global media_dirty
                 media_dirty = True
-                last = info
+                last_core = core
+            if info.get("status") != last_status:   # 仅状态变化 → 推轻量帧
+                status_dirty = True
+                last_status = info.get("status")
         time.sleep(2)
 
 
 async def media_pump():
-    global media_dirty
-    last_sent = 0.0
+    global media_dirty, status_dirty, last_status
     while running:
-        now = time.time()
         with _media_lock:
-            dirty = media_dirty
+            md = media_dirty
             media_dirty = False
-            snap = dict(latest_media) if latest_media else None
-        # 内容变化即时推；否则每 2s 兜底重推，保证任何时刻连上的客户端都能拿到当前状态
-        if snap and (dirty or now - last_sent >= 2):
+            sd = status_dirty
+            status_dirty = False
+            full = dict(latest_media) if latest_media else None
+            st = last_status
+        if md and full:                       # 换曲：完整帧（带封面）
             try:
-                payload = json.dumps({"type": "media_info", **snap}, ensure_ascii=False)
+                payload = json.dumps({"type": "media_info", **full}, ensure_ascii=False)
             except Exception:
                 payload = None
             if payload:
@@ -259,8 +266,18 @@ async def media_pump():
                         q.put_nowait(payload)
                     except asyncio.QueueFull:
                         pass
-                last_sent = now
-        await asyncio.sleep(0.5)
+        elif sd:                              # 仅状态变化：极轻量帧，不附带封面
+            try:
+                payload = json.dumps({"type": "media_status", "status": st}, ensure_ascii=False)
+            except Exception:
+                payload = None
+            if payload:
+                for q in list(subscribers):
+                    try:
+                        q.put_nowait(payload)
+                    except asyncio.QueueFull:
+                        pass
+        await asyncio.sleep(0.3)
 
 
 # ----------------------------------------------------------------------------

@@ -82,10 +82,14 @@ startBtn.onclick = async () => {
 };
 
 async function onMsg(ev) {
-  if (typeof ev.data === "string") {        // 文本帧：config 或 media_info
+  if (typeof ev.data === "string") {        // 文本帧：config / media_info / media_status
     const msg = JSON.parse(ev.data);
-    if (msg.type === "media_info") {        // 当前播放曲目信息 → 仅更新卡片，绝不碰音频图
+    if (msg.type === "media_info") {        // 换曲：完整信息（含封面）
       updateMedia(msg);
+      return;
+    }
+    if (msg.type === "media_status") {      // 仅播放状态变化：轻量帧，不重发封面
+      updateMedia({ status: msg.status });
       return;
     }
     // 配置帧
@@ -146,23 +150,39 @@ stopBtn.onclick = () => {
   statusEl.textContent = "已停止"; startBtn.disabled = false; stopBtn.disabled = true;
 };
 
+let mediaState = { title: "", artist: "", album: "", thumbnail: "", status: "stopped" };
+
 function updateMedia(m) {
+  // 合并增量（media_status 只带 status；media_info 带完整字段）
+  if (m.title !== undefined)     mediaState.title = m.title;
+  if (m.artist !== undefined)    mediaState.artist = m.artist;
+  if (m.album !== undefined)     mediaState.album = m.album;
+  if (m.thumbnail !== undefined) mediaState.thumbnail = m.thumbnail;
+  if (m.status !== undefined)    mediaState.status = m.status;
+
   const mediaEl = $("media");
   mediaEl.classList.remove("hidden");
   const st = $("mStatus");
-  if (!m || m.status === "stopped" || (!m.title && !m.artist && !m.thumbnail)) {
-    $("mTitle").textContent = (m && m.title) ? m.title : "未检测到媒体播放";
-    $("mArtist").textContent = (m && m.artist) ? m.artist : "";
-    $("cover").style.display = "none";
+  const stopped = (mediaState.status === "stopped"
+                   || (!mediaState.title && !mediaState.artist && !mediaState.thumbnail));
+  if (stopped) {
+    $("mTitle").textContent = mediaState.title || "未检测到媒体播放";
+    $("mArtist").textContent = mediaState.artist || "";
+    if ($("cover").style.display !== "none") $("cover").style.display = "none";
     st.textContent = "未播放";
     st.classList.remove("playing");
     return;
   }
-  if (m.thumbnail) { $("cover").src = m.thumbnail; $("cover").style.display = "block"; }
-  else { $("cover").style.display = "none"; }
-  $("mTitle").textContent = m.title || "未知曲目";
-  $("mArtist").textContent = (m.artist || "") + (m.album ? " · " + m.album : "");
-  if (m.status === "paused") { st.textContent = "⏸ 已暂停"; st.classList.remove("playing"); }
+  // 仅当封面串真正变化时才重新设置 src，避免重复解码大图
+  if (mediaState.thumbnail) {
+    if ($("cover").src !== mediaState.thumbnail) $("cover").src = mediaState.thumbnail;
+    if ($("cover").style.display !== "block") $("cover").style.display = "block";
+  } else {
+    if ($("cover").style.display !== "none") $("cover").style.display = "none";
+  }
+  $("mTitle").textContent = mediaState.title || "未知曲目";
+  $("mArtist").textContent = (mediaState.artist || "") + (mediaState.album ? " · " + mediaState.album : "");
+  if (mediaState.status === "paused") { st.textContent = "⏸ 已暂停"; st.classList.remove("playing"); }
   else { st.textContent = "▮ 播放中"; st.classList.add("playing"); }
 }
 </script>
