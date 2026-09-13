@@ -73,6 +73,9 @@ class FileManagerPage(QWidget):
         actions_layout.addWidget(self.delete_btn)
         self.rename_btn = PushButton("重命名")
         actions_layout.addWidget(self.rename_btn)
+        self.grant_perm_btn = PushButton("授予存储权限")
+        self.grant_perm_btn.setVisible(False)  # 仅当手机端未授予存储权限时显示
+        actions_layout.addWidget(self.grant_perm_btn)
         actions_layout.addStretch()
         layout.addWidget(actions_frame)
 
@@ -111,6 +114,7 @@ class FileManagerPage(QWidget):
         self.download_btn.clicked.connect(self._download_selected)
         self.delete_btn.clicked.connect(self._delete_selected)
         self.rename_btn.clicked.connect(self._rename_selected)
+        self.grant_perm_btn.clicked.connect(self._grant_storage_permission)
         self._pending_open_after_download = None
         self._download_progress_dlg = None
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
@@ -414,16 +418,25 @@ class FileManagerPage(QWidget):
             tree_item.setData(0, Qt.UserRole, it)
             self.tree.addTopLevelItem(tree_item)
 
-    def _populate_from_json(self, resp_path, files):
+    def _populate_from_json(self, resp_path, files, need_perm=False):
         """处理 WiFi 通道返回的文件列表（JSON 格式）
         resp_path: 手机端响应中携带的路径，用于校验是否匹配当前请求路径
+        need_perm: 手机端是否缺少「所有文件访问权限」（用于显示授权按钮）
         """
         # 校验响应路径是否匹配当前路径（防止旧响应覆盖新视图）
         if resp_path and resp_path != self.current_path:
             return
+        # 手机端未授予存储权限时显示「授予存储权限」按钮（用户手动点击才跳转）
+        self.grant_perm_btn.setVisible(bool(need_perm))
         self.tree.clear()
         if not files:
-            self._show_placeholder("空目录")
+            if need_perm:
+                self._show_placeholder(
+                    "无法访问手机存储：未授予「所有文件访问权限」。\n"
+                    "点击上方「授予存储权限」按钮，在手机端授权后点「刷新」即可浏览全部文件。"
+                )
+            else:
+                self._show_placeholder("空目录")
             return
         import time
         # 排序：目录优先，按名称字母排序
@@ -442,6 +455,19 @@ class FileManagerPage(QWidget):
             tree_item = QTreeWidgetItem(display)
             tree_item.setData(0, Qt.UserRole, f)
             self.tree.addTopLevelItem(tree_item)
+
+    def _grant_storage_permission(self):
+        """请求手机端打开存储权限设置页（用户手动触发，不再每次连接自动跳转）"""
+        try:
+            self.manager.send_action("open_storage_settings", {})
+            self._show_message(
+                QMessageBox.Information, "提示",
+                "已在手机端打开存储权限设置页。\n请在手机上授予 PhoneHub「所有文件访问权限」"
+                "（设置 → 应用 → PhoneHub → 权限 → 所有文件访问权限），\n"
+                "返回本页后点击「刷新」即可浏览手机全部文件。"
+            )
+        except Exception as e:
+            self._show_message(QMessageBox.Warning, "错误", f"发送授权请求失败: {e}")
 
     def _go_up(self):
         if self.current_path == "/" or self.current_path == "/sdcard/":

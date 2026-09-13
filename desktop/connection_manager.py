@@ -113,7 +113,7 @@ class ConnectionManager(QObject):
     clipboard_sent = pyqtSignal()
     screenshot_received = pyqtSignal(str)
     app_list_received = pyqtSignal(list)
-    file_list_received = pyqtSignal(str, list)  # 文件列表（WiFi 通道）：path, files
+    file_list_received = pyqtSignal(str, list, bool)  # 文件列表（WiFi 通道）：path, files, need_storage_permission
     url_history_sync_received = pyqtSignal(list)  # URL 历史同步（list of {url, direction, timestamp}）
     phone_frame_received = pyqtSignal(bytes)  # 手机投屏画面帧 (JPEG bytes)
     camera_frame_received = pyqtSignal(bytes)  # 手机摄像头画面帧 (JPEG bytes)
@@ -585,7 +585,8 @@ class ConnectionManager(QObject):
             elif action == 'file_list':
                 files = body.get('files', [])
                 resp_path = body.get('path', '')
-                self.file_list_received.emit(resp_path, files)
+                need_perm = bool(body.get('need_storage_permission', False))
+                self.file_list_received.emit(resp_path, files, need_perm)
             elif action in ('open_url', 'url', 'url_push'):
                 url = body.get('url', '')
                 use_edge = body.get('use_edge', body.get('edge', body.get('via', True)))

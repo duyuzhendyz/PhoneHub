@@ -937,6 +937,14 @@ object ConnectionManager {
                 val path = data["path"]?.jsonPrimitive?.contentOrNull ?: "/"
                 handleFileListRequest(path)
             }
+            "open_storage_settings" -> {
+                // PC 端用户手动点击「授予存储权限」时才跳转，绝不自动跳转
+                val ctx = context
+                if (ctx != null) {
+                    Log.i(TAG, "收到 open_storage_settings，跳转存储权限设置页")
+                    openStorageSettings(ctx)
+                }
+            }
             "file_delete" -> {
                 val path = data["path"]?.jsonPrimitive?.contentOrNull ?: return
                 val isDir = data["is_dir"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -3365,7 +3373,7 @@ object ConnectionManager {
         scope.launch {
             try {
                 val ctx = context ?: run {
-                    sendEmptyFileList(path, "无上下文")
+                    sendEmptyFileList(path, false)
                     return@launch
                 }
 
@@ -3413,9 +3421,10 @@ object ConnectionManager {
                 }
 
                 if (files == null || files.isEmpty()) {
-                    sendEmptyFileList(usedPath, "无法访问路径或权限不足")
-                    // 提示用户去设置页面授权
-                    openStorageSettings(ctx)
+                    // 不再自动跳转系统设置页（避免每次连接都被弹到应用详情/设置页）
+                    // 改为上报 need_storage_permission，由 PC 端显示「授予存储权限」按钮，用户点按才跳转
+                    val needPerm = !hasStoragePermission()
+                    sendEmptyFileList(usedPath, needPerm)
                     return@launch
                 }
 
@@ -3423,7 +3432,7 @@ object ConnectionManager {
             } catch (e: Exception) {
                     Log.e(TAG, "File list failed", e)
                     // 错误时也尝试发送空列表避免死锁
-                    sendEmptyFileList(path, e.message ?: "未知错误")
+                    sendEmptyFileList(path, false)
                 }
         }
     }
@@ -3470,7 +3479,7 @@ object ConnectionManager {
         }
     }
 
-    private fun sendEmptyFileList(path: String, @Suppress("UNUSED_PARAMETER") reason: String = "") {
+    private fun sendEmptyFileList(path: String, needStoragePermission: Boolean = false) {
         scope.launch {
             try {
                 val msg = buildJsonMessage {
@@ -3479,6 +3488,7 @@ object ConnectionManager {
                         put("action", "file_list")
                         put("path", path)
                         put("files", buildJsonArray {})
+                        put("need_storage_permission", needStoragePermission)
                     }
                 }
                 sendRaw(msg.toString())
