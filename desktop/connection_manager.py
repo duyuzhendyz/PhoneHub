@@ -901,21 +901,7 @@ class ConnectionManager(QObject):
                     self.phone_frame_received.emit(frame_data)
             return jsonify({'status': 'ok'})
 
-        @self.app.route('/api/audio', methods=['GET'])
-        def get_audio():
-            self.log_phone_request("获取电脑音频")
-            """PC→手机声音传输：手机轮询拉取电脑音频 PCM 数据（从队列连续取出）"""
-            with self._pc_audio_lock:
-                chunks = []
-                total = 0
-                while self._pc_audio_queue and total < 65536:  # 单次最多回传 ~64KB（约 1.5s @44.1k 单声道）
-                    c = self._pc_audio_queue.popleft()
-                    chunks.append(c)
-                    total += len(c)
-                chunk = b''.join(chunks) if chunks else None
-            if chunk:
-                return Response(chunk, mimetype='application/octet-stream')
-            return ('', 204)
+        # PC→手机声音传输已迁移到独立端口 5435（见 _start_pc_audio_http_server），主服务不再提供 /api/audio
 
         @self.app.route('/api/pc_drives', methods=['GET'])
         def get_pc_drives():
@@ -1264,6 +1250,8 @@ class ConnectionManager(QObject):
         self.is_running = True
         self.server_thread = threading.Thread(target=self._run_server, daemon=True)
         self.server_thread.start()
+        # 启动独立端口 5435 的「电脑→手机」音频流服务（与 58627 主服务解耦）
+        threading.Thread(target=self._start_pc_audio_http_server, daemon=True).start()
         self._start_monitoring()
         # Cloudflare 隧道无需注册/轮询中继：手机通过公网地址直连本机 Flask
         # 先等待ADB连接（10秒），超时后切换到WiFi等待模式
@@ -2320,7 +2308,8 @@ class ConnectionManager(QObject):
         路径2：ctypes 直调 Core Audio（零第三方依赖回退）。
         路径3：pyaudio 的『立体声混音』回环输入设备（需在 Windows 启用立体声混音才走通）。
         三者都失败才置 _pc_audio_source='none' 提示，绝不静默回退麦克风。
-        输出固定 单声道 44100Hz int16，匹配手机端 AudioTrack 期望格式。"""
+        输出固定 立体声 48000Hz int16（参考手机→PC 最低音质档 48k 立体声），由 _to_stereo_48k 统一转换，
+        直接喂给手机端 5435 端口的 AudioTrack，避免单声道下混与 48k→44.1k 抽点降采样导致的呲啦/爆音。"""
         self._pc_audio_source = "none"
 
         # ===== 路径1：pyaudiowpatch WASAPI loopback（参照 1.py，推荐）=====
@@ -2336,13 +2325,22 @@ class ConnectionManager(QObject):
                 self.log(f"[audio] 无默认 WASAPI 回环设备 ({e})，回退 ctypes Core Audio")
                 self._pc_audio_source = "none"
                 raise
-            channels = int(dev["maxInputChannels"])
-            rate = int(dev["defaultSampleRate"])
             chunk = 4096
-            stream = p.open(format=pyaudio.paInt16, channels=channels, rate=rate,
-                            input=True, input_device_index=dev["index"],
-                            frames_per_buffer=chunk)
-            self.log(f"[audio] pyaudiowpatch loopback 已开启: {dev['name']} {rate}Hz/{channels}ch")
+            # 优先按手机期望的 48k 立体声开流（共享模式下 Windows 音频引擎会干净地重采样）；
+            # 若失败则退回设备原生格式，再交由 _to_stereo_48k 统一转成 48k 立体声。
+            want_rate, want_ch = 48000, 2
+            try:
+                stream = p.open(format=pyaudio.paInt16, channels=want_ch, rate=want_rate,
+                                input=True, input_device_index=dev["index"],
+                                frames_per_buffer=chunk)
+                cap_rate, cap_ch = want_rate, want_ch
+            except Exception as e:
+                self.log(f"[audio] 无法以 48k 立体声开流({e})，退回设备原生格式")
+                cap_rate = int(dev["defaultSampleRate"])
+                cap_ch = int(dev["maxInputChannels"])
+                stream = p.open(format=pyaudio.paInt16, channels=cap_ch, rate=cap_rate,
+                                input=True, input_device_index=dev["index"], frames_per_buffer=chunk)
+            self.log(f"[audio] pyaudiowpatch loopback 已开启: {dev['name']} 采集 {cap_rate}Hz/{cap_ch}ch → 输出 48k 立体声")
             silent_streak = 0
             while self._pc_audio_running:
                 try:
@@ -2356,18 +2354,15 @@ class ConnectionManager(QObject):
                 if not data:
                     time.sleep(0.005)
                     continue
-                mono = self._convert_pc_audio(data, channels, 16, rate)
-                if mono:
-                    with self._pc_audio_lock:
-                        self._pc_audio_queue.append(mono)
-                    peak = max((abs(x) for x in _arr.array('h', mono)), default=0)
-                    if peak < 50:
-                        silent_streak += 1
-                    else:
-                        silent_streak = 0
-                    if silent_streak >= 200:
-                        self.log("[audio] 已连续约 9 秒接近静音，请确认电脑正在播放声音。")
-                        silent_streak = 0
+                self._push_pc_audio_chunk(data, channels=cap_ch, rate=cap_rate)
+                peak = max((abs(x) for x in _arr.array('h', data)), default=0)
+                if peak < 50:
+                    silent_streak += 1
+                else:
+                    silent_streak = 0
+                if silent_streak >= 200:
+                    self.log("[audio] 已连续约 9 秒接近静音，请确认电脑正在播放声音。")
+                    silent_streak = 0
             try:
                 stream.stop_stream()
                 stream.close()
@@ -2445,18 +2440,15 @@ class ConnectionManager(QObject):
                 if not data:
                     time.sleep(0.005)
                     continue
-                mono = self._convert_pc_audio(data, channels, 16, rate)
-                if mono:
-                    with self._pc_audio_lock:
-                        self._pc_audio_queue.append(mono)
-                    peak = max((abs(x) for x in _arr.array('h', mono)), default=0)
-                    if peak < 50:
-                        silent_streak += 1
-                    else:
-                        silent_streak = 0
-                    if silent_streak >= 200:
-                        self.log("[audio] 已连续约 9 秒接近静音，请确认电脑正在播放声音。")
-                        silent_streak = 0
+                self._push_pc_audio_chunk(data, channels=channels, rate=rate)
+                peak = max((abs(x) for x in _arr.array('h', data)), default=0)
+                if peak < 50:
+                    silent_streak += 1
+                else:
+                    silent_streak = 0
+                if silent_streak >= 200:
+                    self.log("[audio] 已连续约 9 秒接近静音，请确认电脑正在播放声音。")
+                    silent_streak = 0
             try:
                 stream.stop_stream()
                 stream.close()
@@ -2476,23 +2468,108 @@ class ConnectionManager(QObject):
             self.log(f"[audio] 音频捕获异常: {e}")
             self._pc_audio_running = False
 
-    def _convert_pc_audio(self, raw, channels, bits, rate, target_rate=44100):
-        """把原始交错音频字节转成单声道 target_rate 的 int16 字节（给手机端 AudioTrack）。"""
+    def _start_pc_audio_http_server(self):
+        """独立端口 5435：把电脑系统声音（立体声 48k int16）流式推给手机，与 58627 主服务解耦。
+
+        手机端连接 http://<电脑IP>:5435/api/audio 轮询拉取 PCM 数据。"""
+        from flask import Flask, Response
+        audio_app = Flask('pc_audio_stream')
+        parent = self
+
+        @audio_app.route('/api/audio', methods=['GET'])
+        def get_audio():
+            with parent._pc_audio_lock:
+                chunks = []
+                total = 0
+                while parent._pc_audio_queue and total < 65536:  # 单次最多回传 ~64KB
+                    c = parent._pc_audio_queue.popleft()
+                    chunks.append(c)
+                    total += len(c)
+                chunk = b''.join(chunks) if chunks else None
+            if chunk:
+                return Response(chunk, mimetype='application/octet-stream')
+            return ('', 204)
+
+        @audio_app.route('/ping', methods=['GET'])
+        def ping():
+            return ('ok', 200)
+
         try:
-            import wasapi_loopback
-            ints = wasapi_loopback._convert_to_mono_int16(
-                raw, channels, bits, False, rate, target_rate)
-            if not ints:
-                return b""
+            self.log("电脑→手机音频服务启动中... 监听 0.0.0.0:5435")
+            audio_app.run(host='0.0.0.0', port=5435, debug=False, use_reloader=False, threaded=True)
+        except OSError as e:
+            self.log(f"[audio] 5435 音频服务启动失败（端口可能被占用）: {e}")
+        except Exception as e:
+            self.log(f"[audio] 5435 音频服务异常: {e}")
+
+    def _to_stereo_48k(self, raw, channels, bits, rate):
+        """任意格式原始交错 PCM → 立体声 48000Hz int16 字节（手机 AudioTrack 期望，参考手机→PC 最低档 48k 立体声）。"""
+        try:
             import array as _arr
-            return _arr.array('h', ints).tobytes()
+            if not raw:
+                return b""
+            if len(raw) % 2 != 0:
+                raw = raw[:-1]
+            if bits != 16:
+                return b""  # 仅支持 16bit PCM
+            s = _arr.array('h')
+            s.frombytes(raw)
+            n = len(s)
+            if n == 0:
+                return b""
+            if channels <= 0:
+                channels = 1
+            frames = n // channels
+            # 提取立体声（单声道则复制到右声道）
+            L = [0] * frames
+            R = [0] * frames
+            for f in range(frames):
+                base = f * channels
+                L[f] = s[base]
+                R[f] = s[base + 1] if channels >= 2 else s[base]
+            if rate != 48000:
+                L = self._resample_1ch(L, rate, 48000)
+                R = self._resample_1ch(R, rate, 48000)
+            out = _arr.array('h')
+            for i in range(len(L)):
+                out.append(L[i])
+                out.append(R[i])
+            return out.tobytes()
         except Exception:
             return b""
 
-    def _push_pc_audio_chunk(self, chunk):
-        """WASAPI loopback 捕获到的单声道 44100Hz int16 块入队，供 /api/audio 推流。"""
-        with self._pc_audio_lock:
-            self._pc_audio_queue.append(chunk)
+    def _resample_1ch(self, src, src_rate, dst_rate):
+        """单声道线性插值重采样（src_rate → dst_rate）。平滑无抽点爆音，足够『最低质量』档使用。"""
+        if not src:
+            return []
+        if src_rate == dst_rate:
+            return list(src)
+        ratio = dst_rate / float(src_rate)
+        out_len = int(round(len(src) * ratio))
+        out = [0] * out_len
+        for i in range(out_len):
+            pos = i / ratio
+            i0 = int(pos)
+            if i0 >= len(src) - 1:
+                out[i] = src[-1]
+            else:
+                frac = pos - i0
+                a = src[i0]
+                b = src[i0 + 1]
+                v = int(a + (b - a) * frac)
+                if v > 32767:
+                    v = 32767
+                elif v < -32768:
+                    v = -32768
+                out[i] = v
+        return out
+
+    def _push_pc_audio_chunk(self, raw, channels=1, bits=16, rate=44100):
+        """原始交错 PCM → 转立体声 48k int16 → 入队（供 5435 音频服务推流）。"""
+        stereo = self._to_stereo_48k(raw, channels, bits, rate)
+        if stereo:
+            with self._pc_audio_lock:
+                self._pc_audio_queue.append(stereo)
 
     def _kill_pc_process(self, pid):
         """结束电脑上的指定进程"""

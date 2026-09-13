@@ -3064,7 +3064,7 @@ object ConnectionManager {
 
     private var pcAudioJob: kotlinx.coroutines.Job? = null
     private var pcAudioTrack: android.media.AudioTrack? = null
-    private val pcAudioSampleRate = 44100
+    private val pcAudioSampleRate = 48000
 
     /**
      * 启动轮询拉取电脑音频 PCM 数据并播放
@@ -3095,24 +3095,18 @@ object ConnectionManager {
             Log.e(TAG, "AudioTrack init failed", e)
         }
         pcAudioJob = scope.launch {
-            val baseUrl = getBaseUrl()
+            // 电脑→手机声音传输走独立端口 5435（与 58627 主服务解耦）
+            val audioBaseUrl = getBaseUrl().replace(Regex("(?<=:)58627"), "5435")
             while (isActive) {
                 try {
-                    val resp = client?.get("$baseUrl/api/audio") {
+                    val resp = client?.get("$audioBaseUrl/api/audio") {
                         timeout { requestTimeoutMillis = 2000 }
                     }
                     if (resp?.status == HttpStatusCode.OK) {
                         val bytes = resp.readBytes()
                         if (bytes.isNotEmpty()) {
-                            // 单声道 PCM → 双声道（复制左声道到右声道）
-                            val stereo = ByteArray(bytes.size * 2)
-                            for (i in bytes.indices step 2) {
-                                stereo[i * 2] = bytes[i]
-                                stereo[i * 2 + 1] = bytes[i + 1]
-                                stereo[i * 2 + 2] = bytes[i]
-                                stereo[i * 2 + 3] = bytes[i + 1]
-                            }
-                            pcAudioTrack?.write(stereo, 0, stereo.size, android.media.AudioTrack.WRITE_NON_BLOCKING)
+                            // 电脑已发送立体声 48k int16，直接写入 AudioTrack（不再做单声道→双声道复制）
+                            pcAudioTrack?.write(bytes, 0, bytes.size, android.media.AudioTrack.WRITE_NON_BLOCKING)
                         }
                     }
                 } catch (e: Exception) {
