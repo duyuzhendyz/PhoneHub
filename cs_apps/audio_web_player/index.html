@@ -90,8 +90,14 @@ startBtn.onclick = async () => {
 };
 
 async function onMsg(ev) {
-  if (typeof ev.data === "string") {        // 配置帧
-    cfg = JSON.parse(ev.data);
+  if (typeof ev.data === "string") {        // 文本帧：config 或 media_info
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "media_info") {        // 当前播放曲目信息 → 仅更新卡片，绝不碰音频图
+      updateMedia(msg);
+      return;
+    }
+    // 配置帧
+    cfg = msg;
     // 浏览器不支持该采样率时重建（手势已发生，允许重建）
     if (audioCtx.sampleRate !== cfg.rate) {
       try {
