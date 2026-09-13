@@ -52,57 +52,190 @@ def _snapshot(since_ts=0.0):
     return {"count": len(_points), "points": pts}
 
 
+# 地图页：**完全离线自绘**（不依赖任何外部 CSS/JS/瓦片）。
+# 原因：本机无法访问 unpkg（只返回 497 字节假响应）与 tile.openstreetmap.org（http=000 连不上），
+# 用 Leaflet + OSM 瓦片的话页面就是一片全黑。这里改用 Canvas + Web 墨卡托投影自己画：
+# 经纬网格 + 轨迹 polyline + 当前点 + 比例尺，支持拖拽平移、滚轮缩放、双击回到跟随。
 PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PhoneHub · LiveMap</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<title>PhoneHub · LiveMap（离线自绘）</title>
 <style>
- html,body,#map{height:100%;margin:0;background:#0d0d0d}
- .bar{position:fixed;z-index:1000;top:0;left:0;right:0;background:#161616ee;color:#d0d0d0;
-      font:13px/1.6 "Segoe UI",sans-serif;padding:6px 12px;border-bottom:1px solid #2a2a2a}
- .bar b{color:#00e676}
+ html,body{height:100%;margin:0;background:#0d0d0d;overflow:hidden}
+ #bar{position:fixed;z-index:10;top:0;left:0;right:0;background:#161616f2;color:#d0d0d0;
+      font:13px/1.7 "Segoe UI",system-ui,sans-serif;padding:7px 14px;
+      border-bottom:1px solid #2a2a2a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ #bar b{color:#00e676;font-weight:600}
+ #bar .dim{color:#777}
+ #cv{display:block;width:100vw;height:100vh;cursor:grab}
+ #cv.drag{cursor:grabbing}
+ #hud{position:fixed;z-index:10;left:14px;bottom:12px;color:#8a8a8a;
+      font:12px/1.6 Consolas,monospace;background:#161616cc;padding:6px 10px;border-radius:5px}
+ #hud b{color:#d0d0d0;font-weight:500}
+ #empty{position:fixed;z-index:9;inset:0;display:flex;align-items:center;justify-content:center;
+        color:#555;font:14px/2 "Segoe UI",sans-serif;text-align:center;pointer-events:none}
 </style></head>
 <body>
-<div class="bar" id="bar">LiveMap · 等待手机位置…（每秒自动刷新）</div>
-<div id="map"></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<div id="bar">LiveMap · 等待手机位置… <span class="dim">（离线自绘模式，每秒刷新）</span></div>
+<div id="empty">还没有收到手机位置<br>请在手机 LiveMap 里填本机 IP 并点「开始共享位置」</div>
+<canvas id="cv"></canvas>
+<div id="hud"></div>
 <script>
-const map = L.map('map').setView([30.0, 120.0], 13);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-            {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
-const line = L.polyline([], {color:'#00e676', weight:4, opacity:.85}).addTo(map);
-let marker = null, lastCount = -1;
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const bar = document.getElementById('bar'), hud = document.getElementById('hud');
+const emptyBox = document.getElementById('empty');
+const R = 6378137, CIRC = 2 * Math.PI * R;      // Web 墨卡托（WGS84）
+const MIN_SPAN = 2e-5;                           // 最小视野（归一化世界坐标，约 800m）
 
-function fmt(t){ const d=new Date(t*1000); return d.toLocaleTimeString(); }
+let pts = [];                    // 轨迹点
+let cx = 0.5, cy = 0.5, S = 1e6; // 视图中心（归一化世界坐标）与缩放（像素/世界单位）
+let follow = true;               // 是否跟随最新点
+let dpr = window.devicePixelRatio || 1;
 
+function proj(lat, lon){
+  const x = (lon + 180) / 360;
+  const s = Math.sin(lat * Math.PI / 180);
+  const y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+  return [x, y];
+}
+function unproj(x, y){
+  const lon = x * 360 - 180;
+  const n = Math.PI - 2 * Math.PI * y;
+  const lat = 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  return [lat, lon];
+}
+function resize(){
+  dpr = window.devicePixelRatio || 1;
+  cv.width = Math.floor(innerWidth * dpr);
+  cv.height = Math.floor(innerHeight * dpr);
+}
+addEventListener('resize', resize); resize();
+
+function W(){ return cv.width / dpr; }
+function H(){ return cv.height / dpr; }
+function toPx(x, y){ return [ (x - cx) * S + W()/2, (y - cy) * S + H()/2 ]; }
+
+// 选一个"好看"的经纬网格间隔
+const STEPS = [10,5,2,1,.5,.2,.1,.05,.02,.01,.005,.002,.001,.0005,.0002,.0001];
+function pickStep(spanDeg){
+  for (const s of STEPS) if (spanDeg / s >= 4) return s;
+  return STEPS[STEPS.length - 1];
+}
+
+function fit(){
+  if (!pts.length) return;
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for (const p of pts){ const q = proj(p.lat, p.lon);
+    if(q[0]<x0)x0=q[0]; if(q[1]<y0)y0=q[1]; if(q[0]>x1)x1=q[0]; if(q[1]>y1)y1=q[1]; }
+  let spanX = Math.max(x1 - x0, MIN_SPAN), spanY = Math.max(y1 - y0, MIN_SPAN);
+  cx = (x0 + x1) / 2; cy = (y0 + y1) / 2;
+  S = Math.min(W() * 0.78 / spanX, H() * 0.78 / spanY);
+}
+
+function draw(){
+  const w = W(), h = H();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#0d0d0d'; ctx.fillRect(0, 0, w, h);
+  if (!pts.length) return;
+
+  // 可视范围对应的经纬度
+  const [la0, lo0] = unproj(cx - (w/2)/S, cy + (h/2)/S);
+  const [la1, lo1] = unproj(cx + (w/2)/S, cy - (h/2)/S);
+  const step = pickStep(Math.min(lo1 - lo0, la1 - la0));
+
+  // 经纬网格
+  ctx.lineWidth = 1; ctx.font = '11px Consolas,monospace';
+  for (let i = Math.floor(lo0/step)*step; i <= lo1; i += step){
+    const [px] = toPx(proj(0, i)[0], 0);
+    ctx.strokeStyle = '#1b1b1b'; ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
+    ctx.fillStyle = '#4a4a4a'; ctx.fillText(i.toFixed(step < 0.01 ? 4 : (step < 1 ? 2 : 0)) + '°', px + 4, h - 6);
+  }
+  for (let i = Math.floor(la0/step)*step; i <= la1; i += step){
+    const py = toPx(0, proj(i, 0)[1])[1];
+    ctx.strokeStyle = '#1b1b1b'; ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(w, py); ctx.stroke();
+    ctx.fillStyle = '#4a4a4a'; ctx.fillText(i.toFixed(step < 0.01 ? 4 : (step < 1 ? 2 : 0)) + '°', 6, py - 4);
+  }
+
+  // 轨迹
+  ctx.strokeStyle = '#00e676'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.beginPath();
+  pts.forEach((p, i) => { const q = proj(p.lat, p.lon), s = toPx(q[0], q[1]);
+    i ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); });
+  ctx.stroke();
+
+  // 起点
+  const a = toPx(...proj(pts[0].lat, pts[0].lon));
+  ctx.fillStyle = '#4fc3f7'; ctx.beginPath(); ctx.arc(a[0], a[1], 4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#4fc3f7'; ctx.fillText('起点', a[0] + 7, a[1] + 4);
+
+  // 当前点（脉冲圈）
+  const last = pts[pts.length - 1];
+  const b = toPx(...proj(last.lat, last.lon));
+  const pulse = 6 + 4 * Math.abs(Math.sin(Date.now() / 500));
+  ctx.strokeStyle = '#ff5252'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(b[0], b[1], pulse, 0, 7); ctx.stroke();
+  ctx.fillStyle = '#ff5252'; ctx.beginPath(); ctx.arc(b[0], b[1], 5, 0, 7); ctx.fill();
+  const txt = (last.spd*3.6).toFixed(1) + ' km/h' + (last.bat >= 0 ? '  ' + last.bat.toFixed(0) + '%' : '');
+  ctx.fillStyle = '#e0e0e0'; ctx.font = '12px "Segoe UI",sans-serif'; ctx.fillText(txt, b[0] + 10, b[1] - 8);
+
+  // 比例尺
+  const mPerPx = CIRC * Math.cos(last.lat * Math.PI / 180) / S;
+  let target = 100, barPx = 0;
+  for (const m of [10,20,50,100,200,500,1000,2000,5000,10000,20000]){ 
+    barPx = m / mPerPx; if (barPx > 60 && barPx < 200){ target = m; break; } }
+  const bx = 14, by = h - 58;
+  ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + barPx, by);
+  ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by + 4);
+  ctx.moveTo(bx + barPx, by - 4); ctx.lineTo(bx + barPx, by + 4); ctx.stroke();
+  ctx.fillStyle = '#9e9e9e'; ctx.font = '11px Consolas,monospace';
+  ctx.fillText(target >= 1000 ? (target/1000) + ' km' : target + ' m', bx + barPx + 8, by + 4);
+}
+
+function fmt(t){ return new Date(t * 1000).toLocaleTimeString(); }
+
+let lastCount = -1;
 async function tick(){
   try{
-    const r = await fetch('/track');           // 全量（点数有上限，量级很小）
-    const data = await r.json();
-    if (data.points.length === lastCount) return;
-    lastCount = data.points.length;
-    const latlngs = data.points.map(p=>[p.lat,p.lon]);
-    line.setLatLngs(latlngs);
-    const last = data.points[data.points.length-1];
-    if (last){
-      const kmh = (last.spd*3.6).toFixed(1);
-      const bat = last.bat>=0 ? (' 电量 '+last.bat.toFixed(0)+'%') : '';
-      const html = `<b>${fmt(last.ts)}</b><br>速度 ${kmh} km/h${bat}<br>精度 ±${last.acc.toFixed(0)} m`;
-      if (!marker){
-        marker = L.marker([last.lat,last.lon]).addTo(map).bindPopup(html).openPopup();
-        map.setView([last.lat,last.lon], 16);
-      } else {
-        marker.setLatLng([last.lat,last.lon]).setPopupContent(html);
-        map.panTo([last.lat,last.lon]);
-      }
-      document.getElementById('bar').innerHTML =
-        `LiveMap · 最新 <b>${fmt(last.ts)}</b> ｜ ${last.lat.toFixed(6)}, ${last.lon.toFixed(6)}` +
-        ` ｜ ${kmh} km/h${bat} ｜ 轨迹 ${data.count} 点`;
+    const r = await fetch('/track');
+    const d = await r.json();
+    if (d.points.length !== lastCount){
+      lastCount = d.points.length;
+      pts = d.points;
+      if (follow) fit();
     }
-  }catch(e){ /* 服务没开等，下一秒再试 */ }
+    if (pts.length){
+      emptyBox.style.display = 'none';
+      const p = pts[pts.length - 1];
+      bar.innerHTML = 'LiveMap · 最新 <b>' + fmt(p.ts) + '</b> ｜ ' +
+        p.lat.toFixed(6) + ', ' + p.lon.toFixed(6) + ' ｜ <b>' + (p.spd*3.6).toFixed(1) +
+        ' km/h</b>' + (p.bat >= 0 ? ' ｜ 电量 ' + p.bat.toFixed(0) + '%' : '') +
+        ' ｜ 精度 ±' + p.acc.toFixed(0) + ' m ｜ 轨迹 <b>' + d.count + '</b> 点' +
+        ' <span class="dim">（拖拽平移 / 滚轮缩放 / 双击跟随）</span>';
+      hud.innerHTML = follow ? '<b>跟随中</b>' : '<b>自由浏览</b>（双击回到跟随）';
+    }
+  }catch(e){ /* 下一秒再试 */ }
+  draw();
 }
 setInterval(tick, 1000); tick();
+requestAnimationFrame(function loop(){ if (pts.length) draw(); requestAnimationFrame(loop); });
+
+// 交互
+let dragging = false, lx = 0, ly = 0;
+cv.addEventListener('mousedown', e => { dragging = true; lx = e.clientX; ly = e.clientY; cv.classList.add('drag'); });
+addEventListener('mouseup', () => { dragging = false; cv.classList.remove('drag'); });
+addEventListener('mousemove', e => {
+  if (!dragging) return;
+  cx -= (e.clientX - lx) / S; cy -= (e.clientY - ly) / S;
+  lx = e.clientX; ly = e.clientY; follow = false; draw();
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const k = e.deltaY > 0 ? 0.85 : 1.18;
+  S = Math.max(200, Math.min(5e8, S * k));
+  follow = false; draw();
+}, {passive: false});
+cv.addEventListener('dblclick', () => { follow = true; fit(); draw(); });
 </script></body></html>"""
 
 
