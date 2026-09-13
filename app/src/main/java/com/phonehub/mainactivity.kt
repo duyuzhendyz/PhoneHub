@@ -1407,7 +1407,6 @@ class MainActivity : AppCompatActivity() {
             R.id.btnPlayPause to "media_play_pause",
             R.id.btnNext to "media_next",
             R.id.btnVolDown to "vol_down",
-            R.id.btnMute to "vol_mute",
             R.id.btnVolUp to "vol_up",
             R.id.btnLock to "lock"
         )
@@ -1417,24 +1416,7 @@ class MainActivity : AppCompatActivity() {
                 ConnectionManager.sendMediaCommand(cmd)
             }
         }
-        
-        // Update mute button based on initial mute state
-        val btnMute = v.findViewById<Button>(R.id.btnMute)
-        // Observe muted state and update button icon
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                ConnectionManager.mutedState.collect { muted ->
-                    if (btnMute != null) {
-                        btnMute.text = if (muted) "🔇 (已静音)" else "🔊"
-                        if (muted) {
-                            btnMute.applyDarkTheme(primary = true)
-                        } else {
-                            btnMute.applyDarkTheme()
-                        }
-                    }
-                }
-            }
-        }
+
         // 截图按钮：请求电脑端截图当前界面并传回手机（静默，无提示）
         v.findViewById<Button>(R.id.btnScreenshot)?.applyDarkTheme()
         v.findViewById<Button>(R.id.btnScreenshot)?.setOnClickListener {

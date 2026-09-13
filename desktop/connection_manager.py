@@ -13,6 +13,10 @@ import psutil
 import logging
 from PIL import ImageGrab
 from flask import Flask, request, jsonify, send_file, Response
+
+# 手机端每 30ms~1s 轮询 /api/frame、/api/audio，未取到数据时返回 204，
+# werkzeug 会在控制台刷出海量访问日志——压到 ERROR 级别只保留异常输出。
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 from flask.logging import default_handler
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
 from collections import deque
@@ -2082,6 +2086,8 @@ class ConnectionManager(QObject):
                     'artist': props.artist or "",
                     'album': props.album_title or "",
                     'thumbnail': thumbnail_b64,
+                    'status': 'playing' if session.get_playback_info().playback_status \
+                        == wmc.GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING else 'paused',
                 }
 
             info = asyncio.run(_get_info())
@@ -2093,24 +2099,29 @@ class ConnectionManager(QObject):
                 thumbnail = info.get('thumbnail', '') or ''
 
             now = time.time()
-            changed = (title != self._last_media_title or artist != self._last_media_artist)
-            # 曲目变化立即推送；未变化时每 30 秒兜底推送一次（保持封面/连接活性）
+            cur_status = info.get('status', 'playing') if info else 'stopped'
+            changed = (title != self._last_media_title or artist != self._last_media_artist
+                       or cur_status != getattr(self, '_last_media_status', ''))
+            # 曲目/播放状态变化立即推送；未变化时每 30 秒兜底推送一次（保持封面/连接活性）
             if changed or force or now - getattr(self, '_last_media_send_time', 0) >= 30:
                 self._last_media_title = title
                 self._last_media_artist = artist
+                self._last_media_status = cur_status
                 self._last_media_send_time = now
                 if info is None:
                     msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                            "data": {"action": "media_info", "title": "未检测到媒体播放",
-                                    "artist": "", "album": "", "thumbnail": ""}}
+                                    "artist": "", "album": "", "thumbnail": "", "status": "stopped"}}
                 else:
                     msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                            "data": {"action": "media_info", "title": title,
-                                    "artist": artist, "album": album, "thumbnail": thumbnail}}
+                                    "artist": artist, "album": album, "thumbnail": thumbnail,
+                                    "status": info.get('status', 'playing')}}
                 self._send_to_phone(msg)
             else:
                 self._last_media_title = title
                 self._last_media_artist = artist
+                self._last_media_status = cur_status
         except Exception as e:
             print(f"[check_media_info] error: {e}")
 

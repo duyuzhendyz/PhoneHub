@@ -1101,17 +1101,27 @@ object ConnectionManager {
                 val title = data["title"]?.jsonPrimitive?.contentOrNull ?: ""
                 val artist = data["artist"]?.jsonPrimitive?.contentOrNull ?: ""
                 val thumbnailB64 = data["thumbnail"]?.jsonPrimitive?.contentOrNull ?: ""
+                val status = data["status"]?.jsonPrimitive?.contentOrNull ?: "playing"
                 _mediaInfo.value = if (artist.isNotEmpty()) "$title - $artist" else title.ifEmpty { "未检测到媒体播放" }
+                // 供电脑声音媒体通知使用
+                pcMediaTitle = title.ifEmpty { "未检测到媒体播放" }
+                pcMediaArtist = if (artist.isNotEmpty()) artist else "电脑声音播放"
+                pcMediaPlaying = status != "paused"
                 // 解析封面图 Base64
                 if (thumbnailB64.isNotEmpty()) {
                     try {
-                        _mediaThumbnail.value = android.util.Base64.decode(thumbnailB64, android.util.Base64.DEFAULT)
+                        val coverBytes = android.util.Base64.decode(thumbnailB64, android.util.Base64.DEFAULT)
+                        _mediaThumbnail.value = coverBytes
+                        pcMediaCover = coverBytes
                     } catch (e: Exception) {
                         _mediaThumbnail.value = null
+                        pcMediaCover = null
                     }
                 } else {
                     _mediaThumbnail.value = null
+                    pcMediaCover = null
                 }
+                if (pcMediaNotifShown) updatePcMediaNotification()
             }
             "install_apk" -> {
                 // 电脑端发送APK安装命令，手机自动安装
@@ -1556,6 +1566,7 @@ object ConnectionManager {
     private const val FILE_TRANSFER_CHANNEL_ID = "phonehub_file_transfer"
     private const val FILE_TRANSFER_NOTIF_ID = 88881
     private const val FILE_CONFLICT_NOTIF_ID = 88882
+    private const val PC_MEDIA_NOTIF_ID = 88890  // 电脑声音媒体通知 ID
 
     // 暂存待下载的文件信息（用户点击"开始下载"后用于触发下载）
     data class PendingFileTransfer(
@@ -3066,11 +3077,20 @@ object ConnectionManager {
     private var pcAudioTrack: android.media.AudioTrack? = null
     private val pcAudioSampleRate = 48000
 
+    // 电脑声音媒体通知状态（media_info 推送时更新）
+    @Volatile var pcMediaNotifShown = false
+    @Volatile var pcMediaPlaying = true
+    private var pcMediaTitle = "电脑声音"
+    private var pcMediaArtist = "正在播放电脑音频"
+    private var pcMediaCover: ByteArray? = null
+
     /**
      * 启动轮询拉取电脑音频 PCM 数据并播放
      */
     fun startPcAudioPolling() {
         stopPcAudioPolling()
+        // 开始播放电脑声音时弹出媒体样式通知（显示电脑当前曲目，可控制播放/暂停/切歌）
+        showPcMediaNotification()
         // 初始化 AudioTrack 用于播放
         val bufSize = android.media.AudioTrack.getMinBufferSize(
             pcAudioSampleRate, android.media.AudioFormat.CHANNEL_OUT_STEREO,
@@ -3125,9 +3145,97 @@ object ConnectionManager {
             pcAudioTrack?.release()
         } catch (_: Exception) {}
         pcAudioTrack = null
+        cancelPcMediaNotification()
     }
 
     fun isPcAudioPolling(): Boolean = pcAudioJob?.isActive == true
+
+    // ============================== 电脑声音媒体通知 ==============================
+
+    private fun buildPcMediaNotification(ctx: Context): android.app.Notification {
+        val openIntent = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentPi = PendingIntent.getActivity(
+            ctx, 88890, openIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        fun mediaPi(action: String, code: Int): PendingIntent {
+            val i = Intent(ctx, MediaNotificationReceiver::class.java).apply { this.action = action }
+            return PendingIntent.getBroadcast(
+                ctx, code, i,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+        }
+
+        val b = NotificationCompat.Builder(ctx, "phonehub_pc_media")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle(pcMediaTitle)
+            .setContentText(pcMediaArtist)
+            .setContentIntent(contentPi)
+            .setShowWhen(false)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        pcMediaCover?.let {
+            try {
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)
+                if (bmp != null) b.setLargeIcon(bmp)
+            } catch (_: Exception) {}
+        }
+        b.addAction(android.R.drawable.ic_media_previous, "上一曲",
+            mediaPi(MediaNotificationReceiver.ACTION_PREV, 88891))
+        b.addAction(
+            if (pcMediaPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+            if (pcMediaPlaying) "暂停" else "播放",
+            mediaPi(MediaNotificationReceiver.ACTION_TOGGLE, 88892))
+        b.addAction(android.R.drawable.ic_media_next, "下一曲",
+            mediaPi(MediaNotificationReceiver.ACTION_NEXT, 88893))
+        return b.build()
+    }
+
+    /** 开始播放电脑声音时弹出媒体通知（IMPORTANCE_LOW，不打扰） */
+    fun showPcMediaNotification() {
+        try {
+            val ctx = context ?: return
+            val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channel = NotificationChannel(
+                "phonehub_pc_media", "电脑声音播放", NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "播放电脑声音时显示当前曲目，可控制播放/暂停/切歌"
+                setSound(null, null)
+            }
+            mgr.createNotificationChannel(channel)
+            pcMediaNotifShown = true
+            mgr.notify(PC_MEDIA_NOTIF_ID, buildPcMediaNotification(ctx))
+        } catch (e: Exception) {
+            Log.e(TAG, "显示电脑声音媒体通知失败", e)
+        }
+    }
+
+    /** media_info 推送后刷新通知内容（曲目/封面/播放状态） */
+    fun updatePcMediaNotification() {
+        if (!pcMediaNotifShown) return
+        try {
+            val ctx = context ?: return
+            val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            mgr.notify(PC_MEDIA_NOTIF_ID, buildPcMediaNotification(ctx))
+        } catch (e: Exception) {
+            Log.e(TAG, "更新电脑声音媒体通知失败", e)
+        }
+    }
+
+    fun cancelPcMediaNotification() {
+        pcMediaNotifShown = false
+        try {
+            val ctx = context ?: return
+            (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .cancel(PC_MEDIA_NOTIF_ID)
+        } catch (_: Exception) {}
+    }
 
     // ============================== 电脑摄像头画面拉取（save.md 功能8）==============================
 

@@ -97,14 +97,6 @@
                 android:layout_marginEnd="4dp" />
 
             <Button
-                android:id="@+id/btnMute"
-                android:layout_width="0dp"
-                android:layout_height="56dp"
-                android:layout_weight="1"
-                android:text="🔇"
-                android:layout_marginHorizontal="4dp" />
-
-            <Button
                 android:id="@+id/btnVolUp"
                 android:layout_width="0dp"
                 android:layout_height="56dp"

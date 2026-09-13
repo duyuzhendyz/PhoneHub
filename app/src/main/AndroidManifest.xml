@@ -200,6 +200,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- 电脑声音媒体通知按钮点击接收器（播放/暂停 / 上一曲 / 下一曲） -->
+        <receiver
+            android:name=".MediaNotificationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.phonehub.action.PC_MEDIA_TOGGLE" />
+                <action android:name="com.phonehub.action.PC_MEDIA_PREV" />
+                <action android:name="com.phonehub.action.PC_MEDIA_NEXT" />
+            </intent-filter>
+        </receiver>
+
         <!-- AlarmManager 重启接收器：进程被杀后通过 AlarmManager 拉起 -->
         <receiver
             android:name=".RestartServiceReceiver"
