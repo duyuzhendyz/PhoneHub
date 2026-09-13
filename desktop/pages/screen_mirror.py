@@ -69,6 +69,7 @@ class ScreenMirrorPage(QWidget):
         self._status_busy = False
         self._auto_started = False
         self._live_window_opened = False
+        self._live_suppressed = False          # 用户手动关过窗 → 本轮投屏内不再自动弹
         self._mirror_on = False
         self._recording = False
 
@@ -349,6 +350,7 @@ class ScreenMirrorPage(QWidget):
                 return
             self._svc_module.open_live_window()
             self._live_window_opened = True
+            self._live_suppressed = False      # 手动打开 = 解除"用户关过窗"抑制
         except Exception as e:
             dark_msg_box(self, QMessageBox.Warning, "打开失败", f"打开手机屏幕窗口出错: {e}")
 
@@ -438,8 +440,15 @@ class ScreenMirrorPage(QWidget):
                 else:
                     self.rec_status_label.setText("录制：未开始（默认不录制）")
 
-            # 手机开始推流后，自动把「手机屏幕」窗口弹出来（用户关掉后不再自动弹）
-            if client != "无" and not self._live_window_opened:
+            # 手机开始推流后，自动把「手机屏幕」窗口弹出来。
+            # 「仅音频」模式手机不发画面，active_client 一直为空，所以服务那边
+            # 收到 /audio_start、/audio、/mode 也会记一次会话（status.session），
+            # 这里一并认，否则仅音频永远不弹窗。
+            mirroring = (client != "无") or bool(d.get("session"))
+            if not mirroring:
+                # 会话结束：清掉抑制，下一轮投屏重新自动弹
+                self._live_suppressed = False
+            elif not self._live_window_opened and not self._live_suppressed:
                 self._live_window_opened = True
                 QTimer.singleShot(200, self._open_live_window)
 
@@ -470,8 +479,10 @@ class ScreenMirrorPage(QWidget):
         if alive:
             return
 
-        # 窗口已退出：收掉"已打开"标记，若正在投屏则自动停止手机端投屏
+        # 窗口已退出：收掉"已打开"标记，若正在投屏则自动停止手机端投屏。
+        # 同时置抑制位：用户是自己关的窗，这一轮投屏内不要再自动弹回来。
         self._live_window_opened = False
+        self._live_suppressed = True
         if self._mirror_on:
             try:
                 self.manager.send_action("mirror_stop")
@@ -509,6 +520,7 @@ class ScreenMirrorPage(QWidget):
 
             self.manager.send_action("mirror_start", extra)
             self._mirror_on = True
+            self._live_suppressed = False      # 新发起的投屏：允许自动弹窗
             self.phone_to_pc_btn.setText("停止手机投屏")
             InfoBar.info("已通知手机开始投屏",
                          f"目标 {extra.get('mirror_ip', '（手机端已配置的地址）')}:{self._port}"

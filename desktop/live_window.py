@@ -46,8 +46,15 @@ BASE = "http://127.0.0.1:%d" % PORT
 
 
 def _secret_token():
-    """与主服务/5423 同一份 desktop/settings.json 的 secret_token。
-    5423 已加鉴权（原为零鉴权：局域网任何人都能看屏幕、注入点击、下载录像）。"""
+    """与主服务/5423 同一份令牌。
+
+    优先用父进程（mirror_server）通过环境变量 PHONEHUB_MIRROR_TOKEN 递过来的值 ——
+    两边都从 desktop/settings.json 读时，一旦令牌被改过而某一侧缓存没刷新，
+    窗口就会因为 /stream 被 401 拒而一直显示"PC 服务未连接"。
+    """
+    env_tok = (os.environ.get("PHONEHUB_MIRROR_TOKEN") or "").strip()
+    if env_tok:
+        return env_tok
     try:
         with open(os.path.join(HERE, "settings.json"), "r", encoding="utf-8") as f:
             return (json.load(f) or {}).get("secret_token") or "541881452418845"
@@ -730,7 +737,10 @@ class LiveWindow:
 
         age = time.time() - self.blank_since if self.frame_size[0] else None
         if not snap["connected"]:
-            status, color = "PC 服务未连接", FG_BAD
+            # 带上具体原因：以前只写"PC 服务未连接"，看不出是 401 还是连接被拒
+            err = (snap.get("error") or "").strip()
+            status = f"PC 服务未连接（{err}）" if err else "PC 服务未连接"
+            color = FG_BAD
         elif self.frame_size[0] == 0:
             status, color = "等待手机画面...", FG_DIM
         elif age is not None and age > 2.0:

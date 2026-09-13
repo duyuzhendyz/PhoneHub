@@ -224,12 +224,36 @@ def _open_live_window(force=False):
         if os.path.exists(pw):
             exe = pw
 
+    # 把令牌直接递给子进程：窗口自己读 settings.json 有可能与当前进程拿到的
+    # 令牌不是同一份（改过令牌但没落盘/缓存未刷新），那样窗口会一直显示
+    # "PC 服务未连接"（其实是 /stream 被 401 拒了）。
+    env = os.environ.copy()
+    env["PHONEHUB_MIRROR_TOKEN"] = get_secret_token()
+    env["PHONEHUB_MIRROR_PORT"] = str(PORT)
+
     try:
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        _live_window_proc = subprocess.Popen([exe, script, str(PORT)], creationflags=flags)
+        _live_window_proc = subprocess.Popen(
+            [exe, script, str(PORT)], creationflags=flags, env=env)
         print('[实时] 已自动打开"手机屏幕"窗口')
     except Exception as e:
         print(f"[实时] 自动打开窗口失败: {e}")
+
+
+def _note_client(ip=None):
+    """标记"有手机正在推流"并自动弹出「手机屏幕」窗口。
+
+    之前只在收到**画面帧**时（_start_recording_locked）才标记 active_client 与开窗，
+    于是「仅音频」模式（手机不发画面）既不会弹窗、/status 里也一直显示"投屏手机 无"。
+    改成画面、音频、模式通知任意一路到达都算一次会话开始。
+    """
+    global _active_client
+    if ip:
+        _active_client = ip
+    # 窗口已经开着就别再折腾（/audio 每秒几十次，省掉重复的进程检查）
+    if _live_window_proc is not None and _live_window_proc.poll() is None:
+        return
+    _open_live_window()
 
 _live_lock = threading.Lock()
 _live_jpeg = None         # 最新一帧的原始 JPEG 字节
@@ -346,7 +370,7 @@ def _start_recording_locked(client_ip: str):
     print(f"[录制] 开始 #{_recording_id}  ← 客户端 {client_ip}（等 /stop 结束）")
 
     # 投屏一开始就把"手机屏幕"窗口弹出来（每个服务进程只弹一次）
-    _open_live_window()
+    _note_client(client_ip)
 
 
 def _create_writer_locked(frame):
@@ -871,6 +895,7 @@ def _open_audio_segment_locked():
 def api_start():
     """手机主动触发录制开始（也可以不发，首帧到达会自动开始）"""
     _ensure_threads()
+    _note_client(request.remote_addr)
     _start_recording(request.remote_addr)
     return jsonify({"status": "started", "recording_id": _recording_id})
 
@@ -878,10 +903,12 @@ def api_start():
 @app.route("/stop", methods=["POST"])
 def api_stop():
     """手机点击"停止投屏"时调用"""
+    global _active_client
     _ensure_threads()
     with _lock:
         was = _recording
         _finish_recording_locked()
+    _active_client = None
     return jsonify({"stopped": was})
 
 
@@ -895,6 +922,9 @@ def api_mode():
     mode = str(request.args.get("mode", "0"))
     if mode in ("1", "audio_only"):
         _set_live_placeholder()
+    # 不管哪种模式都算"投屏已开始"：仅音频模式没有画面帧，
+    # 以前只有 mode=1 才开窗，实际经常不弹（且 /status 一直显示"投屏手机 无"）
+    _note_client(request.remote_addr)
     return jsonify({"ok": True})
 
 
@@ -928,8 +958,8 @@ def api_audio_start():
     # 仅音频模式：手机不发画面，换成「仅音频」占位图，避免窗口一直显示上一次停止时的旧帧
     if mode in ("1", "audio_only"):
         _set_live_placeholder()
-        # 仅音频模式也需要自动打开窗口，否则用户看不到音频状态
-        _open_live_window()
+    # 标记会话开始 + 自动开窗（仅音频时 /upload 永远不来，只能靠这里）
+    _note_client(request.remote_addr)
     # 丢弃上一轮的残留试听数据，避免新一次录音开头播到旧声音
     while not _audio_stream_q.empty():
         try:
@@ -947,6 +977,8 @@ def api_audio_chunk():
     data = request.get_data()
     if not data:
         return jsonify({"error": "empty"}), 400
+    # 音频流到达也算会话开始（仅音频模式唯一的心跳）
+    _note_client(request.remote_addr)
     with _audio_lock:
         if _audio_active and _audio_f is not None:
             _audio_f.write(data)
@@ -1225,6 +1257,9 @@ def api_status():
             "measured_fps": _measured_fps,
             "elapsed": round(time.monotonic() - _rec_start, 1) if _recording else 0,
             "active_client": _active_client,
+            # "有手机正在推流"（画面或音频任一到达即为真）。仅音频模式没有帧，
+            # 桌面页以前只看 active_client，导致仅音频既不弹窗也显示"投屏手机 无"。
+            "session": _active_client is not None,
             "queue": len(_frame_queue),
             "queue_dropped": _queue_dropped,
             "queue_popped": _popped_count,

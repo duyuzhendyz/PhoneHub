@@ -41,17 +41,32 @@ class NotificationListener : NotificationListenerService() {
         var instance: NotificationListener? = null
             private set
 
+        // 黑名单内存缓存：避免每收一条通知就重读 SharedPreferences（减少主线程 IO）
+        @Volatile
+        private var cachedBlacklist: Set<String>? = null
+
         /**
-         * 请求当前系统通知黑名单（仅查询，便于 UI 显示）
+         * 请求当前系统通知黑名单（仅查询，便于 UI 显示）。
+         * 首次从 SP 读取后缓存到内存，后续直接复用。
          */
         fun getBlacklist(ctx: Context): Set<String> {
-            return ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            val c = cachedBlacklist
+            if (c != null) return c
+            val loaded = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                .getStringSet(KEY_WHITELIST, emptySet()) ?: emptySet()
+            cachedBlacklist = loaded
+            return loaded
+        }
+
+        fun refreshBlacklistCache(ctx: Context) {
+            cachedBlacklist = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
                 .getStringSet(KEY_WHITELIST, emptySet()) ?: emptySet()
         }
 
         fun setBlacklist(ctx: Context, pkgs: Set<String>) {
             ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
                 .edit().putStringSet(KEY_WHITELIST, pkgs).apply()
+            cachedBlacklist = pkgs
         }
 
         /**
@@ -76,6 +91,7 @@ class NotificationListener : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        refreshBlacklistCache(this)
         Log.i(TAG, "NotificationListener onCreate")
     }
 
@@ -84,13 +100,14 @@ class NotificationListener : NotificationListenerService() {
         instance = this
         Log.i(TAG, "NotificationListener connected - 开始监听通知")
         // 初始上报一次当前所有活动通知（作为基线）
+        // （去重由 processAndReport 里的 lastNotifications 负责：基线 + 随后的
+        //   onNotificationPosted 在 1 秒内对同一通知只会上报一次，不会重复推给电脑）
         try {
             val active = getActiveNotifications()
             Log.i(TAG, "当前活动通知数量: ${active?.size ?: 0}")
             if (active != null && active.isNotEmpty()) {
                 for (sbn in active) {
                     processAndReport(sbn)
-                    lastNotifications[sbn.key] = System.currentTimeMillis()
                 }
             }
         } catch (e: Exception) {
@@ -137,6 +154,22 @@ class NotificationListener : NotificationListenerService() {
         if (!isNotBlacklisted(pkg)) return
 
         val n = sbn.notification ?: return
+
+        // 去重：基线上报与事件驱动双路都会触达同一通知，1 秒内同一 key 只上报一次，
+        // 防止 onListenerConnected 基线 + 紧接着的 onNotificationPosted 把同一通知推给电脑两次
+        val now = System.currentTimeMillis()
+        val prev = lastNotifications[sbn.key]
+        if (prev != null && now - prev < 1000) return
+        lastNotifications[sbn.key] = now
+        if (lastNotifications.size > 256) {
+            // 防止集合无限增长：只保留最近 128 条
+            val recentKeys = lastNotifications.entries
+                .sortedByDescending { it.value }
+                .take(128)
+                .map { it.key }
+            lastNotifications.keys.retainAll(recentKeys::contains)
+        }
+
         val extras = n.extras
         var title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
         var text = extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
@@ -241,36 +274,40 @@ class NotificationListener : NotificationListenerService() {
 
     /**
      * 通知本地持久化（7 天保留）。当手机无网络或离线时仍可后续补传。
+     * 文件 IO 丢到 IO 线程，避免在 onNotificationPosted 主线程回调里做磁盘写入。
      */
     private fun persistNotification(item: ConnectionManager.NotificationItem) {
-        try {
-            val dir = File(getExternalFilesDir(null), "NotificationCache")
-            if (!dir.exists()) dir.mkdirs()
-            // 过期文件清理改为每日一次（对比上次清理日期），避免每收一条通知就全目录 listFiles 遍历
+        if (!notificationScope.isActive) return
+        notificationScope.launch(Dispatchers.IO) {
             try {
-                val today = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
-                val pref = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-                if (pref.getString("notif_cleanup_day", "") != today) {
-                    val cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
-                    dir.listFiles()?.forEach { f ->
-                        if (f.lastModified() < cutoff) f.delete()
+                val dir = File(getExternalFilesDir(null), "NotificationCache")
+                if (!dir.exists()) dir.mkdirs()
+                // 过期文件清理改为每日一次（对比上次清理日期），避免每收一条通知就全目录 listFiles 遍历
+                try {
+                    val today = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
+                    val pref = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                    if (pref.getString("notif_cleanup_day", "") != today) {
+                        val cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
+                        dir.listFiles()?.forEach { f ->
+                            if (f.lastModified() < cutoff) f.delete()
+                        }
+                        pref.edit().putString("notif_cleanup_day", today).apply()
                     }
-                    pref.edit().putString("notif_cleanup_day", today).apply()
+                } catch (_: Exception) {
                 }
-            } catch (_: Exception) {
+                val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault())
+                    .format(Date(item.timestamp))
+                val file = File(dir, "${ts}_${item.packageName.replace('.', '_')}.json")
+                val json = JSONObject().apply {
+                    put("package", item.packageName)
+                    put("title", item.title)
+                    put("text", item.text)
+                    put("timestamp", item.timestamp)
+                }
+                FileOutputStream(file).use { it.write(json.toString().toByteArray()) }
+            } catch (e: Exception) {
+                Log.e(TAG, "persistNotification failed", e)
             }
-            val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault())
-                .format(Date(item.timestamp))
-            val file = File(dir, "${ts}_${item.packageName.replace('.', '_')}.json")
-            val json = JSONObject().apply {
-                put("package", item.packageName)
-                put("title", item.title)
-                put("text", item.text)
-                put("timestamp", item.timestamp)
-            }
-            FileOutputStream(file).use { it.write(json.toString().toByteArray()) }
-        } catch (e: Exception) {
-            Log.e(TAG, "persistNotification failed", e)
         }
     }
 }

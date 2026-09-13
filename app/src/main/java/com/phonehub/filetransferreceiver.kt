@@ -13,6 +13,8 @@ import kotlinx.coroutines.launch
  *
  * 处理通知中的操作：
  *  - 开始下载（用户点击"开始下载"按钮）
+ *  - 暂停下载（用户点击"暂停"按钮）
+ *  - 继续下载（用户点击"继续"按钮）
  *  - 取消下载（用户点击"取消"按钮）
  *  - 文件冲突处理（S3）：覆盖原有文件、添加编号接收、取消接收
  *
@@ -32,6 +34,14 @@ class FileTransferReceiver : BroadcastReceiver() {
             ACTION_START_DOWNLOAD -> {
                 // 用户点击"开始下载"：调用 ConnectionManager 启动下载
                 ConnectionManager.startFileDownloadFromNotification(fileId, fileName, fileSize)
+            }
+            ACTION_PAUSE_DOWNLOAD -> {
+                // 用户点击"暂停"：暂停传输
+                ConnectionManager.pauseTransfer()
+            }
+            ACTION_RESUME_DOWNLOAD -> {
+                // 用户点击"继续"：继续传输
+                ConnectionManager.resumeTransfer()
             }
             ACTION_CANCEL_DOWNLOAD -> {
                 // 用户点击"取消"：取消传输并移除通知
@@ -58,6 +68,8 @@ class FileTransferReceiver : BroadcastReceiver() {
 
     companion object {
         const val ACTION_START_DOWNLOAD = "com.phonehub.action.START_FILE_DOWNLOAD"
+        const val ACTION_PAUSE_DOWNLOAD = "com.phonehub.action.PAUSE_FILE_DOWNLOAD"
+        const val ACTION_RESUME_DOWNLOAD = "com.phonehub.action.RESUME_FILE_DOWNLOAD"
         const val ACTION_CANCEL_DOWNLOAD = "com.phonehub.action.CANCEL_FILE_DOWNLOAD"
         // S3: 文件冲突处理
         const val ACTION_CONFLICT_OVERWRITE = "com.phonehub.action.CONFLICT_OVERWRITE"

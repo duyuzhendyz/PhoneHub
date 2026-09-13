@@ -1025,6 +1025,7 @@ object ConnectionManager {
                         // 用户在手机上复制了新内容，不覆盖；同步追踪值避免后续推送全部被拒
                         Log.d(TAG, "手机剪贴板有新内容，忽略电脑推送: lastKnown=$lastClipboardContent, current=$currentPhoneClip")
                         lastClipboardContent = currentPhoneClip
+                        lastClipboardTimestamp = System.currentTimeMillis()
                         return
                     }
                     if (txt != lastClipboardContent) {
@@ -1589,9 +1590,26 @@ object ConnectionManager {
                         }
                     }
                 }
-                // 桌面通知页的「打开应用并投屏」：打开后顺带开始投屏
+                // 桌面通知页的「打开应用并投屏」：先跳转，再（必要时）改成音视频，最后才开始投屏
                 val wantMirror = data["mirror"]?.jsonPrimitive?.booleanOrNull ?: false
-                if (wantMirror) _mirrorCommand.tryEmit(MirrorCommand("start"))
+                if (wantMirror) {
+                    val ctx = context
+                    if (ctx != null) {
+                        // 仅当当前是「仅音频」时才改成音视频：仅画面 / 已经是音视频都保持原样
+                        val currentMode = PhoneHubMirrorService.getMirrorMode(ctx)
+                        if (currentMode == PhoneHubMirrorService.MODE_AUDIO_ONLY) {
+                            PhoneHubMirrorService.setMirrorMode(ctx, PhoneHubMirrorService.MODE_BOTH)
+                            Log.i(TAG, "通知点击打开应用并投屏：仅音频 → 自动切为音视频")
+                        } else {
+                            Log.i(TAG, "通知点击打开应用并投屏：保持当前模式 mode=$currentMode")
+                        }
+                    }
+                    // 稍等一下再起投屏：让目标 App 先切到前台，避免录到的是本应用/桌面
+                    scope.launch {
+                        delay(700)
+                        _mirrorCommand.tryEmit(MirrorCommand("start"))
+                    }
+                }
             }
             "notification_delete" -> {
                 // save.md 功能10：电脑端可删除手机上的通知
@@ -2003,8 +2021,32 @@ object ConnectionManager {
                 .setContentTitle(if (paused) "已暂停: $fileName" else "下载中: $fileName")
                 .setContentText(if (paused) sizeText + pathText else "$sizeText ($pct%)$pathText")
 
-            // 下载中提供"取消"按钮
             val pendingFileId = pendingFileTransfer?.fileId ?: ""
+
+            // 暂停/继续按钮（根据当前状态显示）
+            if (paused) {
+                val resumeIntent = Intent(ctx, FileTransferReceiver::class.java).apply {
+                    action = FileTransferReceiver.ACTION_RESUME_DOWNLOAD
+                    putExtra(FileTransferReceiver.EXTRA_FILE_ID, pendingFileId)
+                }
+                val resumePi = PendingIntent.getBroadcast(
+                    ctx, 3, resumeIntent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                builder.addAction(android.R.drawable.ic_media_play, "继续", resumePi)
+            } else {
+                val pauseIntent = Intent(ctx, FileTransferReceiver::class.java).apply {
+                    action = FileTransferReceiver.ACTION_PAUSE_DOWNLOAD
+                    putExtra(FileTransferReceiver.EXTRA_FILE_ID, pendingFileId)
+                }
+                val pausePi = PendingIntent.getBroadcast(
+                    ctx, 4, pauseIntent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                builder.addAction(android.R.drawable.ic_media_pause, "暂停", pausePi)
+            }
+
+            // 取消按钮
             val cancelIntent = Intent(ctx, FileTransferReceiver::class.java).apply {
                 action = FileTransferReceiver.ACTION_CANCEL_DOWNLOAD
                 putExtra(FileTransferReceiver.EXTRA_FILE_ID, pendingFileId)
@@ -2204,12 +2246,18 @@ object ConnectionManager {
     // ============================== 剪贴板 ==============================
 
     private var clipboardListenerRegistered = false
+    @Volatile
+    private var lastClipboardTimestamp = 0L
+    private var clipboardSyncJob: Job? = null
 
     /**
      * 剪贴板自动同步（手机→电脑）：与电脑端行为对齐，手机上一复制就推给电脑。
      * Android 10+ 只有前台应用能读剪贴板——用户复制时本应用正在前台，满足条件；
      * 后台时读取会失败/为空，静默忽略即可。回环由 lastClipboardContent 抑制
      * （电脑端同步回来的内容 setClipboardContent 已记录，不会再外发）。
+     * 
+     * 实时推送：如果当前剪贴板内容的时间戳新于上一条，则直接推送
+     * 周期性检查：每2秒检查一次手机剪贴板，确保与PC同步
      */
     fun startClipboardSync() {
         if (clipboardListenerRegistered) return
@@ -2217,17 +2265,49 @@ object ConnectionManager {
         try {
             cm.addPrimaryClipChangedListener {
                 try {
+                    val currentTimestamp = System.currentTimeMillis()
                     val mgr = context?.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                     val clip = mgr?.primaryClip ?: return@addPrimaryClipChangedListener
                     if (clip.itemCount <= 0) return@addPrimaryClipChangedListener
                     val text = clip.getItemAt(0)?.coerceToText(context)?.toString() ?: return@addPrimaryClipChangedListener
-                    if (text.isEmpty() || text == lastClipboardContent) return@addPrimaryClipChangedListener
+                    if (text.isEmpty()) return@addPrimaryClipChangedListener
+
+                    // 内容与上一条相同 → 不推。
+                    // 注意：这里不能只用时间戳判断 —— 电脑端同步回来的内容由 setClipboardContent
+                    // 写入，它的时间戳必然更新，按"时间更新就推"会把同一条内容原样推回电脑形成回环。
+                    if (text == lastClipboardContent) return@addPrimaryClipChangedListener
+
+                    // 内容变了（或首次拿到）→ 认为是最新的，立即推给电脑
                     lastClipboardContent = text
+                    lastClipboardTimestamp = currentTimestamp
                     sendClipboard(text)
                 } catch (_: Exception) {
                 }
             }
             clipboardListenerRegistered = true
+            
+            // 启动周期性剪贴板同步检查（每2秒）
+            clipboardSyncJob?.cancel()
+            clipboardSyncJob = scope.launch {
+                while (isActive) {
+                    delay(2000)
+                    try {
+                        val mgr = context?.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        val clip = mgr?.primaryClip
+                        if (clip != null && clip.itemCount > 0) {
+                            val text = clip.getItemAt(0)?.coerceToText(context)?.toString()
+                            if (!text.isNullOrEmpty() && text != lastClipboardContent) {
+                                // 发现新内容，立即推送
+                                lastClipboardContent = text
+                                lastClipboardTimestamp = System.currentTimeMillis()
+                                sendClipboard(text)
+                            }
+                        }
+                    } catch (_: Exception) {
+                        // 后台读取剪贴板可能失败，静默忽略
+                    }
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "注册剪贴板监听失败", e)
         }
@@ -2238,6 +2318,7 @@ object ConnectionManager {
             val cm = context?.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             cm?.setPrimaryClip(ClipData.newPlainText("PhoneHub", text))
             lastClipboardContent = text
+            lastClipboardTimestamp = System.currentTimeMillis()
         } catch (e: Exception) {
             Log.e(TAG, "Set clipboard failed", e)
         }
@@ -2254,6 +2335,33 @@ object ConnectionManager {
             }
         }
         scope.launch { sendRaw(msg.toString()) }
+    }
+
+    /**
+     * 主动读一次手机剪贴板并按需推送给电脑。
+     *
+     * 监听回调只在剪贴板变化时触发，而 Android 10+ 限制后台读剪贴板 ——
+     * 如果用户在别的应用里复制、回到本应用时监听没触发（或读取被拒），
+     * 就会漏掉这一条。所以在 onResume 等时机主动补一次：
+     * 读到内容且与上一条不同（即时间上更新）就直接推送。
+     *
+     * @param force true = 即使内容与上一条相同也重推（一般不用）
+     */
+    fun checkClipboardNow(force: Boolean = false) {
+        if (_connectionState.value != ConnectionState.CONNECTED) return
+        try {
+            val mgr = context?.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            val clip = mgr?.primaryClip ?: return
+            if (clip.itemCount <= 0) return
+            val text = clip.getItemAt(0)?.coerceToText(context)?.toString() ?: return
+            if (text.isEmpty()) return
+            if (!force && text == lastClipboardContent) return
+            lastClipboardContent = text
+            lastClipboardTimestamp = System.currentTimeMillis()
+            sendClipboard(text)
+        } catch (_: Exception) {
+            // 后台/无权限时读取会失败，静默忽略
+        }
     }
 
     fun sendText(text: String, filename: String? = null) {
@@ -3120,7 +3228,9 @@ object ConnectionManager {
 
     /** 向 PC 发送传输控制消息（pause/resume/cancel） */
     private fun sendTransferControl(ctrl: String) {
-        val fileId = resumeInfo?.fileId ?: pendingSend?.fileId ?: ""
+        // 待确认接收阶段也要能带上 file_id（否则 PC 端收不到"手机拒绝了哪个文件"）
+        val fileId = resumeInfo?.fileId ?: pendingSend?.fileId
+            ?: pendingFileTransfer?.fileId ?: ""
         val msg = buildJsonMessage {
             put("source", "phone")
             putJsonObject("data") {

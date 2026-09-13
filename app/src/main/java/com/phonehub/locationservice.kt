@@ -89,7 +89,11 @@ class LocationService : Service() {
         super.onCreate()
         instance = this
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("定位服务运行中"))
+        startForeground(
+            NOTIFICATION_ID,
+            buildNotification("定位服务运行中"),
+            android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        )
         startLocationUpdates()
         Log.i(TAG, "LocationService created")
     }

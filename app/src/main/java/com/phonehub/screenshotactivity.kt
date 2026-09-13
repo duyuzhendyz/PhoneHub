@@ -58,6 +58,9 @@ class ScreenshotActivity : AppCompatActivity() {
     private var projectionManager: MediaProjectionManager? = null
     private var projection: MediaProjection? = null
     private var projectionService: ScreenCaptureService? = null
+    // 提为成员：Activity 中途销毁（onDestroy）时兜底释放，避免 VirtualDisplay/ImageReader 泄漏
+    private var virtualDisplay: android.hardware.display.VirtualDisplay? = null
+    private var imageReader: android.media.ImageReader? = null
     private lateinit var container: LinearLayout
     private lateinit var hint: TextView
     private lateinit var progress: ProgressBar
@@ -150,21 +153,24 @@ class ScreenshotActivity : AppCompatActivity() {
             val dpi = metrics.densityDpi
 
             // 通过 ImageReader 拿到一帧
-            val imageReader = android.media.ImageReader.newInstance(w, h, android.graphics.PixelFormat.RGBA_8888, 2)
+            val ir = android.media.ImageReader.newInstance(w, h, android.graphics.PixelFormat.RGBA_8888, 2)
+            imageReader = ir
             projection?.registerCallback(object : MediaProjection.Callback() {}, Handler(Looper.getMainLooper()))
-            val virtualDisplay = projection?.createVirtualDisplay(
+            val vd = projection?.createVirtualDisplay(
                 "PhoneHubScreenshot", w, h, dpi,
                 android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.surface, null, null
+                ir.surface, null, null
             )
-            if (virtualDisplay == null) {
-                imageReader.close()
+            virtualDisplay = vd
+            if (vd == null) {
+                ir.close()
+                imageReader = null
                 releaseProjection()
                 finish()
                 return
             }
 
-            imageReader.setOnImageAvailableListener({ reader ->
+            ir.setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
                     val planes = image.planes
@@ -184,8 +190,10 @@ class ScreenshotActivity : AppCompatActivity() {
                 } finally {
                     image.close()
                     virtualDisplay?.release()
+                    virtualDisplay = null
                     releaseProjection()
-                    imageReader.close()
+                    reader.close()
+                    imageReader = null
                 }
             }, Handler(Looper.getMainLooper()))
         } catch (e: RuntimeException) {
@@ -258,6 +266,17 @@ class ScreenshotActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         releaseProjection()
+        // 兜底释放：回调未触达就被销毁时，保证 VirtualDisplay/ImageReader 不泄漏
+        try {
+            virtualDisplay?.release()
+        } catch (_: Exception) {
+        }
+        virtualDisplay = null
+        try {
+            imageReader?.close()
+        } catch (_: Exception) {
+        }
+        imageReader = null
         super.onDestroy()
     }
 }

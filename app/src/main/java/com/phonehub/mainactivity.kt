@@ -1377,11 +1377,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         v.findViewById<Button>(R.id.cancelFileBtn)?.setOnClickListener {
-            ConnectionManager.cancelTransfer()
-            // Toast 提示用户
-            android.widget.Toast.makeText(this@MainActivity, "文件传输已取消", android.widget.Toast.LENGTH_SHORT).show()
-            resetFileTransferUi(v)
-            v.findViewById<TextView>(R.id.fileNameText)?.text = "已取消"
+            cancelFileTransferFromUi(v)
         }
 
         v.findViewById<Button>(R.id.doneFileBtn)?.setOnClickListener {
@@ -1471,11 +1467,25 @@ class MainActivity : AppCompatActivity() {
             v2.findViewById<Button>(R.id.doneFileBtn)?.isEnabled = false
             v2.findViewById<TextView>(R.id.fileProgressText)?.text = "下载中..."
         }
-        // "取消"按钮点击：取消待接收
+        // "取消"按钮点击：取消待接收（与通知里的取消同一套逻辑）
         v2.findViewById<Button>(R.id.cancelFileBtn)?.setOnClickListener {
-            ConnectionManager.cancelFileTransferNotification()
-            resetFileTransferUi(v2)
+            cancelFileTransferFromUi(v2, "已取消接收")
         }
+    }
+
+    /**
+     * 文件传输页「取消」按钮的唯一实现：软件内按钮 与「待确认接收」态都走这里。
+     *
+     * 之前的坑：renderPendingFileReceive 把取消按钮改绑成"只移除通知"，
+     * 而点「开始下载」后这个绑定不会被还原 —— 于是下载中途在软件里点取消什么都没发生
+     * （通知里的取消却正常，因为它走 FileTransferReceiver → cancelTransfer）。
+     * 两处统一调用本函数即可。
+     */
+    private fun cancelFileTransferFromUi(v: View, tip: String = "文件传输已取消") {
+        ConnectionManager.cancelTransfer()   // 置位 + 通知 PC + 断连接 + 收尾 + 移除通知
+        android.widget.Toast.makeText(this@MainActivity, tip, android.widget.Toast.LENGTH_SHORT).show()
+        resetFileTransferUi(v)
+        v.findViewById<TextView>(R.id.fileNameText)?.text = "已取消"
     }
 
     // ============================== 遥控 ==============================
@@ -4491,6 +4501,8 @@ class MainActivity : AppCompatActivity() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val text = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
         pageCache[4]?.findViewById<TextView>(R.id.currentClipText)?.text = text
+        // 回前台时补推一次：用户在别的应用里复制的内容，回到本应用时才推给电脑
+        ConnectionManager.checkClipboardNow()
     }
 
     // ============================== 投屏页的档位与连接（UI 逻辑来自参考工程）==============================
@@ -4596,13 +4608,18 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** 探活：GET http://ip:port/status；返回 null 表示通，否则是错误描述 */
+    /** 探活：GET http://ip:port/status；返回 null 表示通，否则是错误描述
+     *
+     * 注意：5423 投屏服务已加鉴权（与主服务同一个 token），这里必须带上
+     * Authorization 头，否则永远返回 401（表现为「连接失败: HTTP 401」）。
+     */
     private fun probeMirrorServer(ip: String, port: Int): String? {
         return try {
             val conn = java.net.URL("http://$ip:$port/status").openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = 3000
             conn.readTimeout = 3000
             conn.requestMethod = "GET"
+            conn.setRequestProperty("Authorization", "Bearer ${ConnectionManager.getSecretToken()}")
             val code = conn.responseCode
             conn.disconnect()
             if (code == 200) null else "HTTP $code"
