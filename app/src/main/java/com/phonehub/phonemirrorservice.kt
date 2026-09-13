@@ -85,6 +85,8 @@ class PhoneHubMirrorService : Service() {
         const val TAG = "MirrorSvc"
         const val ACTION_START_MIRROR = "com.phonehub.mirror.ACTION_START_MIRROR"
         const val ACTION_STOP_MIRROR = "com.phonehub.mirror.ACTION_STOP_MIRROR"
+        // 运行中按新设置重新投屏（切清晰度/音质/模式后调用）
+        const val ACTION_APPLY_SETTINGS = "com.phonehub.mirror.ACTION_APPLY_SETTINGS"
 
         // 参考工程用 LocalBroadcastManager 把状态广播给界面；搬进主工程后改成
         // StateFlow（主工程本来就用协程流，也省掉一个 androidx 依赖）。
@@ -428,6 +430,10 @@ class PhoneHubMirrorService : Service() {
                 LogUtil.scrI("[投屏][MIR] 收到停止投屏指令")
                 stopMirror()
             }
+            ACTION_APPLY_SETTINGS -> {
+                LogUtil.scrI("[投屏][MIR] 收到重新应用设置指令")
+                applySettingsAndRebuild()
+            }
             else -> {
                 Log.w(TAG, "收到空指令，收尾退出")
                 finishLoop()
@@ -573,11 +579,12 @@ class PhoneHubMirrorService : Service() {
             captureThread = HandlerThread("mirror-capture").apply { start() }
             captureHandler = Handler(captureThread!!.looper)
 
-            // 采集回调里只做"转换+压缩+入队"，绝不碰网络
+            // 采集回调里只做"转换+压缩+入队"，绝不碰网络。
+            // 关键：即使"仅音频"模式也要先把图像取出来再立刻关闭（只是不编码）——
+            // 否则 ImageReader 的 3 个缓冲会被占满、之后彻底不再回调，
+            // 切回"音视频"时画面就永远卡住出不来。
             reader.setOnImageAvailableListener({ r ->
                 if (!isRunning) return@setOnImageAvailableListener
-                if (mirrorMode == MODE_AUDIO_ONLY) return@setOnImageAvailableListener  // 仅音频：不采集画面
-                val capturedAt = SystemClock.elapsedRealtime() - mirrorStartMs
                 val img: Image? = try {
                     r.acquireLatestImage()
                 } catch (e: Exception) {
@@ -585,7 +592,10 @@ class PhoneHubMirrorService : Service() {
                 }
                 if (img == null) return@setOnImageAvailableListener
                 try {
-                    encodeAndEnqueue(img, capturedAt)
+                    if (mirrorMode != MODE_AUDIO_ONLY) {
+                        val capturedAt = SystemClock.elapsedRealtime() - mirrorStartMs
+                        encodeAndEnqueue(img, capturedAt)
+                    }
                 } catch (e: Throwable) {
                     Log.e(TAG, "处理帧失败", e)
                 } finally {
@@ -869,6 +879,67 @@ class PhoneHubMirrorService : Service() {
 
     private fun stopRotationWatch() {
         mainHandler.removeCallbacks(rotationWatch)
+    }
+
+    /** 公开给界面：投屏是否正在运行（界面自身状态可能不准，以此为准） */
+    fun isMirrorRunning(): Boolean = isRunning
+
+    /**
+     * 运行中按新设置"重新开始投屏"：重读 清晰度/音质/模式，重建虚拟屏、重启音频采集。
+     * 不销毁服务、复用 MediaProjection 授权，但效果等同重新开始，
+     * 电脑端会按新的参数重新接收（仅音频时还会把残留画面换成占位图）。
+     */
+    private fun applySettingsAndRebuild() {
+        if (!isRunning) return
+        mainHandler.post {
+            if (!isRunning) return@post
+            sendResult("正在按新设置重新投屏…")
+            // 重新读取全部设置
+            currentJpegQuality = PhoneHubMirrorService.getCurrentJpegQuality(this)
+            currentMaxFrameSize = PhoneHubMirrorService.getCurrentMaxFrameSize(this)
+            currentAudioSampleRate = PhoneHubMirrorService.getCurrentAudioSampleRate(this)
+            currentAudioChunkMs = PhoneHubMirrorService.getCurrentAudioChunkMs(this)
+            mirrorMode = PhoneHubMirrorService.getMirrorMode(this)
+
+            // 重启音频采集（音质在启动时读取，必须重启才生效）
+            stopAudioCapture()
+            // 重建虚拟屏（清晰度/分辨率/屏幕方向可能都变了）
+            teardownDisplay()
+            if (!setupDisplay()) {
+                sendResult("重建虚拟屏失败，停止投屏")
+                finishLoop()
+                return@post
+            }
+            // 重启音频（仅画面模式也保持与原来一致：照常启动，只是不发送）
+            try {
+                mediaProjection?.let { startAudioCapture(it) }
+            } catch (e: Throwable) {
+                Log.w(TAG, "重启音频采集失败: ${e.message}")
+            }
+            // 通知电脑端当前模式（仅音频 → 它会把残留画面换成占位图）
+            notifyPcMode(mirrorMode)
+            sendResult("已按新设置重新投屏 · ${capW}x$capH")
+        }
+    }
+
+    /** 通知每台电脑当前投屏模式（0=音视频 1=仅音频 2=仅画面） */
+    private fun notifyPcMode(mode: Int) {
+        Thread {
+            for (s in senders) {
+                try {
+                    val conn = URL("http://${s.ip}:${s.port}/mode?mode=$mode")
+                        .openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.connectTimeout = 2000
+                    conn.readTimeout = 2000
+                    conn.setFixedLengthStreamingMode(0)
+                    conn.responseCode
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.w(TAG, "通知 $s 模式失败: ${e.message}")
+                }
+            }
+        }.start()
     }
 
     private fun teardownDisplay() {

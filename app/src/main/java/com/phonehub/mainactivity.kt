@@ -319,17 +319,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 投屏过程中切换了 清晰度 / 音质 / 模式：重启投屏，
-     * 让电脑端按新的正确方式重新接收（而不是沿用旧的采集/编码参数）。
+     * 投屏过程中切换了 清晰度 / 音质 / 模式：通知正在运行的投屏服务按新设置"重新开始投屏"，
+     * 让电脑端用新的正确方式重新接收（服务没在跑就什么都不做，下次开始自然生效）。
+     * 以服务自身的运行状态为准（界面里的 mirrorRunning 可能不准，例如 Activity 重建后）。
      */
-    private fun restartMirrorIfRunning() {
-        if (!mirrorRunning) return
-        val ip = if (mirrorPendingIp.isNotBlank()) mirrorPendingIp else defaultMirrorIp()
-        val port = if (mirrorPendingPort > 0) mirrorPendingPort else 5423
-        LogUtil.scrI("[投屏] 设置变更，重启投屏 → $ip:$port")
-        setMirrorStatus("正在按新设置重启投屏…")
-        stopMirrorFlow()
-        android.os.Handler(mainLooper).postDelayed({ startMirrorFlow(ip, port) }, 1200)
+    private fun applyMirrorSettingsIfRunning() {
+        val running = PhoneHubMirrorService.instance?.isMirrorRunning() == true
+        if (!running) return
+        LogUtil.scrI("[投屏] 设置变更，通知服务按新设置重新投屏")
+        val svc = Intent(this, PhoneHubMirrorService::class.java).apply {
+            action = PhoneHubMirrorService.ACTION_APPLY_SETTINGS
+        }
+        try {
+            startService(svc)
+        } catch (e: Exception) {
+            LogUtil.scrE("[投屏] 应用新设置失败", e)
+        }
+        setMirrorStatus("正在按新设置重新投屏…")
     }
 
     // 文字保存：用系统文件选择器（ACTION_CREATE_DOCUMENT）选择保存路径
@@ -4476,7 +4482,7 @@ class MainActivity : AppCompatActivity() {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (position == PhoneHubMirrorService.getQualityLevel(this@MainActivity)) return
                 PhoneHubMirrorService.setQualityLevel(this@MainActivity, position)
-                restartMirrorIfRunning()      // 切清晰度 → 重启投屏
+                applyMirrorSettingsIfRunning()      // 切清晰度 → 重新投屏
             }
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
@@ -4491,7 +4497,7 @@ class MainActivity : AppCompatActivity() {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (position == PhoneHubMirrorService.getAudioLevel(this@MainActivity)) return
                 PhoneHubMirrorService.setAudioLevel(this@MainActivity, position)
-                restartMirrorIfRunning()      // 切音质 → 重启投屏
+                applyMirrorSettingsIfRunning()      // 切音质 → 重新投屏
             }
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
@@ -4506,7 +4512,7 @@ class MainActivity : AppCompatActivity() {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (position == PhoneHubMirrorService.getMirrorMode(this@MainActivity)) return
                 PhoneHubMirrorService.setMirrorMode(this@MainActivity, position)
-                restartMirrorIfRunning()      // 切模式（如仅音频）→ 重启投屏
+                applyMirrorSettingsIfRunning()      // 切模式（如仅音频）→ 重新投屏
             }
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}

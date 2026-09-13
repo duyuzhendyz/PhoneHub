@@ -784,6 +784,19 @@ def api_stop():
     return jsonify({"stopped": was})
 
 
+@app.route("/mode", methods=["POST"])
+def api_mode():
+    """手机运行中切换投屏模式时调用（0=音视频 1=仅音频 2=仅画面）。
+
+    切到"仅音频"时，手机不再发画面，这里把窗口里残留的旧帧换成"仅音频"占位图，
+    不再让电脑端一直显示上一次停止时的画面。
+    """
+    mode = str(request.args.get("mode", "0"))
+    if mode in ("1", "audio_only"):
+        _set_live_placeholder()
+    return jsonify({"ok": True})
+
+
 @app.route("/audio_start", methods=["POST"])
 def api_audio_start():
     """手机通知：内部录音开始，并告知采样参数"""
