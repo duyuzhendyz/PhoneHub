@@ -459,7 +459,8 @@ class ConnectionManager(QObject):
                 monitor_on = False
                 try:
                     import requests as _rq
-                    st = _rq.get('http://127.0.0.1:5423/status', timeout=1.5).json()
+                    st = _rq.get('http://127.0.0.1:5423/status', timeout=1.5,
+                                 headers={'Authorization': f'Bearer {self.secret_token}'}).json()
                     monitor_on = int(((st.get('audio') or {}).get('listeners')) or 0) > 0
                 except Exception:
                     monitor_on = False   # 5423 没开 = 没在投屏，不存在冲突
@@ -471,7 +472,8 @@ class ConnectionManager(QObject):
                     try:
                         import requests as _rq
                         _rq.post('http://127.0.0.1:5423/pc_audio_listen',
-                                 params={'on': 1 if on else 0}, timeout=1.5)
+                                 params={'on': 1 if on else 0}, timeout=1.5,
+                                 headers={'Authorization': f'Bearer {self.secret_token}'})
                     except Exception:
                         pass
             elif action in ('clipboard', 'clipboard_set'):

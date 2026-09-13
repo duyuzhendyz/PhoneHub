@@ -95,6 +95,12 @@ class PhoneHubMirrorService : Service() {
         private val _resultFlow = MutableStateFlow("")
         val resultFlow: StateFlow<String> = _resultFlow
 
+        /** 进程重建时复位静态状态流，避免新会话沿用旧状态（配合 onCreate 调用） */
+        fun resetStatus() {
+            _fpsFlow.value = ""
+            _resultFlow.value = ""
+        }
+
         const val EXTRA_PC_IP = "pc_ip"
         const val EXTRA_PC_PORT = "pc_port"
 
@@ -154,53 +160,14 @@ class PhoneHubMirrorService : Service() {
             pendingResultData = data
         }
 
-        /** 持久化授权结果到 SharedPreferences，避免重复弹窗 */
-        fun saveProjectionResult(context: Context, code: Int, data: Intent?) {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit().apply {
-                putInt("proj_code", code)
-                data?.let {
-                    // 将 Intent 序列化存储（简化处理，只存储必要字段）
-                    putString("proj_data_uri", it.data?.toString())
-                    putString("proj_data_type", it.type)
-                    putInt("proj_data_flags", it.flags)
-                }
-                apply()
-            }
-            Log.i(TAG, "已保存 MediaProjection 授权结果（永不超时）")
-        }
-
-        /** 从 SharedPreferences 恢复授权结果 */
-        fun loadProjectionResult(context: Context): Pair<Int, Intent?>? {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val code = prefs.getInt("proj_code", -1)
-            if (code == -1) return null
-
-            val dataUri = prefs.getString("proj_data_uri", null)
-            val dataType = prefs.getString("proj_data_type", null)
-            val dataFlags = prefs.getInt("proj_data_flags", 0)
-
-            // 授权结果永不超时，只要用户不清除缓存就一直有效
-            return try {
-                val data = if (dataUri != null) {
-                    Intent().apply {
-                        data = android.net.Uri.parse(dataUri)
-                        type = dataType
-                        flags = dataFlags
-                    }
-                } else null
-                Pair(code, data)
-            } catch (e: Exception) {
-                Log.e(TAG, "恢复授权结果失败", e)
-                null
-            }
-        }
-
-        /** 清除缓存的授权结果 */
-        fun clearProjectionResult(context: Context) {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit().clear().apply()
-            Log.i(TAG, "已清除缓存的授权结果")
+        /** 清除进程级常驻授权（用户点「清除授权缓存」）：置空后下次投屏需重新授权。
+         * 授权凭证（MediaProjection token）无法从 SharedPreferences 还原 —— 序列化恢复
+         * 必炸，故这里只走进程内缓存（App 进程被杀即失效，由系统自然回收）。 */
+        fun clearHeldProjection() {
+            pendingResultCode = -1
+            pendingResultData = null
+            heldProjection = null
+            Log.i(TAG, "已清除进程级 MediaProjection 授权")
         }
 
         /** 获取画质级别（0-3） */
@@ -396,6 +363,8 @@ class PhoneHubMirrorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // 静态 StateFlow 在进程重建后会残留上次会话的值，这里复位，避免新会话沿用旧状态
+        PhoneHubMirrorService.resetStatus()
         instance = this
         createNotificationChannel()
         startForegroundCompat()
@@ -785,6 +754,8 @@ class PhoneHubMirrorService : Service() {
             conn.doOutput = true
             conn.connectTimeout = 3000
             conn.readTimeout = 3000
+            // 5423 已加鉴权：与主服务同一个 token
+            conn.setRequestProperty("Authorization", "Bearer ${ConnectionManager.getSecretToken()}")
             conn.setRequestProperty("Content-Type", "image/jpeg")
             conn.setRequestProperty("Connection", "keep-alive")
             conn.setRequestProperty("X-Capture-Ts", tsMs.toString())
@@ -858,8 +829,26 @@ class PhoneHubMirrorService : Service() {
             .defaultDisplay.rotation
     } catch (_: Throwable) { android.view.Surface.ROTATION_0 }
 
-    /** 轮询物理旋转：手机横竖屏切换时重建虚拟屏（电脑端画面/窗口随之转成横屏或竖屏） */
-    private val rotationWatch = object : Runnable {
+    /** 物理旋转监听：手机横竖屏切换时重建虚拟屏（电脑端画面/窗口随之转成横屏或竖屏）。
+     * 原先每 1s 轮询一次，改成 DisplayManager 事件驱动 —— 只在屏幕方向真变化时才回调，
+     * 省掉整段常驻轮询。 */
+    private var displayManager: DisplayManager? = null
+    private var displayListener: DisplayManager.DisplayListener? = null
+
+    private val rotationChangedHandler = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+            val r = currentRotation()
+            if (r != lastAppliedRotation) {
+                lastAppliedRotation = r
+                sendResult("屏幕方向变化，正在重建虚拟屏…")
+                requestRebuildDisplay()
+            }
+        }
+    }
+
+    // DisplayListener 注册失败的兜底：退回 1s 轮询
+    private val rotationPollRunnable = object : Runnable {
         override fun run() {
             if (!isRunning) return
             val r = currentRotation()
@@ -873,12 +862,40 @@ class PhoneHubMirrorService : Service() {
     }
 
     private fun startRotationWatch() {
-        mainHandler.removeCallbacks(rotationWatch)
-        mainHandler.postDelayed(rotationWatch, 1500)
+        try {
+            if (displayListener != null) return
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
+            displayManager = dm
+            val listener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) {}
+                override fun onDisplayRemoved(displayId: Int) {}
+                override fun onDisplayChanged(displayId: Int) {
+                    if (displayId == android.view.Display.DEFAULT_DISPLAY) {
+                        // DisplayListener 可能在任意线程回调，回主线程统一处理
+                        mainHandler.post(rotationChangedHandler)
+                    }
+                }
+            }
+            displayListener = listener
+            dm.registerDisplayListener(listener, mainHandler)
+        } catch (e: Exception) {
+            // 个别 ROM 注册失败：退回 1s 轮询，保证旋转重建不失效
+            mainHandler.removeCallbacks(rotationPollRunnable)
+            mainHandler.postDelayed(rotationPollRunnable, 1500)
+        }
     }
 
     private fun stopRotationWatch() {
-        mainHandler.removeCallbacks(rotationWatch)
+        try {
+            displayManager?.let { dm ->
+                displayListener?.let { dm.unregisterDisplayListener(it) }
+            }
+        } catch (_: Exception) {
+        }
+        displayManager = null
+        displayListener = null
+        mainHandler.removeCallbacks(rotationPollRunnable)
+        mainHandler.removeCallbacks(rotationChangedHandler)
     }
 
     /** 公开给界面：投屏是否正在运行（界面自身状态可能不准，以此为准） */
@@ -930,6 +947,7 @@ class PhoneHubMirrorService : Service() {
                     val conn = URL("http://${s.ip}:${s.port}/mode?mode=$mode")
                         .openConnection() as HttpURLConnection
                     conn.requestMethod = "POST"
+                    conn.setRequestProperty("Authorization", "Bearer ${ConnectionManager.getSecretToken()}")
                     conn.connectTimeout = 2000
                     conn.readTimeout = 2000
                     conn.setFixedLengthStreamingMode(0)
@@ -1015,6 +1033,7 @@ class PhoneHubMirrorService : Service() {
      * 关键点：**复用投屏授权拿到的那个 MediaProjection，不需要二次授权。**
      * 参数照抄系统录屏器：48kHz / 立体声 / 16bit。
      */
+    @Suppress("DEPRECATION")  // addMatchingUsage 的个别 usage 常量在新 SDK 被标记弃用，语义不变
     private fun startAudioCapture(mp: MediaProjection) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             Log.w(TAG, "Android ${Build.VERSION.SDK_INT} < 29，不支持 AudioPlaybackCapture")
@@ -1266,6 +1285,7 @@ class PhoneHubMirrorService : Service() {
 
     /** 真实物理屏尺寸。不能用 resources.displayMetrics —— 建了 400 宽虚拟屏后，
      * 部分 ROM 的 displayMetrics 会被配置变更污染成虚拟屏尺寸，坐标被缩到角落。 */
+    @Suppress("DEPRECATION")
     private fun realScreenSize(): Pair<Int, Int> {
         val dm = android.util.DisplayMetrics()
         (applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
@@ -1353,6 +1373,7 @@ class PhoneHubMirrorService : Service() {
                 val conn = URL("http://${s.ip}:${s.port}/audio_start?rate=$currentAudioSampleRate&ch=2&bits=16&mode=$mirrorMode")
                     .openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
+                conn.setRequestProperty("Authorization", "Bearer ${ConnectionManager.getSecretToken()}")
                 conn.connectTimeout = 3000
                 conn.readTimeout = 3000
                 conn.setFixedLengthStreamingMode(0)
@@ -1376,6 +1397,7 @@ class PhoneHubMirrorService : Service() {
             conn.doOutput = true
             conn.connectTimeout = 3000
             conn.readTimeout = AUDIO_UPLOAD_TIMEOUT_MS
+            conn.setRequestProperty("Authorization", "Bearer ${ConnectionManager.getSecretToken()}")
             conn.setRequestProperty("Content-Type", "application/octet-stream")
             conn.setRequestProperty("Connection", "keep-alive")
             conn.setRequestProperty("X-Audio-Seq", seq.toString())
@@ -1434,6 +1456,7 @@ class PhoneHubMirrorService : Service() {
                 try {
                     val conn = URL("http://${s.ip}:${s.port}/stop").openConnection() as HttpURLConnection
                     conn.requestMethod = "POST"
+                    conn.setRequestProperty("Authorization", "Bearer ${ConnectionManager.getSecretToken()}")
                     conn.connectTimeout = 2000
                     conn.readTimeout = 2000
                     conn.setFixedLengthStreamingMode(0)

@@ -33,6 +33,7 @@ is_server_running() / open_live_window() 四个接口，供桌面 app 在自己�
      已提到 60s。
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -76,6 +77,74 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── Flask ─────────────────────────────────────────────
 app = Flask(__name__)
+
+# ── 鉴权 ──────────────────────────────────────────────
+# 5423 原先**全路由零鉴权**：局域网内任何设备都能实时看手机屏幕（/stream）、
+# 向手机注入点击/滑动（/remote_*）、下载录像（/output/）。
+# 这里补上与主服务同一个 secret_token 的校验（读 desktop/settings.json，与
+# connection_manager 同源，改一次令牌两端都生效）。
+_AUTH_EXEMPT_PATHS = set()          # 预留：以后若有必须匿名访问的路由可加在这里
+_TOKEN_CACHE = {"value": None, "mtime": 0.0}
+DEFAULT_SECRET_TOKEN = "541881452418845"   # 与 connection_manager.DEFAULT_SECRET_TOKEN 一致
+
+
+def get_secret_token():
+    """读 desktop/settings.json 的 secret_token；仅在文件 mtime 变化时重读，避免每请求读盘。"""
+    settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+    try:
+        mtime = os.path.getmtime(settings_file)
+    except OSError:
+        mtime = 0.0
+    if mtime != _TOKEN_CACHE["mtime"]:
+        token = None
+        if mtime:
+            try:
+                with open(settings_file, "r", encoding="utf-8") as f:
+                    token = (json.load(f) or {}).get("secret_token")
+            except Exception:
+                token = None
+        _TOKEN_CACHE["value"] = token or DEFAULT_SECRET_TOKEN
+        _TOKEN_CACHE["mtime"] = mtime
+    return _TOKEN_CACHE["value"]
+
+
+def _supplied_token():
+    """请求携带的令牌，三种来源（按优先级）：
+    1. `Authorization: Bearer` —— 手机端与桌面端本地调用走这条；
+    2. `?token=` —— 浏览器首次打开 /live、/ 时走这条（<img>/<video>/fetch 无法自定义请求头）；
+    3. `ph_mirror` Cookie —— 上面任一成功后种下的同源 Cookie，页面内部的
+       /stream、/audio_stream、/output 等子请求会自动带上，**无需改页面 HTML**。"""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:].strip()
+    tok = (request.args.get("token") or "").strip()
+    if tok:
+        return tok
+    return (request.cookies.get("ph_mirror") or "").strip()
+
+
+@app.after_request
+def _remember_token(resp):
+    """带有效凭据访问过之后种一个同源 Cookie，让浏览器里的页面子请求自动带上凭据。"""
+    tok = _supplied_token()
+    if tok and tok == get_secret_token() and request.cookies.get("ph_mirror") != tok:
+        resp.set_cookie("ph_mirror", tok, httponly=True, samesite="Lax")
+    return resp
+
+
+@app.before_request
+def _require_token():
+    if request.method == "OPTIONS" or request.path in _AUTH_EXEMPT_PATHS:
+        return None
+    if _supplied_token() == get_secret_token():
+        return None
+    print(f"[鉴权] 拒绝 {request.remote_addr} {request.method} {request.path}")
+    if request.path in ("/live", "/"):
+        return ("<h3>需要鉴权</h3>"
+                "<p>请在地址后面加上 <code>?token=你的令牌</code> 再打开本页。</p>",
+                401, {"Content-Type": "text/html; charset=utf-8"})
+    return jsonify({"error": "unauthorized"}), 401
+
 
 # ── 录制状态 ──────────────────────────────────────────
 # 必须可重入：upload_frame 持锁后还要调 _start_recording_locked
@@ -181,7 +250,7 @@ def _set_live_placeholder(text="仅音频模式 · 无画面"):
     用于「仅音频」模式：手机端不再发送画面，这里把上一次停止时的残留帧换掉，
     电脑端窗口就不会一直显示早就停止的旧画面了。
     """
-    global _live_jpeg, _live_bytes, _live_ts
+    global _live_jpeg, _live_bytes, _live_ts, _live_w, _live_h
     try:
         from PIL import ImageDraw, ImageFont
         with _live_lock:
@@ -217,6 +286,10 @@ def _set_live_placeholder(text="仅音频模式 · 无画面"):
         print(f"[实时] 已切换为占位画面（{text}） {w}x{h}")
     except Exception as e:
         print(f"[实时] 生成占位画面失败: {e}")
+        # 如果生成占位图失败，至少设置一个默认尺寸避免窗口无法连接
+        with _live_lock:
+            if _live_w <= 0 or _live_h <= 0:
+                _live_w, _live_h = 720, 1280
 
 
 def _update_live(jpeg_bytes, size):
@@ -855,6 +928,8 @@ def api_audio_start():
     # 仅音频模式：手机不发画面，换成「仅音频」占位图，避免窗口一直显示上一次停止时的旧帧
     if mode in ("1", "audio_only"):
         _set_live_placeholder()
+        # 仅音频模式也需要自动打开窗口，否则用户看不到音频状态
+        _open_live_window()
     # 丢弃上一轮的残留试听数据，避免新一次录音开头播到旧声音
     while not _audio_stream_q.empty():
         try:

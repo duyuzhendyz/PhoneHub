@@ -44,6 +44,19 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(
     os.environ.get("PHONEHUB_MIRROR_PORT", "5423"))
 BASE = "http://127.0.0.1:%d" % PORT
 
+
+def _secret_token():
+    """与主服务/5423 同一份 desktop/settings.json 的 secret_token。
+    5423 已加鉴权（原为零鉴权：局域网任何人都能看屏幕、注入点击、下载录像）。"""
+    try:
+        with open(os.path.join(HERE, "settings.json"), "r", encoding="utf-8") as f:
+            return (json.load(f) or {}).get("secret_token") or "541881452418845"
+    except Exception:
+        return "541881452418845"
+
+
+AUTH_HDR = {"Authorization": "Bearer " + _secret_token()}
+
 BG = "#0d0d0d"
 BG_BAR = "#161616"
 FG = "#d0d0d0"
@@ -78,7 +91,8 @@ def reader_thread():
     session = requests.Session()
     while RUNNING:
         try:
-            with session.get(BASE + "/stream", stream=True, timeout=(5, 15)) as r:
+            with session.get(BASE + "/stream", stream=True, timeout=(5, 15),
+                             headers=AUTH_HDR) as r:
                 if r.status_code != 200:
                     set_shared(connected=False, error="HTTP %d" % r.status_code)
                     time.sleep(1.5)
@@ -180,7 +194,7 @@ class AudioMonitor:
     def _query_rate(self):
         """查手机端当前音频采样率（音质分档后可能是 96k/192k）"""
         try:
-            st = requests.get(self.base + "/status", timeout=3).json()
+            st = requests.get(self.base + "/status", timeout=3, headers=AUTH_HDR).json()
             r = int((st.get("audio") or {}).get("rate") or 48000)
             return max(8000, min(192000, r))
         except Exception:
@@ -196,7 +210,7 @@ class AudioMonitor:
             if not self.running:
                 return
             try:
-                st = requests.get(self.base + "/status", timeout=3).json()
+                st = requests.get(self.base + "/status", timeout=3, headers=AUTH_HDR).json()
                 r = int((st.get("audio") or {}).get("rate") or 48000)
                 if 8000 <= r <= 192000:
                     self.stream_rate = r
@@ -228,7 +242,7 @@ class AudioMonitor:
         while self.running:
             try:
                 with requests.get(self.base + "/audio_stream", stream=True,
-                                  timeout=(5, None)) as r:
+                                  timeout=(5, None), headers=AUTH_HDR) as r:
                     if r.status_code != 200:
                         self.report("连接失败 HTTP %d" % r.status_code)
                         time.sleep(1.5)
@@ -442,7 +456,7 @@ class LiveWindow:
 
     def _poll_status(self):
         try:
-            d = requests.get(BASE + "/status", timeout=3).json()
+            d = requests.get(BASE + "/status", timeout=3, headers=AUTH_HDR).json()
             self.ctrl_ready = bool((d.get("live") or {}).get("ctrl"))
             self.rec_state = bool(d.get("recording"))
         except Exception:
@@ -574,7 +588,7 @@ class LiveWindow:
     def _post_async(self, path, params):
         def _send():
             try:
-                requests.post(BASE + path, params=params, timeout=2)
+                requests.post(BASE + path, params=params, timeout=2, headers=AUTH_HDR)
             except Exception:
                 pass
         threading.Thread(target=_send, daemon=True).start()

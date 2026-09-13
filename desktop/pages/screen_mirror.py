@@ -12,6 +12,7 @@
 音量与静音、手机截图、「推流电脑画面到手机」、「电脑声音传到手机」。
 """
 
+import json
 import os
 import threading
 import time
@@ -33,6 +34,20 @@ except Exception:                                    # 理论上必有（require
 
 # 服务没起来时先用参考工程的默认端口显示，起来后再以服务实际端口为准
 DEFAULT_MIRROR_PORT = 5423
+
+
+def _mirror_token():
+    """5423 已加鉴权（原为零鉴权）：这里读 desktop/settings.json 里与主服务同一个
+    secret_token。读盘失败就退回默认值，保证不至于因为读配置失败而完全不能投屏。"""
+    try:
+        desktop_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(desktop_dir, "settings.json"), "r", encoding="utf-8") as f:
+            return (json.load(f) or {}).get("secret_token") or "541881452418845"
+    except Exception:
+        return "541881452418845"
+
+
+MIRROR_AUTH = {"Authorization": "Bearer " + _mirror_token()}
 
 
 class ScreenMirrorPage(QWidget):
@@ -339,7 +354,9 @@ class ScreenMirrorPage(QWidget):
 
     def _open_live_web(self):
         try:
-            webbrowser.open(f"http://127.0.0.1:{self._port}/live")
+            # 带上令牌：5423 已加鉴权。首次用它打开会种下同源 Cookie，
+            # 之后页面内部的 /stream、/audio_stream、/output 子请求自动带凭据。
+            webbrowser.open(f"http://127.0.0.1:{self._port}/live?token={_mirror_token()}")
         except Exception as e:
             dark_msg_box(self, QMessageBox.Warning, "打开失败", f"打开浏览器失败: {e}")
 
@@ -369,7 +386,8 @@ class ScreenMirrorPage(QWidget):
         def work():
             data = {}
             try:
-                r = requests.get(f"http://127.0.0.1:{port}/status", timeout=1.5)
+                r = requests.get(f"http://127.0.0.1:{port}/status", timeout=1.5,
+                                 headers=MIRROR_AUTH)
                 if r.status_code == 200:
                     data = r.json() or {}
             except Exception:
@@ -513,7 +531,7 @@ class ScreenMirrorPage(QWidget):
 
         def work():
             try:
-                r = requests.post(url, timeout=3)
+                r = requests.post(url, timeout=3, headers=MIRROR_AUTH)
                 j = r.json() if r.status_code == 200 else {}
                 ok = bool(j.get("ok"))
                 msg = "开始录制" if want else "停止录制"
