@@ -2874,6 +2874,7 @@ object ConnectionManager {
                         resumeInfo?.resumeOffset = received
                         _fileTransferProgress.value = TransferProgress(fileId, fileName, received, fileSize, true)
                         updateFileTransferNotification(fileName, received, fileSize, paused = true)
+                        armTransferStallWatchdog()   // 30s 后对端仍无动作则自动判定中断
                     }
                 } else {
                     Log.e(TAG, "startReceiveFile: 下载失败 responseCode=$code")
@@ -2914,6 +2915,7 @@ object ConnectionManager {
     }
 
     private fun completeFileReceive(fileId: String) {
+        cancelTransferStallWatchdog()
         _fileTransferProgress.value = null
         fileReceiveState.remove(fileId)
     }
@@ -2948,6 +2950,7 @@ object ConnectionManager {
     }
 
     fun cancelTransfer() {
+        cancelTransferStallWatchdog()
         fileTransferCancel = true
         transferPaused = false
         _transferPausedFromPc.value = false
@@ -2979,6 +2982,7 @@ object ConnectionManager {
 
     /** 继续暂停的传输：通知 PC resume 后重新发起上传/下载（从头重发） */
     fun resumeTransfer() {
+        cancelTransferStallWatchdog()
         transferPaused = false
         fileTransferCancel = false
         _transferPausedFromPc.value = false
@@ -3006,6 +3010,33 @@ object ConnectionManager {
 
     /** 当前是否处于暂停状态（供 UI 查询） */
     fun isTransferPaused(): Boolean = transferPaused
+
+    // ── 传输中断自愈看门狗 ──
+    // 流异常中断被"视为暂停"后，若 30 秒内对端既不 resume 也不 cancel
+    // （电脑端崩溃/断网没发消息），自动清状态，避免 UI 永远卡在「已暂停(对端)」。
+    private var transferStallRunnable: Runnable? = null
+
+    private fun cancelTransferStallWatchdog() {
+        transferStallRunnable?.let { mainHandler.removeCallbacks(it) }
+        transferStallRunnable = null
+    }
+
+    private fun armTransferStallWatchdog() {
+        cancelTransferStallWatchdog()
+        val r = Runnable {
+            transferStallRunnable = null
+            if (fileTransferCancel || transferPaused) return@Runnable   // 真暂停/取消由对端消息管理
+            Log.w(TAG, "传输中断自愈: 30s 无对端恢复，清除暂停状态")
+            transferPaused = false
+            _transferPausedFromPc.value = false
+            resumeInfo = null
+            _fileTransferProgress.value = null
+            cancelFileTransferNotification()
+            showToast("传输已中断，请在电脑端重新发送")
+        }
+        transferStallRunnable = r
+        mainHandler.postDelayed(r, 30_000L)
+    }
 
     /** 重置取消标志，供继续传输前调用 */
     fun resetTransferCancel() {
@@ -3327,6 +3358,16 @@ object ConnectionManager {
      * 电脑声音播放期间持有 唤醒锁 + WiFi 锁：
      * 防止切后台/息屏后 CPU 休眠、WiFi 省电导致 WebSocket 断流、音频停播。
      */
+    // 手机端「电脑声音实时收听」状态（与投屏互斥，防止扬声器啸叫）
+    @Volatile
+    private var pcAudioWebPlaying = false
+
+    fun isPcAudioWebPlaying(): Boolean = pcAudioWebPlaying
+
+    fun setPcAudioWebPlaying(on: Boolean) {
+        pcAudioWebPlaying = on
+    }
+
     @Suppress("DEPRECATION")
     fun setPcAudioKeepAlive(active: Boolean) {
         try {

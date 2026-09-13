@@ -235,9 +235,10 @@ class MainActivity : AppCompatActivity() {
 
     /** 手机端点「开始投屏」和电脑端下发 mirror_start 都汇到这里 */
     private fun startMirrorFlow(ip: String?, port: Int?) {
-        // 互斥：正在收听 PC 音频时拒绝启动投屏（两者都持有 AudioTrack，会冲突）
-        if (ConnectionManager.isPcAudioPolling()) {
-            Toast.makeText(this, "正在收听电脑音频，请先停止后再投屏", Toast.LENGTH_LONG).show()
+        // 互斥（防啸叫）：正在收听电脑声音时拒绝启动投屏——
+        // 投屏内录的是手机扬声器正在放的声音（含电脑声音），再被电脑试听回放就成回路了
+        if (ConnectionManager.isPcAudioWebPlaying() || pcAudioWebView?.parent != null) {
+            Toast.makeText(this, "正在收听电脑声音，请先停止后再投屏（防止啸叫）", Toast.LENGTH_LONG).show()
             return
         }
         val useIp = if (ip.isNullOrBlank()) defaultMirrorIp() else ip
@@ -295,6 +296,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopMirrorFlow() {
+        // 停投屏时顺带停止电脑声音收听（若在收听），恢复互斥前的状态一致性
+        stopPcAudioListening()
         val svc = Intent(this, PhoneHubMirrorService::class.java).apply {
             action = PhoneHubMirrorService.ACTION_STOP_MIRROR
         }
@@ -853,9 +856,13 @@ class MainActivity : AppCompatActivity() {
         }
         currentTab = index
 
-        // 进入「电脑声音」页：把常驻 WebView 从后台容器移回页面（连接保持不变，后台继续播放）
+        // 进入「电脑声音」页：投屏运行中显示占位空白页（防啸叫门控），否则挂载常驻 WebView
         if (index == 17) {
-            reparentAudioWebViewToPage()
+            if (PhoneHubMirrorService.instance?.isMirrorRunning() == true) {
+                pageCache.remove(17)   // 占位页不缓存，停止投屏后重新进入会重新走门控
+            } else {
+                reparentAudioWebViewToPage()
+            }
         }
 
         // 进入投屏页时检测无障碍服务是否开启
@@ -3639,6 +3646,11 @@ class MainActivity : AppCompatActivity() {
      */
     private fun getPcAudioWebView(): View {
         val v = LayoutInflater.from(this).inflate(R.layout.page_pc_audio, null)
+        // 互斥（防啸叫）：投屏运行中不允许收听电脑声音——投屏内录 + 手机外放电脑声音会自激
+        if (PhoneHubMirrorService.instance?.isMirrorRunning() == true) {
+            Toast.makeText(this, "投屏中无法收听电脑声音（防止啸叫），请先停止投屏", Toast.LENGTH_LONG).show()
+            return v    // WebView 不配置、不加载，页面保持空白
+        }
         val web = v.findViewById<WebView>(R.id.pcAudioWebView)
         configurePcAudioWebView(web)
         pcAudioWebView = web
@@ -3713,6 +3725,8 @@ class MainActivity : AppCompatActivity() {
     private class PcAudioBridge : Any() {
         @JavascriptInterface
         fun setPlaying(playing: Boolean) {
+            // 同步收听状态（投屏启动前用它做互斥检查）
+            ConnectionManager.setPcAudioWebPlaying(playing)
             // 手机端是否在收听 → 播放期间持有唤醒/WiFi 锁，保证切后台/息屏后仍在收听
             ConnectionManager.setPcAudioKeepAlive(playing)
             // 上报给电脑端做互斥仲裁：若电脑端正在「试听手机声音」，会否决并让手机停止收听
