@@ -41,6 +41,15 @@
   <div id="status">未连接</div>
   <div id="info"></div>
 
+  <div id="media" class="media hidden">
+    <img id="cover" class="cover" alt="">
+    <div class="meta">
+      <div id="mTitle" class="mtitle">—</div>
+      <div id="mArtist" class="martist">—</div>
+    </div>
+    <div id="mStatus" class="mstatus">—</div>
+  </div>
+
   <div class="vol">
     <label>音量</label>
     <input id="vol" type="range" min="0" max="1" step="0.01" value="1">
@@ -140,6 +149,26 @@ stopBtn.onclick = () => {
   pending = []; readPos = 0;
   statusEl.textContent = "已停止"; startBtn.disabled = false; stopBtn.disabled = true;
 };
+
+function updateMedia(m) {
+  const mediaEl = $("media");
+  mediaEl.classList.remove("hidden");
+  const st = $("mStatus");
+  if (!m || m.status === "stopped" || (!m.title && !m.artist && !m.thumbnail)) {
+    $("mTitle").textContent = (m && m.title) ? m.title : "未检测到媒体播放";
+    $("mArtist").textContent = (m && m.artist) ? m.artist : "";
+    $("cover").style.display = "none";
+    st.textContent = "未播放";
+    st.classList.remove("playing");
+    return;
+  }
+  if (m.thumbnail) { $("cover").src = m.thumbnail; $("cover").style.display = "block"; }
+  else { $("cover").style.display = "none"; }
+  $("mTitle").textContent = m.title || "未知曲目";
+  $("mArtist").textContent = (m.artist || "") + (m.album ? " · " + m.album : "");
+  if (m.status === "paused") { st.textContent = "⏸ 已暂停"; st.classList.remove("playing"); }
+  else { st.textContent = "▮ 播放中"; st.classList.add("playing"); }
+}
 </script>
 </body>
 </html>

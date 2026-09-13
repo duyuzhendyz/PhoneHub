@@ -149,6 +149,118 @@ async def pump():
 
 
 # ----------------------------------------------------------------------------
+# 2.5) 当前播放媒体信息（winsdk，写法与桌面端 connection_manager 一致）
+# ----------------------------------------------------------------------------
+latest_media = {}
+media_dirty = False
+_media_lock = threading.Lock()
+
+
+def _img_mime(b):
+    if b[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if b[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def get_media_info():
+    try:
+        import asyncio
+        import winsdk.windows.media.control as wmc
+        from winsdk.windows.storage.streams import DataReader
+
+        async def _get():
+            sessions = await wmc.GlobalSystemMediaTransportControlsSessionManager.request_async()
+            session = sessions.get_current_session()
+            if not session:
+                return None
+            props = await session.try_get_media_properties_async()
+            thumb_url = ""
+            if props.thumbnail:
+                try:
+                    stream = await props.thumbnail.open_read_async()
+                    if stream.size > 0:
+                        reader = DataReader(stream)
+                        await reader.load_async(stream.size)
+                        data = bytearray(stream.size)
+                        reader.read_bytes(data)
+                        reader.detach_stream()
+                        reader.close()
+                        stream.close()
+                        mime = _img_mime(bytes(data))
+                        thumb_url = "data:%s;base64,%s" % (
+                            mime, base64.b64encode(bytes(data)).decode("ascii"))
+                except Exception:
+                    pass
+            status = ("playing"
+                      if session.get_playback_info().playback_status
+                      == wmc.GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING
+                      else "paused")
+            return {
+                "title": props.title or "",
+                "artist": props.artist or "",
+                "album": props.album_title or "",
+                "thumbnail": thumb_url,
+                "status": status,
+            }
+        return asyncio.run(_get())
+    except Exception as e:
+        print(f"[media] 获取失败: {e}")
+        return None
+
+
+def media_thread():
+    last = None
+    import concurrent.futures as _cf
+    while running:
+        info = None
+        try:
+            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                info = _ex.submit(get_media_info).result(timeout=3)
+        except Exception:
+            info = None
+        if info is None:
+            info = {"title": "未检测到媒体播放", "artist": "", "album": "",
+                    "thumbnail": "", "status": "stopped"}
+        with _media_lock:
+            if info != last:
+                latest_media.clear()
+                latest_media.update(info)
+                global media_dirty
+                media_dirty = True
+                last = info
+        time.sleep(2)
+
+
+async def media_pump():
+    global media_dirty
+    last_sent = 0.0
+    while running:
+        now = time.time()
+        with _media_lock:
+            dirty = media_dirty
+            media_dirty = False
+            snap = dict(latest_media) if latest_media else None
+        # 内容变化即时推；否则每 2s 兜底重推，保证任何时刻连上的客户端都能拿到当前状态
+        if snap and (dirty or now - last_sent >= 2):
+            try:
+                payload = json.dumps({"type": "media_info", **snap}, ensure_ascii=False)
+            except Exception:
+                payload = None
+            if payload:
+                for q in list(subscribers):
+                    try:
+                        q.put_nowait(payload)
+                    except asyncio.QueueFull:
+                        pass
+                last_sent = now
+        await asyncio.sleep(0.5)
+
+
+# ----------------------------------------------------------------------------
 # 3) WebSocket 推流（端口 4599）
 # ----------------------------------------------------------------------------
 async def ws_handler(websocket, path=None):
@@ -161,6 +273,14 @@ async def ws_handler(websocket, path=None):
     await websocket.send(cfg)
     q = asyncio.Queue(maxsize=60)
     subscribers.add(q)
+    # 新客户端连上立即补发当前已知媒体信息（避免错过首推 / 曲目未变时看不到）
+    with _media_lock:
+        if latest_media:
+            try:
+                await websocket.send(
+                    json.dumps({"type": "media_info", **latest_media}, ensure_ascii=False))
+            except Exception:
+                pass
     print(f"[ws] 客户端接入（当前 {len(subscribers)}）")
     try:
         while True:
@@ -217,6 +337,8 @@ async def main():
     capture = Capture()
     threading.Thread(target=capture_thread, daemon=True).start()
     asyncio.ensure_future(pump())
+    threading.Thread(target=media_thread, daemon=True).start()
+    asyncio.ensure_future(media_pump())
 
     # 网页服务（线程）
     httpd = http.server.ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), HttpHandler)
