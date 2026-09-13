@@ -438,6 +438,28 @@ class ConnectionManager(QObject):
             if action == 'cmd':
                 self._handle_remote_command(body)
                 self.command_received.emit(body)
+            elif action == 'pc_audio_listen':
+                # 手机端「电脑声音实时收听」开/关上报。与投屏「试听手机声音」互斥：
+                # 两者同开会形成 扬声器→拾音→扬声器 的反馈回路（啸叫），必须二选一。
+                on = bool(body.get('on'))
+                monitor_on = False
+                try:
+                    import requests as _rq
+                    st = _rq.get('http://127.0.0.1:5423/status', timeout=1.5).json()
+                    monitor_on = int(((st.get('audio') or {}).get('listeners')) or 0) > 0
+                except Exception:
+                    monitor_on = False   # 5423 没开 = 没在投屏，不存在冲突
+                if on and monitor_on:
+                    self.log('[互斥] 手机要收听电脑声音，但电脑端正在试听手机声音 → 否决（防啸叫）')
+                    self._send_to_phone({"token": self.secret_token, "activate": "send",
+                                         "source": "pc", "data": {"action": "pc_audio_conflict"}})
+                else:
+                    try:
+                        import requests as _rq
+                        _rq.post('http://127.0.0.1:5423/pc_audio_listen',
+                                 params={'on': 1 if on else 0}, timeout=1.5)
+                    except Exception:
+                        pass
             elif action in ('clipboard', 'clipboard_set'):
                 text = body.get('txt', body.get('text', ''))
                 # 内容对比：仅当远端剪贴板与本地不同时才覆盖本地
@@ -659,9 +681,11 @@ class ConnectionManager(QObject):
                     elif choice == "rename":
                         # 使用新的文件名继续接收
                         if new_name and new_name != conflict_info['file_name']:
+                            # 清洗路径穿越：手机上传的文件名只取 basename，防止 `../` 越权写盘
+                            safe_new_name = os.path.basename(new_name) or conflict_info['file_name']
                             self._awaiting_conflict_resolution = True
-                            self._start_file_receive(file_id, new_name, conflict_info['file_size'])
-                            self.file_receive_started.emit(new_name, conflict_info['file_size'], file_id)
+                            self._start_file_receive(file_id, safe_new_name, conflict_info['file_size'])
+                            self.file_receive_started.emit(safe_new_name, conflict_info['file_size'], file_id)
                             self._awaiting_conflict_resolution = False
                         else:
                             # 如果没有提供新文件名，自动添加序号
@@ -2508,6 +2532,21 @@ class ConnectionManager(QObject):
         from flask import Flask, Response
         audio_app = Flask('pc_audio_stream')
         parent = self
+
+        @audio_app.before_request
+        def check_audio_auth():
+            """与 58627 主服务同一套 Bearer 校验，防止局域网任意设备拉取电脑系统声音。"""
+            auth = request.headers.get('Authorization', '')
+            if auth != f'Bearer {parent.secret_token}':
+                remote = request.remote_addr or 'unknown'
+
+                def _mask(t):
+                    t2 = t.replace('Bearer ', '')
+                    return f"Bearer {t2[:3]}***{t2[-2:]}" if len(t2) > 5 else "***"
+
+                parent.log(f"[AUTH FAIL] 5435音频 来自 {remote} {request.method} {request.path} | "
+                           f"发送='{_mask(auth)}' | 期望='{_mask('Bearer ' + parent.secret_token)}'")
+                return jsonify({'error': 'unauthorized'}), 403
 
         @audio_app.route('/api/audio', methods=['GET'])
         def get_audio():

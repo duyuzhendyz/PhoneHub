@@ -224,6 +224,7 @@ class NotificationsPage(QWidget):
         self.manager = manager
         self.history = []           # 全部历史记录（持久化）
         self.active_notifs = {}     # 当前活动通知 key -> notif
+        self._dialog_cache = {}     # (key, signature) -> 预构建的详情弹窗
         self.blacklist = []         # 黑名单：其中的应用通知将被过滤（留空表示接收全部）
         self._search_keyword = ""
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -411,6 +412,7 @@ class NotificationsPage(QWidget):
         if not is_batch:
             self._refresh_active_list()
             self._refresh_history_list()
+            self._preload_dialog_async(key, notif)
             return
 
         # 批量上报：累计窗口内的通知，等 burst 结束后统一裁剪/刷新
@@ -419,6 +421,30 @@ class NotificationsPage(QWidget):
             return
         self._batch_refresh_pending = True
         QTimer.singleShot(150, self._maybe_refresh_after_batch)
+
+    # ---- 详情弹窗异步预构建：新通知一到就提前把弹窗造好，点击时直接显示 ----
+    def _preload_dialog_async(self, key, notif):
+        QTimer.singleShot(0, lambda: self._preload_dialog(key, notif))
+
+    def _preload_dialog(self, key, notif):
+        try:
+            cache_key = (key, NotificationPopupDialog._notif_signature(notif))
+            if cache_key in self._dialog_cache:
+                return
+            self._dialog_cache[cache_key] = NotificationPopupDialog(notif, self)
+            while len(self._dialog_cache) > 8:      # 只保留最近 8 个，防堆积
+                self._dialog_cache.pop(next(iter(self._dialog_cache)))
+        except Exception:
+            pass
+
+    def _take_preloaded_dialog(self, key, notif):
+        """优先取预构建好的弹窗；没有（或内容已变化）就现场构建"""
+        try:
+            cache_key = (key, NotificationPopupDialog._notif_signature(notif))
+            dlg = self._dialog_cache.pop(cache_key, None)
+        except Exception:
+            dlg = None
+        return dlg if dlg is not None else NotificationPopupDialog(notif, self)
 
     def _maybe_refresh_after_batch(self):
         """批量上报去重：只保留本次上报中的活跃通知，避免残留已清除项。"""
@@ -540,7 +566,7 @@ class NotificationsPage(QWidget):
         """点击当前活动通知 → 弹出详情，可远程操作"""
         notif = item.data(Qt.UserRole)
         if notif:
-            dlg = NotificationPopupDialog(notif, self)
+            dlg = self._take_preloaded_dialog(self._notif_key(notif), notif)
             dlg.exec_()
             action, open_app, delete = dlg.get_result()
             # 快捷操作已在弹窗内直接执行，不再重复处理

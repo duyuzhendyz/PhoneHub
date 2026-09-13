@@ -305,9 +305,12 @@ def _create_writer_locked(frame):
 
 def _finish_recording_locked():
     """收尾并落盘（调用方持锁）。
-    【顺序极重要】必须先毫秒级释放视频，再做耗时的音频收尾（wav+RMS+ffmpeg 转 mp3
-    要 1~3 秒）。若先做音频收尾，节拍器会被 _lock 挡住写不出槽位，
-    视频比真实墙钟时长短 → 播放快放 → 音画渐进不同步（实测一次丢 2.15s）。"""
+    【顺序极重要】必须先毫秒级释放视频，再做音频收尾（wav+ffmpeg 转 mp3 约 1~3 秒）。
+    若先做音频收尾，节拍器会被 _lock 挡住写不出槽位，视频比真实墙钟时长短 →
+    播放快放 → 音画渐进不同步（实测一次丢 2.15s）。
+    音频收尾仍同步做（保证「先停视频再收音频」的顺序、避免分段/新一轮录音抢用
+    _audio_active），但最耗时的 **mp4 合音轨（ffmpeg 可能跑数百秒）丢到后台线程**，
+    绝不持 _lock 阻塞节拍器 / 通路上传。"""
     global _recording, _recording_id, _video_writer, _out_path, _out_size
     global _frame_count, _written_count, _current_frame, _audio_last_wav
 
@@ -319,9 +322,13 @@ def _finish_recording_locked():
     _recording = False
     _current_frame = None
     _frame_queue.clear()
-    real_dur = time.monotonic() - _rec_start   # 必须在音频收尾前取，否则被 ffmpeg 耗时污染
+    rec_start = _rec_start
+    real_dur = time.monotonic() - rec_start   # 必须在音频收尾前取，否则被 ffmpeg 耗时污染
+    dur = real_dur
 
-    # 取出本次录音的 wav 文件名与音频锚点后立即清零，避免泄漏到下一次录制。
+    # 2) 音频收尾（同步，顺序关键）：取出 wav 文件名与音频锚点后立即清零，
+    #    避免泄漏到下一次录制；audio_active 在此被复位，新一段录音的
+    #    _open_audio_segment_locked 才能安全地重新打开文件。
     awav = None
     audio_start_ts = 0.0
     with _audio_lock:
@@ -337,12 +344,11 @@ def _finish_recording_locked():
         _out_size = None
         return
 
-    # 先取名再释放，顺序反了就永远拿不到文件名
+    # 3) 先取名再释放，顺序反了就永远拿不到文件名
     out_path = _out_path
     filename = os.path.basename(out_path) if out_path else "unknown.mp4"
     frames = _written_count
     got = _frame_count
-    dur = real_dur
 
     try:
         _video_writer.release()
@@ -353,55 +359,7 @@ def _finish_recording_locked():
     _out_size = None
     _recording_id = None
 
-    # 把内部录音合并进 mp4：视频流直接 copy，音频转 aac。
-    # 这样最终 mp4 既能看画面、也能听到手机内部声音（另一份纯 mp3 已单独保存）。
-    if awav:
-        awav_full = os.path.join(OUTPUT_DIR, awav)
-        if os.path.exists(awav_full):
-            v_only = out_path[:-4] + "_v.mp4"
-
-            # 音画对齐（关键）。视频时间轴锚点 = 首帧到达时刻 _rec_start；
-            # 音频时间轴锚点 = /audio_start 到达时刻 _audio_start_ts。
-            # 手机先建音频再出首帧，两者相差一个"首帧+音频启动"延迟。
-            # ffmpeg 默认把两条流都对齐到 0，这段差就成了音频整体滞后。
-            # 按错位方向修正：音频开始得早 → 裁掉音频开头；开始得晚 → 整体推迟音频。
-            av_off = audio_start_ts - _rec_start
-            if av_off < -0.03:
-                audio_in = ["-ss", f"{-av_off:.3f}", "-i", awav_full]      # 裁头对齐
-            elif av_off > 0.03:
-                audio_in = ["-itsoffset", f"{av_off:.3f}", "-i", awav_full]  # 推迟对齐
-            else:
-                audio_in = ["-i", awav_full]
-
-            try:
-                os.replace(out_path, v_only)
-                r = subprocess.run(
-                    [FFMPEG, "-y", "-loglevel", "error",
-                     "-i", v_only] + audio_in + [
-                     "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", out_path],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
-                if r.returncode == 0 and os.path.exists(out_path):
-                    try:
-                        os.remove(v_only)
-                    except Exception:
-                        pass
-                    print(f"[录制] 已把内部录音合并进 {filename}"
-                          f"（音画错位校正 {av_off:+.3f}s）")
-                else:
-                    # 合并失败则回退成纯视频，不丢画面
-                    try:
-                        os.replace(v_only, out_path)
-                    except Exception:
-                        pass
-                    print(f"[录制] 音轨合并失败，保留纯视频: "
-                          f"{r.stderr.decode('utf-8', 'ignore')[:300]}")
-            except Exception as e:
-                print(f"[录制] 音轨合并异常: {e}")
-
-    _out_path = None
-    _out_size = None
-    _recording_id = None
-
+    # 4) 元数据入库（快）
     _recorded_files.insert(0, {
         "filename": filename,
         "time": datetime.now().isoformat(),
@@ -416,6 +374,63 @@ def _finish_recording_locked():
     print(f"[录制] 结束 {filename}：写入 {frames} 帧 / 收到 {got} 帧 / "
           f"铺进时间轴 {_popped_count} 帧 / 队列丢弃 {_queue_dropped} 帧 / "
           f"时长 {dur:.1f}s / {OUTPUT_FPS}fps")
+
+    # 5) 耗时的 mp4 合音轨放后台线程执行，立即释放 _lock。
+    #    记录线程引用供 stop_server 退出时收尾。
+    if awav:
+        t = threading.Thread(target=_merge_audio_into_video,
+                             args=(out_path, filename, awav, audio_start_ts, rec_start),
+                             daemon=True, name="mirror-finalize")
+        t.start()
+        _finalizers.append(t)
+
+
+def _merge_audio_into_video(out_path, filename, awav, audio_start_ts, rec_start):
+    """后台线程：把内部录音合并进 mp4，视频流直接 copy、音频转 aac。
+    这样最终 mp4 既能看画面、也能听到手机内部声音（另一份纯 mp3 已单独保存）。
+    不持 _lock，只读写与本次录制对应的产物文件，互不影响后面的新段。"""
+    awav_full = os.path.join(OUTPUT_DIR, awav)
+    if not os.path.exists(awav_full):
+        return
+    v_only = out_path[:-4] + "_v.mp4"
+
+    # 音画对齐（关键）。视频时间轴锚点 = 首帧到达时刻 rec_start；
+    # 音频时间轴锚点 = /audio_start 到达时刻 audio_start_ts。
+    # 手机先建音频再出首帧，两者相差一个"首帧+音频启动"延迟。
+    # ffmpeg 默认把两条流都对齐到 0，这段差就成了音频整体滞后。
+    # 按错位方向修正：音频开始得早 → 裁掉音频开头；开始得晚 → 整体推迟音频。
+    av_off = audio_start_ts - rec_start
+    if av_off < -0.03:
+        audio_in = ["-ss", f"{-av_off:.3f}", "-i", awav_full]      # 裁头对齐
+    elif av_off > 0.03:
+        audio_in = ["-itsoffset", f"{av_off:.3f}", "-i", awav_full]  # 推迟对齐
+    else:
+        audio_in = ["-i", awav_full]
+
+    try:
+        os.replace(out_path, v_only)
+        r = subprocess.run(
+            [FFMPEG, "-y", "-loglevel", "error",
+             "-i", v_only] + audio_in + [
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", out_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        if r.returncode == 0 and os.path.exists(out_path):
+            try:
+                os.remove(v_only)
+            except Exception:
+                pass
+            print(f"[录制] 已把内部录音合并进 {filename}"
+                  f"（音画错位校正 {av_off:+.3f}s）")
+        else:
+            # 合并失败则回退成纯视频，不丢画面
+            try:
+                os.replace(v_only, out_path)
+            except Exception:
+                pass
+            print(f"[录制] 音轨合并失败，保留纯视频: "
+                  f"{r.stderr.decode('utf-8', 'ignore')[:300]}")
+    except Exception as e:
+        print(f"[录制] 音轨合并异常: {e}")
 
 
 def _start_recording(client_ip: str):
@@ -457,53 +472,54 @@ def _pacer():
     global _written_count, _current_frame, _popped_count
 
     while True:
-        time.sleep(0.001)
+        # 未录制时 50ms 慢轮询省 CPU（原为 1ms 死循环，未录制也每秒约 1000 次抢锁）；
+        # 录制中精确睡到下一槽位，时间轴精度不受影响。
+        wait = 0.05
         try:
             with _lock:
-                if not _recording or _video_writer is None:
-                    continue
+                if not _recording or _video_writer is None or _out_size is None:
+                    pass            # 保持 50ms 慢轮询
+                else:
+                    now = time.monotonic()
+                    # 逐帧槽推进：第 k 帧代表时刻 _rec_start + k/OUTPUT_FPS。
+                    while True:
+                        slot_time = _rec_start + _written_count / OUTPUT_FPS
+                        if slot_time > now:
+                            break
 
-                now = time.monotonic()
-                if _out_size is None:
-                    continue
+                        # 【关键】每个时间槽最多消费**一帧**，且只在帧"已经到达"时消费。
+                        # 之前这里写的是 while 循环，把"所有已到达的帧"一次全吸进来、
+                        # 只留最后一帧 —— 于是成串到达的帧会被折叠成一张，中间帧全丢
+                        # （实测 88 帧只活了 58 帧）。改成一次一帧后，
+                        # 每一帧都能轮到属于自己的槽位，一帧都不会少。
+                        # 注意：判据用"帧到达时刻 <= 当前真实时间 now"，而不是 <= slot_time。
+                        # 否则当首帧时间戳比 _rec_start 略晚时，帧永远不满足
+                        # frame_time <= slot_time（slot_time 卡在 0 不前进），
+                        # 导致 _current_frame 始终为 None、一帧都写不出（0 帧死锁）。
+                        if _frame_queue and _frame_queue[0][0] <= now:
+                            _current_frame = _frame_queue.popleft()[1]
+                            _popped_count += 1
 
-                wrote = False
-                # 逐帧槽推进：第 k 帧代表时刻 _rec_start + k/OUTPUT_FPS。
-                while True:
-                    slot_time = _rec_start + _written_count / OUTPUT_FPS
-                    if slot_time > now:
-                        break
+                        if _current_frame is None:
+                            break
 
-                    # 【关键】每个时间槽最多消费**一帧**，且只在帧"已经到达"时消费。
-                    # 之前这里写的是 while 循环，把"所有已到达的帧"一次全吸进来、
-                    # 只留最后一帧 —— 于是成串到达的帧会被折叠成一张，中间帧全丢
-                    # （实测 88 帧只活了 58 帧）。改成一次一帧后，
-                    # 每一帧都能轮到属于自己的槽位，一帧都不会少。
-                    # 注意：判据用"帧到达时刻 <= 当前真实时间 now"，而不是 <= slot_time。
-                    # 否则当首帧时间戳比 _rec_start 略晚时，帧永远不满足
-                    # frame_time <= slot_time（slot_time 卡在 0 不前进），
-                    # 导致 _current_frame 始终为 None、一帧都写不出（0 帧死锁）。
-                    if _frame_queue and _frame_queue[0][0] <= now:
-                        _current_frame = _frame_queue.popleft()[1]
-                        _popped_count += 1
+                        frame = _current_frame
+                        if (frame.shape[1], frame.shape[0]) != _out_size:
+                            frame = cv2.resize(frame, _out_size, interpolation=cv2.INTER_AREA)
+                            _current_frame = frame   # 只缩一次，后面复用
 
-                    if _current_frame is None:
-                        break
+                        _video_writer.write(frame)
+                        _written_count += 1
 
-                    frame = _current_frame
-                    if (frame.shape[1], frame.shape[0]) != _out_size:
-                        frame = cv2.resize(frame, _out_size, interpolation=cv2.INTER_AREA)
-                        _current_frame = frame   # 只缩一次，后面复用
+                        if _written_count > 0 and (_written_count % MAX_CATCHUP_BURST) == 0:
+                            break   # 极端落后时让出锁，下一轮继续补
 
-                    _video_writer.write(frame)
-                    _written_count += 1
-                    wrote = True
-
-                    if _written_count > 0 and (_written_count % MAX_CATCHUP_BURST) == 0:
-                        break   # 极端落后时让出锁，下一轮继续补
-
-                if not wrote:
-                    continue
+                    # 睡到下一槽位；已落后（下一槽已到期）时只让出 1ms，别饿死上传线程
+                    next_slot = _rec_start + (_written_count + 1) / OUTPUT_FPS
+                    wait = max(0.0, min(next_slot - now, 0.05))
+                    if wait <= 0.0:
+                        wait = 0.001
+            time.sleep(wait)
         except Exception as e:
             print(f"[节拍器] 异常: {e}")
 
@@ -528,6 +544,17 @@ def _watchdog():
 
 
 _started = False
+
+# 后台「合音轨」线程引用：退服务时 join 等它们落盘，避免退出即泄漏、产物缺 moov。
+_finalizers = []
+
+
+def _drain_finalizers(timeout=15.0):
+    """等待所有进行中的 mp4 合音轨线程结束（stop_server / closeEvent 时调用）。"""
+    deadline = time.monotonic() + timeout
+    while _finalizers:
+        t = _finalizers.pop(0)
+        t.join(max(0.05, deadline - time.monotonic()))
 
 
 def _ensure_threads():
@@ -563,6 +590,7 @@ _audio_arrivals = []         # (到达时刻, 字节数) 账本：收尾时按�
 # 音频，试听延迟会越拖越大。配合 put 端"满则丢最旧保最新"，把延迟钉在小窗口内。
 _audio_stream_q = queue.Queue(maxsize=8)
 _audio_stream_clients = 0    # 正在挂着的试听连接数（上限 4，防线程堆积）
+_pc_audio_listening = False  # 手机端正在「收听电脑声音」（与试听互斥，防扬声器啸叫）
 
 # ffmpeg 查找：优先工程内相对路径（随工程走，可移植），再退 PATH，
 # 最后才是本机绝对路径兜底（不破坏现有环境）
@@ -797,6 +825,19 @@ def api_mode():
     return jsonify({"ok": True})
 
 
+@app.route("/pc_audio_listen", methods=["POST"])
+def api_pc_audio_listen():
+    """手机端正在「收听电脑声音」的开/关上报。
+
+    与试听（/audio_stream）互斥：两者同开会形成 扬声器→拾音→扬声器 的反馈回路。
+    手机开始收听时置 1；此后 PC 端再想开试听会被 /audio_stream 以 409 拒绝。
+    """
+    global _pc_audio_listening
+    _pc_audio_listening = request.args.get("on", "0") in ("1", "true")
+    print(f"[互斥] 手机端电脑声音收听 = {_pc_audio_listening}")
+    return jsonify({"ok": True})
+
+
 @app.route("/audio_start", methods=["POST"])
 def api_audio_start():
     """手机通知：内部录音开始，并告知采样参数"""
@@ -879,6 +920,9 @@ def audio_stream():
     没数据时安静等待（连接保持），录停了也不主动断，下一次录音无缝续上。
     """
     global _audio_stream_clients
+    # 互斥：手机端正在收听电脑声音时禁止开试听（两者同开 = 扬声器啸叫）
+    if _pc_audio_listening:
+        return Response("conflict: 手机端正在收听电脑声音，已禁止开启试听（防啸叫）", status=409)
     with _audio_lock:
         if _audio_stream_clients >= 4:
             return Response("too many listeners", status=503)
@@ -994,16 +1038,18 @@ def upload_frame():
         return jsonify({"error": "empty"}), 400
 
     _ctrl_ready = (request.headers.get("X-Ctrl") == "1")
-    # 解码放在锁外面做：PIL 解码 + 色彩转换在高分辨率下要几十毫秒，
-    # 拿在锁里会把节拍器挡在门外，导致时间轴出现缺口
+    # 解码放在锁外面做：单步 cv2.imdecode 直接得 BGR，省掉「PIL 解码 → numpy 中转 →
+    # RGB2BGR」两段拷贝，高分辨率每帧省一半 CPU，且与节拍器/音频线程竞争更少。
+    # cv2.imdecode 解码失败时返回 None（不一定抛异常），必须判空。
     try:
-        pil_img = Image.open(BytesIO(data)).convert("RGB")
-        bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     except Exception as e:
         return jsonify({"error": f"bad image: {e}"}), 400
+    if bgr is None:
+        return jsonify({"error": "bad image: decode failed"}), 400
 
     # 实时画面：原样存下 JPEG 字节，不解码也不重编码，显示开销几乎为零
-    _update_live(data, pil_img.size)
+    _update_live(data, (bgr.shape[1], bgr.shape[0]))
 
     # 手机带上来的采集时刻（相对投屏起点的毫秒数）。用它来铺时间轴，
     # 这样网络抖动、两个发送线程的乱序都不会让画面变得忽快忽慢。
@@ -1111,6 +1157,7 @@ def api_status():
             "last_files": _recorded_files[:5],
             "audio": {
                 "recording": _audio_active,
+                "listeners": _audio_stream_clients,   # 试听连接数（手机端用它判断互斥）
                 "rate": _audio_rate,
                 "ch": _audio_ch,
                 "chunks": _audio_chunks,
@@ -1486,18 +1533,32 @@ def start_server_thread(port=None, host="0.0.0.0"):
 def stop_server():
     """停掉 HTTP 服务。
 
-    刻意不主动给录制收尾：参考工程的设计是"手机点停止投屏才收尾"，
-    这里保持一致，避免桌面 app 关服务时产出残缺文件。
+    参考工程设计是"手机点停止投屏才收尾"，但桌面 app 退出时必须把进行中的录制
+    收尾落盘：否则 .pcm 句柄、cv2.VideoWriter 不释放，正在录的文件缺 moov 无法播放。
+    这里：(1) 若仍在录制则收尾（分段/合音轨走后台线程，不卡）；(2) join 等后台
+    合音轨线程落盘（限时）；(3) 再关掉 HTTP server。
     """
     global _http_server, _server_thread
-    srv = _http_server
+    server = _http_server
     _http_server = None
     _server_thread = None
-    if srv is None:
+
+    # 1) 收尾活动录制（内部已异步合音轨，只做毫秒级 + 几秒音频收尾）
+    try:
+        with _lock:
+            _finish_recording_locked()
+    except Exception as e:
+        print(f"[投屏服务] 退出前收尾录制出错: {e}")
+
+    # 2) 限时等后台合音轨线程落盘（max 15s，避免退出即泄漏缺 moov）
+    _drain_finalizers()
+
+    # 3) 关掉 HTTP server
+    if server is None:
         return
     try:
-        srv.shutdown()
-        srv.server_close()
+        server.shutdown()
+        server.server_close()
         print("[投屏服务] 已停止")
     except Exception as e:
         print(f"[投屏服务] 停止出错: {e}")

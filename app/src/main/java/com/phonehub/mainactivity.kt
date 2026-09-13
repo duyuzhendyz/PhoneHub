@@ -211,7 +211,6 @@ class MainActivity : AppCompatActivity() {
             try {
                 ConnectionManager.cacheMediaProjectionToken(result.resultCode, result.data!!)
                 PhoneHubMirrorService.setPendingResult(result.resultCode, result.data!!)
-                PhoneHubMirrorService.saveProjectionResult(this, result.resultCode, result.data!!)
                 launchMirrorService(mirrorPendingIp, mirrorPendingPort)
             } catch (e: RuntimeException) {
                 LogUtil.scrE("[投屏] 授权结果处理失败", e)
@@ -236,6 +235,11 @@ class MainActivity : AppCompatActivity() {
 
     /** 手机端点「开始投屏」和电脑端下发 mirror_start 都汇到这里 */
     private fun startMirrorFlow(ip: String?, port: Int?) {
+        // 互斥：正在收听 PC 音频时拒绝启动投屏（两者都持有 AudioTrack，会冲突）
+        if (ConnectionManager.isPcAudioPolling()) {
+            Toast.makeText(this, "正在收听电脑音频，请先停止后再投屏", Toast.LENGTH_LONG).show()
+            return
+        }
         val useIp = if (ip.isNullOrBlank()) defaultMirrorIp() else ip
         val usePort = port ?: 5423
         mirrorPendingIp = useIp
@@ -1492,19 +1496,36 @@ class MainActivity : AppCompatActivity() {
                 mediaInfoText?.text = info
             }
         }
-        // 收集媒体封面图
+        // 收集媒体封面图（解码移到后台线程，避免封面到来时卡顿 UI）
         lifecycleScope.launch {
             ConnectionManager.mediaThumbnail.collect { bytes ->
-                if (bytes != null && bytes.isNotEmpty() && mediaCoverImg != null) {
-                    val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bmp != null) {
-                        mediaCoverImg.setImageBitmap(bmp)
-                        mediaCoverImg.visibility = android.view.View.VISIBLE
-                    } else {
-                        mediaCoverImg.visibility = android.view.View.GONE
+                if (bytes == null || bytes.isEmpty() || mediaCoverImg == null) return@collect
+                val bmp = withContext(Dispatchers.IO) {
+                    try {
+                        android.graphics.BitmapFactory.decodeByteArray(
+                            bytes, 0, bytes.size,
+                            android.graphics.BitmapFactory.Options().apply {
+                                inJustDecodeBounds = true
+                            }
+                        ).let { bounds ->
+                            // 按显示需要的尺寸降采样；token 图片通常为正方形封面，压到 ~512px 以内
+                            val req = 512
+                            var s = 1
+                            while (bounds.width / 2 >= req || bounds.height / 2 >= req) s *= 2
+                            android.graphics.BitmapFactory.decodeByteArray(
+                                bytes, 0, bytes.size,
+                                android.graphics.BitmapFactory.Options().apply { inSampleSize = s }
+                            )
+                        }
+                    } catch (_: Exception) {
+                        null
                     }
+                }
+                if (bmp != null) {
+                    mediaCoverImg.setImageBitmap(bmp)
+                    mediaCoverImg.visibility = android.view.View.VISIBLE
                 } else {
-                    mediaCoverImg?.visibility = android.view.View.GONE
+                    mediaCoverImg.visibility = android.view.View.GONE
                 }
             }
         }
@@ -2232,7 +2253,7 @@ class MainActivity : AppCompatActivity() {
         }
         v.findViewById<Button>(R.id.mirBtnStop)?.setOnClickListener { stopMirrorFlow() }
         v.findViewById<Button>(R.id.mirBtnClearCache)?.setOnClickListener {
-            PhoneHubMirrorService.clearProjectionResult(this)
+            PhoneHubMirrorService.clearHeldProjection()
             Toast.makeText(this, "已清除授权缓存，下次投屏需要重新授权", Toast.LENGTH_SHORT).show()
             setMirrorStatus("授权缓存已清除")
         }
@@ -3021,9 +3042,8 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(8) })
 
-        // 文件列表（使用可多选的 ListView）
+        // 文件列表（单击目录进入、单击文件弹出操作菜单；已按需求去掉多选框）
         val list = ListView(this)
-        list.choiceMode = ListView.CHOICE_MODE_MULTIPLE
         val empty = TextView(this).apply {
             id = R.id.fmEmpty
             text = "暂无内容"
@@ -3037,7 +3057,6 @@ class MainActivity : AppCompatActivity() {
         ).apply { weight = 1f })
         root.addView(empty)
 
-        val selectedIds = linkedSetOf<Int>() // 多选索引集合
         var sortMode = 0 // 0=名称, 1=大小, 2=修改时间
 
         fun applySort(): List<ConnectionManager.PcFileInfo> {
@@ -3049,14 +3068,10 @@ class MainActivity : AppCompatActivity() {
             return currentPcFiles.sortedWith(cmp)
         }
 
-        fun refreshOpBtn() {
-            btnOp.isEnabled = selectedIds.isNotEmpty()
-            btnOp.text = if (selectedIds.isNotEmpty()) "操作(${selectedIds.size})" else "操作"
-        }
+        // 多选已移除：批量「操作」按钮不再需要，隐藏（单击文件直接弹单项操作菜单）
+        btnOp.visibility = View.GONE
 
         fun renderPcList(files: List<ConnectionManager.PcFileInfo>) {
-            selectedIds.clear()
-            refreshOpBtn()
             if (files.isEmpty()) {
                 empty.visibility = View.VISIBLE
                 empty.text = "空目录"
@@ -3070,8 +3085,7 @@ class MainActivity : AppCompatActivity() {
                 val name = if (f.isDir) "${f.name}/" else f.name
                 "${icon}${name}\n$sz"
             }
-            list.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_multiple_choice, displays)
-            refreshOpBtn()
+            list.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, displays)
         }
 
         // 电脑文件浏览逻辑
@@ -3117,39 +3131,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 列表点击 / 长按多选
-        list.onItemClickListener = android.widget.AdapterView.OnItemClickListener { _, _, pos, _ ->
-            if (pcInDrives) {
-                if (currentPcDrives.isNotEmpty() && pos < currentPcDrives.size) {
-                    pcCurPath = currentPcDrives[pos].name
-                    pcInDrives = false
-                    refreshPcFiles()
-                }
-                return@OnItemClickListener
-            }
-            if (selectedIds.isNotEmpty()) {
-                // 已进入多选模式：点击切换选中状态
-                if (!selectedIds.add(pos)) selectedIds.remove(pos)
-                refreshOpBtn()
-            } else {
-                // 普通模式：进入目录
-                val sorted = applySort()
-                if (pos < sorted.size) {
-                    val f = sorted[pos]
-                    if (f.isDir) {
-                        pcCurPath = pcCurPath.trimEnd('\\') + "\\" + f.name
-                        refreshPcFiles()
-                    }
-                }
-            }
-        }
-        list.onItemLongClickListener = android.widget.AdapterView.OnItemLongClickListener { _, _, pos, _ ->
-            if (pcInDrives) return@OnItemLongClickListener true
-            if (!selectedIds.add(pos)) selectedIds.remove(pos)
-            refreshOpBtn()
-            true
-        }
-
         // 排序菜单
         btnSort.setOnClickListener {
             val sorted = applySort()
@@ -3159,12 +3140,9 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "排序: $label", Toast.LENGTH_SHORT).show()
         }
 
-        // 操作菜单
-        btnOp.setOnClickListener {
-            if (selectedIds.isEmpty()) return@setOnClickListener
-            val sorted = applySort()
-            val sel = selectedIds.sorted().mapNotNull { if (it < sorted.size) sorted[it] else null }
-            if (sel.isEmpty()) return@setOnClickListener
+        // 单个文件的弹出操作菜单（原批量「操作」菜单改为此处，随点随弹）
+        fun showPcFileMenu(file: ConnectionManager.PcFileInfo) {
+            val sel = listOf(file)
             val destDir = pcCurPath
 
             val popup = android.widget.PopupMenu(this, btnOp)
@@ -3181,11 +3159,9 @@ class MainActivity : AppCompatActivity() {
                         val f = sel.firstOrNull() ?: return@setOnMenuItemClickListener true
                         val filePath = pcCurPath.trimEnd('\\') + "\\" + f.name
                         downloadPcFile(filePath, f.name, openAfter = true)
-                        selectedIds.clear(); refreshOpBtn()
                     }
                     "下载" -> {
                         sel.forEach { downloadPcFile(pcCurPath.trimEnd('\\') + "\\" + it.name, it.name) }
-                        selectedIds.clear(); refreshOpBtn()
                     }
                     "删除" -> {
                         val names = sel.joinToString("、") { it.name }
@@ -3198,7 +3174,6 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                             refreshPcFiles()
-                            selectedIds.clear(); refreshOpBtn()
                         }
                     }
                     "重命名" -> {
@@ -3213,7 +3188,6 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                         }
-                        selectedIds.clear(); refreshOpBtn()
                     }
                     "属性" -> {
                         val f = sel.firstOrNull() ?: return@setOnMenuItemClickListener true
@@ -3231,7 +3205,6 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                         }
-                        selectedIds.clear(); refreshOpBtn()
                     }
                     "复制到" -> {
                         // 弹出目录输入（以当前目录为默认目标）
@@ -3244,13 +3217,34 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 }
                             }
-                            selectedIds.clear(); refreshOpBtn()
                         }
                     }
                 }
                 true
             }
             popup.show()
+        }
+
+        // 列表点击：目录进入，文件弹出单项操作菜单（多选模式已移除）
+        list.onItemClickListener = android.widget.AdapterView.OnItemClickListener { _, _, pos, _ ->
+            if (pcInDrives) {
+                if (currentPcDrives.isNotEmpty() && pos < currentPcDrives.size) {
+                    pcCurPath = currentPcDrives[pos].name
+                    pcInDrives = false
+                    refreshPcFiles()
+                }
+                return@OnItemClickListener
+            }
+            val sorted = applySort()
+            if (pos < sorted.size) {
+                val f = sorted[pos]
+                if (f.isDir) {
+                    pcCurPath = pcCurPath.trimEnd('\\') + "\\" + f.name
+                    refreshPcFiles()
+                } else {
+                    showPcFileMenu(f)
+                }
+            }
         }
 
         // 上级
@@ -3721,6 +3715,8 @@ class MainActivity : AppCompatActivity() {
         fun setPlaying(playing: Boolean) {
             // 手机端是否在收听 → 播放期间持有唤醒/WiFi 锁，保证切后台/息屏后仍在收听
             ConnectionManager.setPcAudioKeepAlive(playing)
+            // 上报给电脑端做互斥仲裁：若电脑端正在「试听手机声音」，会否决并让手机停止收听
+            ConnectionManager.sendAction("pc_audio_listen", mapOf("on" to playing))
         }
 
         @JavascriptInterface

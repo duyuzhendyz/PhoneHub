@@ -18,6 +18,7 @@ import android.location.Location
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.widget.Toast
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
@@ -480,6 +481,7 @@ object ConnectionManager {
         locationStoreDir = File(ctx.getExternalFilesDir(null), "LocationCache")
         locationStoreDir?.mkdirs()
         loadClipboardStore()
+        startClipboardSync()
         startStatusReportLoop()
         startAdbWatchdog()
         // 启动媒体信息监控（定期轮询，尽快反映播放状态变化）
@@ -917,11 +919,23 @@ object ConnectionManager {
                 val cmd = data["cmd"]?.jsonPrimitive?.contentOrNull ?: ""
                 handleCommand(cmd, data)
             }
+            "pc_audio_conflict" -> {
+                // 与电脑端「试听手机声音」互斥（同时开会啸叫）：电脑端否决，停止手机端收听
+                MainActivity.instance?.stopPcAudioListening()
+                context?.let {
+                    Toast.makeText(it, "电脑端正在试听手机声音，已停止电脑声音收听（避免啸叫）", Toast.LENGTH_LONG).show()
+                }
+            }
             "send_file_head" -> {
                 val fileName = data["file_name"]?.jsonPrimitive?.contentOrNull ?: "unknown"
                 val fileSize = data["file_size"]?.jsonPrimitive?.longOrNull ?: 0L
                 val fileId = data["file_id"]?.jsonPrimitive?.contentOrNull ?: ""
                 Log.i(TAG, "收到send_file_head: name=$fileName, size=$fileSize, id=$fileId, channel=${_currentChannel.value}")
+                // 新传输开始：清掉上一次传输遗留的暂停/取消状态，
+                // 否则上次"暂停后没恢复"会把这次 UI 永久卡在「已暂停(对端)」
+                transferPaused = false
+                fileTransferCancel = false
+                _transferPausedFromPc.value = false
                 // S4: 先显示通知（带"开始下载"按钮），不自动开始下载
                 showFileReceiveNotification(fileId, fileName, fileSize)
                 // 同时发射 pending 事件，通知 app UI 更新
@@ -1111,7 +1125,6 @@ object ConnectionManager {
                 val title = data["title"]?.jsonPrimitive?.contentOrNull ?: ""
                 val artist = data["artist"]?.jsonPrimitive?.contentOrNull ?: ""
                 val thumbnailB64 = data["thumbnail"]?.jsonPrimitive?.contentOrNull ?: ""
-                val status = data["status"]?.jsonPrimitive?.contentOrNull ?: "playing"
                 _mediaInfo.value = if (artist.isNotEmpty()) "$title - $artist" else title.ifEmpty { "未检测到媒体播放" }
                 // 供电脑声音媒体通知使用
                 pcMediaTitle = title.ifEmpty { "未检测到媒体播放" }
@@ -1412,12 +1425,27 @@ object ConnectionManager {
                 performScreenTouch(x1, y1, "swipe2", x2, y2, ms, offx, offy)
             }
             "open_app" -> {
-                val pkg = data["package"]?.jsonPrimitive?.contentOrNull ?: return
-                val launchIntent = context?.packageManager?.getLaunchIntentForPackage(pkg)
-                if (launchIntent != null) {
-                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context?.startActivity(launchIntent)
+                val pkg = data["package"]?.jsonPrimitive?.contentOrNull ?: ""
+                if (pkg.isEmpty()) {
+                    Log.w(TAG, "open_app: 缺少 package 参数，忽略")
+                    context?.let {
+                        Toast.makeText(it, "电脑端未告知要打开哪个应用", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    val launchIntent = context?.packageManager?.getLaunchIntentForPackage(pkg)
+                    if (launchIntent != null) {
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context?.startActivity(launchIntent)
+                    } else {
+                        Log.w(TAG, "open_app: 手机上找不到应用 $pkg")
+                        context?.let {
+                            Toast.makeText(it, "手机上没有找到应用：$pkg", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
+                // 桌面通知页的「打开应用并投屏」：打开后顺带开始投屏
+                val wantMirror = data["mirror"]?.jsonPrimitive?.booleanOrNull ?: false
+                if (wantMirror) _mirrorCommand.tryEmit(MirrorCommand("start"))
             }
             "notification_delete" -> {
                 // save.md 功能10：电脑端可删除手机上的通知
@@ -2028,6 +2056,36 @@ object ConnectionManager {
     }
 
     // ============================== 剪贴板 ==============================
+
+    private var clipboardListenerRegistered = false
+
+    /**
+     * 剪贴板自动同步（手机→电脑）：与电脑端行为对齐，手机上一复制就推给电脑。
+     * Android 10+ 只有前台应用能读剪贴板——用户复制时本应用正在前台，满足条件；
+     * 后台时读取会失败/为空，静默忽略即可。回环由 lastClipboardContent 抑制
+     * （电脑端同步回来的内容 setClipboardContent 已记录，不会再外发）。
+     */
+    fun startClipboardSync() {
+        if (clipboardListenerRegistered) return
+        val cm = context?.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        try {
+            cm.addPrimaryClipChangedListener {
+                try {
+                    val mgr = context?.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    val clip = mgr?.primaryClip ?: return@addPrimaryClipChangedListener
+                    if (clip.itemCount <= 0) return@addPrimaryClipChangedListener
+                    val text = clip.getItemAt(0)?.coerceToText(context)?.toString() ?: return@addPrimaryClipChangedListener
+                    if (text.isEmpty() || text == lastClipboardContent) return@addPrimaryClipChangedListener
+                    lastClipboardContent = text
+                    sendClipboard(text)
+                } catch (_: Exception) {
+                }
+            }
+            clipboardListenerRegistered = true
+        } catch (e: Exception) {
+            Log.e(TAG, "注册剪贴板监听失败", e)
+        }
+    }
 
     fun setClipboardContent(text: String) {
         try {
@@ -2670,6 +2728,7 @@ object ConnectionManager {
             try {
                 fileTransferCancel = false
                 transferPaused = false
+                _transferPausedFromPc.value = false   // 清掉对端暂停显示，避免卡在「已暂停(对端)」
                 // 保存恢复信息（PC→手机方向暂停后继续时断点续传）
                 resumeInfo = ResumeInfo(fileId, fileName, fileSize)
                 // 确保接收目录存在（防止 ENOENT）
@@ -3306,6 +3365,7 @@ object ConnectionManager {
     }
 
     /** 网页实时媒体信息 → 刷新电脑声音通知（标题/艺术家/封面），使通知跟随当前播放的歌曲 */
+    @Suppress("UNUSED_PARAMETER")  // album/status 为 JS 桥接契约保留，暂未被消费
     fun updatePcMediaFromWeb(title: String, artist: String, album: String,
                              coverDataUrl: String, status: String) {
         pcMediaTitle = title.ifEmpty { "未检测到媒体播放" }
@@ -3447,7 +3507,7 @@ object ConnectionManager {
     private fun handleFileListRequest(path: String) {
         scope.launch {
             try {
-                val ctx = context ?: run {
+                if (context == null) {
                     sendEmptyFileList(path, false)
                     return@launch
                 }
@@ -4183,6 +4243,7 @@ object ConnectionManager {
      * 在手机屏幕上叠加一个绿色圆形标记，提示 PC 端点击/滑动的落点（约 450ms 后消失）。
      * 需 SYSTEM_ALERT_WINDOW 权限（Manifest 已声明）。
      */
+    @Suppress("DEPRECATION")  // TYPE_PHONE 是 O 以下旧系统的兜底类型，新系统走 TYPE_APPLICATION_OVERLAY
     private fun showTapMarker(x: Float, y: Float) {
         val ctx = context ?: return
         try {
