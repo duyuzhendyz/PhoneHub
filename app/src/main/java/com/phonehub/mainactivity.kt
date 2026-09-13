@@ -23,6 +23,9 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebSettings
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -807,6 +810,11 @@ class MainActivity : AppCompatActivity() {
         }
         currentTab = index
 
+        // 进入「电脑声音」页：确保 WebView 重新连上音频服务（缓存页再次进入时也刷新）
+        if (index == 17) {
+            reloadPcAudioWebView()
+        }
+
         // 进入投屏页时检测无障碍服务是否开启
         if (index == 8 && PhoneHubAccessibilityService.instance == null) {
             android.os.Handler(mainLooper).postDelayed({
@@ -882,6 +890,11 @@ class MainActivity : AppCompatActivity() {
             11 -> { // 文件管理页
                 // 按需加载，离开时无需特殊处理
             }
+            17 -> { // 电脑声音页（WebView 收听）
+                // 离开页即停止收听并取消媒体通知
+                ConnectionManager.cancelPcMediaNotification()
+                pageCache[17]?.findViewById<WebView>(R.id.pcAudioWebView)?.loadUrl("about:blank")
+            }
         }
     }
 
@@ -918,6 +931,7 @@ class MainActivity : AppCompatActivity() {
             14 -> getPowerView()
             15 -> getPushWebView()
             16 -> getSettingsView()
+            17 -> getPcAudioWebView()
             else -> getHomeView()
         }
         pageCache[index] = view
@@ -943,6 +957,7 @@ class MainActivity : AppCompatActivity() {
         FuncInfo("文件管理", "📂", 11),
         FuncInfo("电源管理", "⚡", 14),
         FuncInfo("推送网页", "🌐", 15),
+        FuncInfo("电脑声音", "🔊", 17),
         FuncInfo("设置", "⚙️", 16)
     )
 
@@ -3585,6 +3600,45 @@ class MainActivity : AppCompatActivity() {
         return v
     }
 
+    // ============================== 电脑声音（WebView 自动收听） ==============================
+
+    /**
+     * 电脑声音页：用 WebView 承载桌面端音频网页（http://<电脑>:4598/），
+     * 关闭「需用户手势才能播放媒体」限制，实现打开即自动收听（无需手动点「开始」）。
+     */
+    private fun getPcAudioWebView(): View {
+        val v = LayoutInflater.from(this).inflate(R.layout.page_pc_audio, null)
+        val web = v.findViewById<WebView>(R.id.pcAudioWebView)
+        web.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            try {
+                // API 17+：允许免用户手势自动播放音频/视频
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+                    mediaPlaybackRequiresUserGesture = false
+                }
+            } catch (_: Exception) {}
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            cacheMode = WebSettings.LOAD_NO_CACHE
+        }
+        web.webViewClient = WebViewClient()
+        web.setBackgroundColor(0xFF1e1e1e.toInt())
+        // 打开即加载电脑声音网页（网页内 WebSocket 自动连、AudioContext 自动播放）
+        web.loadUrl(ConnectionManager.getPcAudioWebUrl())
+        // 进入页即显示「电脑声音」媒体通知（收听期间常驻，退出页时取消）
+        ConnectionManager.showPcMediaNotification()
+        return v
+    }
+
+    /** 重新加载电脑声音网页（每次进入该页时调用，确保连接最新） */
+    private fun reloadPcAudioWebView() {
+        pageCache[17]?.findViewById<WebView>(R.id.pcAudioWebView)?.let { wv ->
+            wv.loadUrl(ConnectionManager.getPcAudioWebUrl())
+        }
+        ConnectionManager.showPcMediaNotification()
+    }
 
     /** 刷新推送网页页面的历史列表显示 */
     private fun refreshUrlHistoryList() {

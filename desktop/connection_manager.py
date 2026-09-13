@@ -906,7 +906,7 @@ class ConnectionManager(QObject):
                     self.phone_frame_received.emit(frame_data)
             return jsonify({'status': 'ok'})
 
-        # PC→手机声音传输已迁移到独立端口 5435（见 _start_pc_audio_http_server），主服务不再提供 /api/audio
+        # PC→手机声音传输已迁移到内嵌的「电脑声音」网页服务（HTTP 4598 / 音频 WS 4599，见 audio_web_player），主服务不再提供 /api/audio
 
         @self.app.route('/api/pc_drives', methods=['GET'])
         def get_pc_drives():
@@ -1172,6 +1172,15 @@ class ConnectionManager(QObject):
                 ['adb', '-s', device_id, 'reverse', 'tcp:58627', 'tcp:58627'],
                 capture_output=True, timeout=2
             )
+            # 电脑声音网页服务（4598 网页 / 4599 音频 WS）：ADB 通道下手机 WebView 经 127.0.0.1 访问
+            subprocess.run(
+                ['adb', '-s', device_id, 'reverse', 'tcp:4598', 'tcp:4598'],
+                capture_output=True, timeout=2
+            )
+            subprocess.run(
+                ['adb', '-s', device_id, 'reverse', 'tcp:4599', 'tcp:4599'],
+                capture_output=True, timeout=2
+            )
             # adb forward：电脑通过 127.0.0.1:58628 向手机发消息（如果手机有HTTP服务）
             subprocess.run(
                 ['adb', '-s', device_id, 'forward', 'tcp:58628', 'tcp:58627'],
@@ -1255,8 +1264,13 @@ class ConnectionManager(QObject):
         self.is_running = True
         self.server_thread = threading.Thread(target=self._run_server, daemon=True)
         self.server_thread.start()
-        # 启动独立端口 5435 的「电脑→手机」音频流服务（与 58627 主服务解耦）
-        threading.Thread(target=self._start_pc_audio_http_server, daemon=True).start()
+        # 启动「电脑声音 → 手机」网页服务（HTTP 4598 / 音频 WS 4599），
+        # 取代原先独立的 5435 AudioTrack 方案，手机端免点击自动收听。
+        try:
+            from audio_web_player import start_audio_web_player
+            threading.Thread(target=start_audio_web_player, daemon=True).start()
+        except Exception as e:
+            self.log(f"[audio] 电脑声音网页服务启动失败: {e}")
         self._start_monitoring()
         # Cloudflare 隧道无需注册/轮询中继：手机通过公网地址直连本机 Flask
         # 先等待ADB连接（10秒），超时后切换到WiFi等待模式
@@ -2009,11 +2023,16 @@ class ConnectionManager(QObject):
                         stream.close()
                     except Exception:
                         pass
+                status = ("playing"
+                          if session.get_playback_info().playback_status
+                          == wmc.GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING
+                          else "paused")
                 return {
                     'title': props.title or "",
                     'artist': props.artist or "",
                     'album': props.album_title or "",
-                    'thumbnail': thumbnail_b64
+                    'thumbnail': thumbnail_b64,
+                    'status': status
                 }
 
             info = asyncio.run(_get_info())
@@ -2021,11 +2040,13 @@ class ConnectionManager(QObject):
                 msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                        "data": {"action": "media_info", "title": info['title'],
                                 "artist": info['artist'], "album": info['album'],
-                                "thumbnail": info['thumbnail']}}
+                                "thumbnail": info['thumbnail'],
+                                "status": info.get('status', 'playing')}}
             else:
                 msg = {"token": self.secret_token, "activate": "send", "source": "pc",
                        "data": {"action": "media_info", "title": "未检测到媒体播放",
-                                "artist": "", "album": "", "thumbnail": ""}}
+                                "artist": "", "album": "", "thumbnail": "",
+                                "status": "stopped"}}
             self._send_to_phone(msg)
         except Exception as e:
             print(f"Get media info failed: {e}")

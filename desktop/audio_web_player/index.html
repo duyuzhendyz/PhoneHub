@@ -14,28 +14,23 @@
   }
   h1 { font-size: 20px; margin: 8px 0 4px; }
   .sub { color: #8b95a1; font-size: 13px; margin-bottom: 28px; }
-  .btn {
-    display: inline-block; width: 78%; max-width: 340px; padding: 18px 0;
-    margin: 10px 0; border: none; border-radius: 14px; font-size: 18px; font-weight: 600;
-    color: #fff; background: #2f6df6; transition: .15s;
-  }
-  .btn:disabled { background: #2a2f37; color: #6b7480; }
-  .btn.stop { background: #d9534f; }
-  #status {
-    margin-top: 22px; font-size: 15px; padding: 12px; border-radius: 10px;
-    background: #1a1f27; min-height: 20px;
-  }
+  #status { margin-top: 22px; font-size: 15px; padding: 12px; border-radius: 10px; background: #1a1f27; min-height: 20px; }
   #info { margin-top: 10px; color: #8b95a1; font-size: 13px; }
+  .media { margin-top: 22px; display: flex; align-items: center; gap: 14px; background: #1a1f27; padding: 14px; border-radius: 12px; text-align: left; }
+  .media.hidden { display: none; }
+  .cover { width: 72px; height: 72px; border-radius: 8px; background: #2a2f37; object-fit: cover; flex: 0 0 auto; }
+  .meta { min-width: 0; }
+  .mtitle { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .martist { font-size: 13px; color: #8b95a1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mstatus { margin-top: 6px; font-size: 12px; color: #6b7480; }
+  .mstatus.playing { color: #36d07b; }
 </style>
 </head>
 <body>
   <h1>电脑声音实时收听</h1>
-  <div class="sub">同一 WiFi 下，打开此页点「开始」即可用手机听电脑正在播放的声音</div>
+  <div class="sub">打开本页自动收听电脑正在播放的声音（无需点击）</div>
 
-  <button id="start" class="btn">开始</button>
-  <button id="stop" class="btn stop" disabled>停止</button>
-
-  <div id="status">未连接</div>
+  <div id="status">连接中…</div>
   <div id="info"></div>
 
   <div id="media" class="media hidden">
@@ -43,8 +38,8 @@
     <div class="meta">
       <div id="mTitle" class="mtitle">—</div>
       <div id="mArtist" class="martist">—</div>
+      <div id="mStatus" class="mstatus">—</div>
     </div>
-    <div id="mStatus" class="mstatus">—</div>
   </div>
 
 <script>
@@ -52,34 +47,36 @@ let audioCtx = null, scriptNode = null, gainNode = null, ws = null;
 let pending = [], readPos = 0, cfg = null, running = false;
 
 const $ = (id) => document.getElementById(id);
-const startBtn = $("start"), stopBtn = $("stop"), statusEl = $("status"),
-      infoEl = $("info");
+const statusEl = $("status"), infoEl = $("info");
 
-startBtn.onclick = async () => {
+function ensureCtx(rate) {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rate || 48000 }); }
+    catch (e) { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+  } else if (rate && audioCtx.sampleRate !== rate) {
+    const old = audioCtx;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: rate });
+    old.close();
+  }
+  return audioCtx;
+}
+
+function tryResume() {
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+}
+
+function connect() {
   if (running) return;
   statusEl.textContent = "连接中…";
-  // 必须在用户手势里创建/恢复 AudioContext
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-  } catch (e) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  await audioCtx.resume();
-
   const proto = (location.protocol === "https:") ? "wss://" : "ws://";
-  const wsPort = 4599;                       // 音频 WebSocket 端口（网页在 4598）
+  const wsPort = 4599;                      // 音频 WebSocket 端口（网页在 4598）
   ws = new WebSocket(proto + location.hostname + ":" + wsPort + "/audio");
   ws.binaryType = "arraybuffer";
   ws.onopen   = () => { statusEl.textContent = "已连接，等待音频…"; };
   ws.onmessage = onMsg;
-  ws.onclose  = () => {
-    statusEl.textContent = "已断开";
-    running = false; startBtn.disabled = false; stopBtn.disabled = true;
-  };
-  ws.onerror  = () => {
-    statusEl.textContent = "连接错误（确认电脑端 4598 已开放、防火墙放行）";
-  };
-};
+  ws.onclose  = () => { statusEl.textContent = "已断开"; running = false; };
+  ws.onerror  = () => { statusEl.textContent = "连接错误（确认电脑端 4598 已开放、防火墙放行）"; };
+}
 
 async function onMsg(ev) {
   if (typeof ev.data === "string") {        // 文本帧：config / media_info / media_status
@@ -92,21 +89,22 @@ async function onMsg(ev) {
       updateMedia({ status: msg.status });
       return;
     }
-    // 配置帧
+    // 配置帧 → 自动开始播放（无需手动点击）
     cfg = msg;
-    // 浏览器不支持该采样率时重建（手势已发生，允许重建）
-    if (audioCtx.sampleRate !== cfg.rate) {
-      try {
-        const old = audioCtx;
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: cfg.rate });
-        await audioCtx.resume();
-        old.close();
-      } catch (e) { /* 用默认率，音高可能略有偏差 */ }
-    }
+    ensureCtx(cfg.rate);
+    await audioCtx.resume();
     setupGraph();
-    running = true; startBtn.disabled = true; stopBtn.disabled = false;
+    running = true;
     statusEl.textContent = "播放中";
     infoEl.textContent = cfg.rate + "Hz / " + cfg.channels + "ch";
+    // 若仍被系统挂起（极严格自动播放策略），监听首次触摸恢复
+    if (audioCtx.state === "suspended") {
+      statusEl.textContent = "轻触屏幕任意处开始播放";
+      document.addEventListener("touchstart", () => {
+        tryResume();
+        if (running) statusEl.textContent = "播放中";
+      }, { once: true });
+    }
     return;
   }
   // 二进制 PCM(int16) 写入环形缓冲
@@ -120,10 +118,10 @@ async function onMsg(ev) {
 }
 
 function setupGraph() {
+  if (scriptNode) { try { scriptNode.disconnect(); } catch (e) {} scriptNode = null; }
   scriptNode = audioCtx.createScriptProcessor(4096, 0, cfg.channels);
   gainNode = audioCtx.createGain();
   gainNode.gain.value = 1;
-
   scriptNode.onaudioprocess = (e) => {
     const out = e.outputBuffer, frames = out.length;
     for (let c = 0; c < cfg.channels; c++) {
@@ -140,14 +138,15 @@ function setupGraph() {
   gainNode.connect(audioCtx.destination);
 }
 
-stopBtn.onclick = () => {
+// 供安卓端「停止」按钮调用
+window.stopAudio = function () {
   if (ws) ws.close();
   running = false;
   if (scriptNode) { try { scriptNode.disconnect(); } catch (e) {} scriptNode = null; }
   if (gainNode)   { try { gainNode.disconnect(); }   catch (e) {} gainNode = null; }
   if (audioCtx) audioCtx.suspend();
   pending = []; readPos = 0;
-  statusEl.textContent = "已停止"; startBtn.disabled = false; stopBtn.disabled = true;
+  statusEl.textContent = "已停止";
 };
 
 let mediaState = { title: "", artist: "", album: "", thumbnail: "", status: "stopped" };
@@ -185,6 +184,8 @@ function updateMedia(m) {
   if (mediaState.status === "paused") { st.textContent = "⏸ 已暂停"; st.classList.remove("playing"); }
   else { st.textContent = "▮ 播放中"; st.classList.add("playing"); }
 }
+
+connect();
 </script>
 </body>
 </html>

@@ -71,6 +71,8 @@ object ConnectionManager {
     private const val CHUNK_SIZE = 524288  // 512KB，与PC端保持一致，减少HTTP请求数量
     private const val DEFAULT_PAW_URL = ""  // Cloudflare 隧道地址由用户在设置页手动填写（临时隧道会变动，不写死）
     private const val DEFAULT_IP = "192.168.3.9"
+    /** 电脑声音网页服务端口（HTTP 4598 提供网页 / WS 4599 推音频），见 desktop/audio_web_player */
+    private const val AUDIO_HTTP_PORT = 4598
 
     // 重连参数
     private const val RECONNECT_FAIL_THRESHOLD = 3
@@ -3177,7 +3179,7 @@ object ConnectionManager {
             )
         }
 
-        // 干净的标准音乐通知（无大图专辑封面）：标题 + 艺术家 + 三个控制按钮
+        // 干净的标准音乐通知（无大图专辑封面，仅左侧小缩略图）：标题 + 艺术家 + 三个控制按钮
         val b = NotificationCompat.Builder(ctx, "phonehub_pc_media")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(pcMediaTitle)
@@ -3189,6 +3191,14 @@ object ConnectionManager {
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setPriority(NotificationCompat.PRIORITY_MAX)   // 强制置顶
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        // 有封面时显示为左侧小缩略图（非展开大图，保持简洁样式）
+        if (pcMediaCover != null) {
+            try {
+                val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = false }
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(pcMediaCover, 0, pcMediaCover!!.size, opts)
+                if (bmp != null) b.setLargeIcon(bmp)
+            } catch (_: Exception) {}
+        }
         b.addAction(android.R.drawable.ic_media_previous, "上一曲",
             mediaPi(MediaNotificationReceiver.ACTION_PREV, 88891))
         b.addAction(
@@ -4394,6 +4404,22 @@ object ConnectionManager {
     }
 
     fun getBaseUrlPublic(): String = getBaseUrl()
+
+    /**
+     * 手机端「电脑声音」WebView 页要加载的网址。
+     * 把主通道地址（58627）的 host 换成音频网页端口 4598：
+     *   - ADB 通道：adb reverse 已把 4598→4598 转好，用 http://127.0.0.1:4598/
+     *   - LAN/WiFi 直连：http://<电脑IP>:4598/
+     *   - PAW 隧道：隧道只转发 58627，音频页不可达（本地收听特性，远端无意义）
+     */
+    fun getPcAudioWebUrl(): String {
+        return try {
+            val u = java.net.URL(getBaseUrl())
+            "${u.protocol}://${u.host}:$AUDIO_HTTP_PORT/"
+        } catch (_: Exception) {
+            "http://127.0.0.1:$AUDIO_HTTP_PORT/"
+        }
+    }
 
     /**
      * 投屏引擎（参考工程那套）要用的电脑地址。

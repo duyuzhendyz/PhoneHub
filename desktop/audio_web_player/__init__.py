@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PhoneHub · 电脑声音 → 手机浏览器 实时收听（测试模块）
-==================================================
-思路：彻底绕开安卓端 AudioTrack/轮询那套（之前一直卡顿）。
-      PC 端直接抓「系统正在播放的声音」(WASAPI loopback)，
-      通过 WebSocket 把原始 PCM 推给手机浏览器，浏览器用 Web Audio 播放。
+PhoneHub · 电脑声音 → 手机 实时收听（已内嵌进桌面端）
+====================================================
+彻底绕开安卓端 AudioTrack/轮询那套（之前一直卡顿）。
+PC 端直接抓「系统正在播放的声音」(WASAPI loopback)，
+通过 WebSocket 把原始 PCM 推给手机网页，手机端用 Web Audio 播放。
 
-  - 网页  : http://<本机局域网IP>:4598/   → 手机浏览器打开这个网址，点「开始」
+  - 网页  : http://<本机局域网IP>:4598/   → 手机（浏览器或 App 内 WebView）打开即自动收听
   - 音频WS: ws://<本机局域网IP>:4599/audio → 网页内部自动连接（无需手动）
 
-运行（在装了 PhoneHub 桌面端的那台 Windows 上）：
-    F:/Program Files/python38/python.exe server.py
-
-然后手机连同一 WiFi，浏览器打开上面的网址，点「开始」即可收听。
-防火墙需放行 4598(网页) 与 4599(音频WS)（与 58627/5435 同网段）。
+由 desktop/connection_manager.py 在启动时调用 start_audio_web_player() 拉起，
+不再作为独立脚本运行。
 """
 import os
 import sys
@@ -73,9 +70,9 @@ class Capture:
                     format=pyaudio.paInt16, channels=self.channels, rate=self.rate,
                     input=True, input_device_index=dev["index"],
                     frames_per_buffer=self.frames_per_buffer)
-            print(f"[capture] loopback: {self.rate}Hz / {self.channels}ch  ({dev.get('name')})")
+            print(f"[audio_web_player] loopback: {self.rate}Hz / {self.channels}ch  ({dev.get('name')})")
         except Exception as e:
-            print(f"[capture] 采集不可用: {e}（网页仍可用，但不会出声）")
+            print(f"[audio_web_player] 采集不可用: {e}（网页仍可用，但不会出声）")
             self.stream = None
 
     @staticmethod
@@ -100,7 +97,7 @@ class Capture:
                                     exception_on_overflow=False)
             return data if isinstance(data, (bytes, bytearray)) else b""
         except Exception as e:
-            print(f"[capture] read 异常: {e}")
+            print(f"[audio_web_player] read 异常: {e}")
             return b""
 
     def close(self):
@@ -213,7 +210,7 @@ def get_media_info():
             }
         return asyncio.run(_get())
     except Exception as e:
-        print(f"[media] 获取失败: {e}")
+        print(f"[audio_web_player] 获取媒体信息失败: {e}")
         return None
 
 
@@ -301,7 +298,7 @@ async def ws_handler(websocket, path=None):
                     json.dumps({"type": "media_info", **latest_media}, ensure_ascii=False))
             except Exception:
                 pass
-    print(f"[ws] 客户端接入（当前 {len(subscribers)}）")
+    print(f"[audio_web_player] 客户端接入（当前 {len(subscribers)}）")
     try:
         while True:
             data = await q.get()
@@ -310,7 +307,7 @@ async def ws_handler(websocket, path=None):
         pass
     finally:
         subscribers.discard(q)
-        print(f"[ws] 客户端断开（剩余 {len(subscribers)}）")
+        print(f"[audio_web_player] 客户端断开（剩余 {len(subscribers)}）")
 
 
 # ----------------------------------------------------------------------------
@@ -365,9 +362,9 @@ async def main():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
     print("=" * 50)
-    print("电脑声音 → 手机浏览器 测试服务已启动")
+    print("电脑声音 → 手机 网页服务已启动（内嵌）")
     for ip in lan_ips():
-        print(f"  手机浏览器打开: http://{ip}:{HTTP_PORT}/")
+        print(f"  手机打开: http://{ip}:{HTTP_PORT}/")
     print(f"  本机调试      : http://127.0.0.1:{HTTP_PORT}/")
     print(f"  (音频 WS 在端口 {WS_PORT})")
     print("=" * 50)
@@ -376,11 +373,17 @@ async def main():
         await asyncio.Future()      # 永久运行
 
 
-if __name__ == "__main__":
+def start_audio_web_player():
+    """在独立守护线程中拉起「电脑声音→手机」网页服务（HTTP 4598 / WS 4599）。
+
+    由 desktop/connection_manager.py 启动时调用，替代原先独立的测试脚本。
+    """
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+
+
+def _serve():
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        running = False
-        if capture:
-            capture.close()
-        print("\n[server] 已停止")
+    except Exception as e:
+        print(f"[audio_web_player] 启动失败: {e}")
