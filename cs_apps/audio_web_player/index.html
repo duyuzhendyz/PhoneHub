@@ -26,9 +26,6 @@
     background: #1a1f27; min-height: 20px;
   }
   #info { margin-top: 10px; color: #8b95a1; font-size: 13px; }
-  .vol { margin-top: 24px; width: 78%; max-width: 340px; }
-  .vol label { display: block; font-size: 13px; color: #8b95a1; margin-bottom: 6px; }
-  input[type=range] { width: 100%; }
 </style>
 </head>
 <body>
@@ -50,18 +47,13 @@
     <div id="mStatus" class="mstatus">—</div>
   </div>
 
-  <div class="vol">
-    <label>音量</label>
-    <input id="vol" type="range" min="0" max="1" step="0.01" value="1">
-  </div>
-
 <script>
 let audioCtx = null, scriptNode = null, gainNode = null, ws = null;
 let pending = [], readPos = 0, cfg = null, running = false;
 
 const $ = (id) => document.getElementById(id);
 const startBtn = $("start"), stopBtn = $("stop"), statusEl = $("status"),
-      infoEl = $("info"), volEl = $("vol");
+      infoEl = $("info");
 
 startBtn.onclick = async () => {
   if (running) return;
@@ -126,7 +118,7 @@ async function onMsg(ev) {
 function setupGraph() {
   scriptNode = audioCtx.createScriptProcessor(4096, 0, cfg.channels);
   gainNode = audioCtx.createGain();
-  gainNode.gain.value = parseFloat(volEl.value);
+  gainNode.gain.value = 1;
 
   scriptNode.onaudioprocess = (e) => {
     const out = e.outputBuffer, frames = out.length;
@@ -143,8 +135,6 @@ function setupGraph() {
   scriptNode.connect(gainNode);
   gainNode.connect(audioCtx.destination);
 }
-
-volEl.oninput = () => { if (gainNode) gainNode.gain.value = parseFloat(volEl.value); };
 
 stopBtn.onclick = () => {
   if (ws) ws.close();

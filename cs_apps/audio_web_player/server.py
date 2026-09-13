@@ -22,6 +22,7 @@ import json
 import time
 import socket
 import queue
+import base64
 import asyncio
 import threading
 import websockets
@@ -185,14 +186,16 @@ def get_media_info():
                     if stream.size > 0:
                         reader = DataReader(stream)
                         await reader.load_async(stream.size)
-                        data = bytearray(stream.size)
+                        # 用 unconsumed_buffer_length 取实际可读字节，避免 size 误报导致读空
+                        data = bytearray(reader.unconsumed_buffer_length)
                         reader.read_bytes(data)
                         reader.detach_stream()
                         reader.close()
                         stream.close()
-                        mime = _img_mime(bytes(data))
+                        data = bytes(data)
+                        mime = _img_mime(data)
                         thumb_url = "data:%s;base64,%s" % (
-                            mime, base64.b64encode(bytes(data)).decode("ascii"))
+                            mime, base64.b64encode(data).decode("ascii"))
                 except Exception:
                     pass
             status = ("playing"
