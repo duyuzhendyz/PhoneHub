@@ -359,6 +359,8 @@ object ConnectionManager {
     private var pendingSend: PendingSendInfo? = null
     @Volatile
     private var transferPaused = false
+    // PC→手机下载被提前截断时的自动续传计数（避免直接卡在"已暂停"）
+    private var receiveAutoRetry = 0
 
     // 暂停后保留的恢复信息（继续时断点续传）
     private data class ResumeInfo(
@@ -933,9 +935,11 @@ object ConnectionManager {
                 Log.i(TAG, "收到send_file_head: name=$fileName, size=$fileSize, id=$fileId, channel=${_currentChannel.value}")
                 // 新传输开始：清掉上一次传输遗留的暂停/取消状态，
                 // 否则上次"暂停后没恢复"会把这次 UI 永久卡在「已暂停(对端)」
+                cancelTransferStallWatchdog()   // 旧传输的自愈 watchdog 别残留
                 transferPaused = false
                 fileTransferCancel = false
                 _transferPausedFromPc.value = false
+                receiveAutoRetry = 0   // 新文件：复位自动续传计数
                 // S4: 先显示通知（带"开始下载"按钮），不自动开始下载
                 showFileReceiveNotification(fileId, fileName, fileSize)
                 // 同时发射 pending 事件，通知 app UI 更新
@@ -1282,12 +1286,14 @@ object ConnectionManager {
                 Log.i(TAG, "收到 transfer_control: ctrl=$ctrl, fileId=$fileId")
                 when (ctrl) {
                     "pause" -> {
+                        cancelTransferStallWatchdog()   // 用户主动暂停，停掉自愈 watchdog
                         fileTransferCancel = true
                         transferPaused = true
                         try { currentConn?.disconnect() } catch (e: Exception) {}
                         _transferPausedFromPc.value = true
                     }
                     "resume" -> {
+                        cancelTransferStallWatchdog()   // 对端主动恢复，停掉自愈 watchdog（防止 30s 后误杀新传输）
                         transferPaused = false
                         fileTransferCancel = false
                         // 断点续传：用 resumeInfo 中保存的信息和 offset 继续传输
@@ -1310,6 +1316,7 @@ object ConnectionManager {
                         _transferPausedFromPc.value = false
                     }
                     "cancel" -> {
+                        cancelTransferStallWatchdog()   // 对端取消，停掉自愈 watchdog
                         fileTransferCancel = true
                         transferPaused = false
                         _transferPausedFromPc.value = false
@@ -2867,6 +2874,20 @@ object ConnectionManager {
                             completeFileTransferNotification(fileName)
                         }
                     } else {
+                        // 流提前结束（对端截断/网络异常）：先自动断点续传重试，别直接卡「已暂停」
+                        if (!fileTransferCancel && !transferPaused && receiveAutoRetry < 3 && received > 0) {
+                            receiveAutoRetry++
+                            Log.w(TAG, "下载提前结束，自动续传 $receiveAutoRetry/3 received=$received/$fileSize")
+                            try { progressFile.writeText(received.toString()) } catch (_: Exception) {}
+                            resumeInfo = ResumeInfo(fileId, fileName, fileSize).apply { resumeOffset = received }
+                            showToast("连接中断，正在自动续传… ($receiveAutoRetry/3)")
+                            mainHandler.postDelayed({
+                                if (!fileTransferCancel && !transferPaused) {
+                                    startReceiveFile(fileId, fileName, fileSize)
+                                }
+                            }, 600)
+                            return@launch
+                        }
                         // 流中断但未取消/暂停（可能是对端暂停但消息未到达，或网络异常）
                         // 视为暂停处理：保留进度和 resumeInfo，等待对端的 resume/cancel 消息
                         // 不弹"中断"Toast，避免暂停被误显示为中断

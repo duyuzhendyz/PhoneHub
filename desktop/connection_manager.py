@@ -174,6 +174,9 @@ class ConnectionManager(QObject):
         self._last_download_emit_time = 0.0  # 下载进度信号 0.1s 节流
         self.file_transfer_cancel = False
         self._transfer_paused = False
+        # PC→手机「下载」专用取消位：与全局 file_transfer_cancel 解耦，
+        # 避免其它方向（上传/别的功能置位）把正在下载的流在第一块之后截断
+        self._download_cancel = False
         # save.md：接收文件统一存到 F:\desk\手机上传
         self.receive_dir = r"F:\desk\手机上传"
         try:
@@ -522,14 +525,17 @@ class ConnectionManager(QObject):
                 self.log_phone_request("传输控制", f"ctrl={ctrl}")
                 if ctrl == 'cancel':
                     self.file_transfer_cancel = True
+                    self._download_cancel = True     # 手机取消：停掉 PC→手机下载流
                     self._transfer_paused = False
                     self.file_transfer_cancelled.emit(body.get('file_id', ''))
                 elif ctrl == 'pause':
                     self.file_transfer_cancel = True
+                    self._download_cancel = True     # 手机暂停：停掉 PC→手机下载流
                     self._transfer_paused = True
                     self.file_transfer_paused.emit(True)
                 elif ctrl == 'resume':
                     self.file_transfer_cancel = False
+                    self._download_cancel = False    # 手机恢复：允许重新续传下载
                     self._transfer_paused = False
                     self.file_transfer_paused.emit(False)
             elif action == 'chunk':
@@ -796,14 +802,16 @@ class ConnectionManager(QObject):
             def generate():
                 """生成器流式读取文件并发送"""
                 sent = resume_offset
-                self.log(f"[download_file] generate() 开始: resume_offset={resume_offset}, file_size={file_size}, file_transfer_cancel={self.file_transfer_cancel}")
+                self.log(f"[download_file] generate() 开始: resume_offset={resume_offset}, file_size={file_size}, download_cancel={getattr(self, '_download_cancel', False)}")
                 try:
                     with open(file_path, 'rb') as f:
                         if resume_offset > 0:
                             f.seek(resume_offset)
                         while True:
-                            if self.file_transfer_cancel:
-                                print(f"[download_file] 传输已取消, sent={sent}")
+                            # 只认「下载专用取消位」：全局 file_transfer_cancel 会被上传/其它功能
+                            # 顺手置位，用它当停止条件会导致下载在第一块（64KB）后就被截断
+                            if getattr(self, '_download_cancel', False):
+                                self.log(f"[download_file] 下载被取消, sent={sent}")
                                 break
                             data = f.read(65536)
                             if not data:
@@ -821,6 +829,10 @@ class ConnectionManager(QObject):
                                     pass
                 except Exception as e:
                     print(f"download_file generate error: {e}")
+                finally:
+                    if sent < file_size:
+                        self.log(f"[download_file] 提前结束: sent={sent}/{file_size} "
+                                 f"(download_cancel={getattr(self, '_download_cancel', False)})")
 
             remaining = file_size - resume_offset
             resp = Response(generate(), mimetype='application/octet-stream', direct_passthrough=True)
@@ -1619,6 +1631,7 @@ class ConnectionManager(QObject):
         self.file_transfer_active = True
         self.file_transfer_cancel = False
         self._transfer_paused = False
+        self._download_cancel = False          # 新一次发送：复位下载取消位
         # 立即发射初始进度（0%），让PC端UI立即显示进度条进入"发送中"状态
         try:
             self.file_transfer_progress.emit(file_id, 0, file_size, time.time())
@@ -1746,6 +1759,7 @@ class ConnectionManager(QObject):
     def cancel_transfer(self):
         """取消文件传输，并通知对端"""
         self.file_transfer_cancel = True
+        self._download_cancel = True       # 同时停掉 PC→手机方向的下载流
         self._transfer_paused = False
         # 通知对端取消
         cancel_file_id = self.current_file_id or (self.outgoing_file_id or "")
