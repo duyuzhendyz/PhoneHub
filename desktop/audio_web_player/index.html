@@ -68,17 +68,19 @@
 <script>
 let audioCtx = null, scriptNode = null, gainNode = null, ws = null;
 let pending = [], readPos = 0, cfg = null;
-let running = false;        // 手机端是否正在播放
-let userPaused = false;     // 用户主动暂停（重连时不自动恢复）
+let running = false;        // 手机端是否正在播放（= 是否在收听电脑声音）
+let userStopped = false;    // 用户主动停止收听（重连时不自动恢复）
 let lastAudioAt = 0;        // 最近一次「有声音」的时间戳
 let lastMsgAt = 0;          // 最近一次收到任意帧的时间戳
+let lastPcPlaying = null;   // 上报给安卓的「电脑端是否在放声音」
 let reconnectDelay = 1000, reconnectTimer = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status"), infoEl = $("info");
 
 // ===== 安卓 JS 桥（普通浏览器打开时为 undefined，需容错） =====
-function brSetPlaying(v) { try { if (window.PcAudioBridge) PcAudioBridge.setPlaying(!!v); } catch (e) {} }
+function brSetListening(on) { try { if (window.PcAudioBridge) PcAudioBridge.setPlaying(!!on); } catch (e) {} }
+function brSetPcPlaying(on) { try { if (window.PcAudioBridge) PcAudioBridge.setPcPlaying(!!on); } catch (e) {} }
 function brSetMedia(t, a, al, c, s) { try { if (window.PcAudioBridge) PcAudioBridge.setMedia(t || "", a || "", al || "", c || "", s || ""); } catch (e) {} }
 function brPrev() { try { if (window.PcAudioBridge) PcAudioBridge.prev(); } catch (e) {} }
 function brNext() { try { if (window.PcAudioBridge) PcAudioBridge.next(); } catch (e) {} }
@@ -107,7 +109,7 @@ function setupGraph() {
   if (scriptNode) { try { scriptNode.disconnect(); } catch (e) {} scriptNode = null; }
   scriptNode = audioCtx.createScriptProcessor(4096, 0, cfg.channels);
   gainNode = audioCtx.createGain();
-  gainNode.gain.value = 1;
+  gainNode.gain.value = running ? 1 : 0;
   scriptNode.onaudioprocess = (e) => {
     const out = e.outputBuffer, frames = out.length;
     for (let c = 0; c < cfg.channels; c++) {
@@ -124,14 +126,25 @@ function setupGraph() {
   gainNode.connect(audioCtx.destination);
 }
 
+// ===== 手机端收听开关（暂停 = 手机不出声；电脑端音乐不受影响） =====
+function setListening(on) {
+  running = on;
+  userStopped = !on;
+  if (audioCtx) {
+    try { if (on) audioCtx.resume(); else audioCtx.suspend(); } catch (e) {}
+  }
+  if (gainNode) { try { gainNode.gain.value = on ? 1 : 0; } catch (e) {} }
+  updateToggleBtn();
+  brSetListening(on);
+}
+
 // ===== 连接（含断线自动重连，保证切后台/息屏后能恢复）=====
 function connect() {
-  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;  // 正在连接/已连接
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
   statusEl.textContent = "连接中…";
   const proto = (location.protocol === "https:") ? "wss://" : "ws://";
-  const wsPort = 4599;
   try {
-    ws = new WebSocket(proto + location.hostname + ":" + wsPort + "/audio");
+    ws = new WebSocket(proto + location.hostname + ":4599/audio");
   } catch (e) { onSocketDown("连接失败"); return; }
   ws.binaryType = "arraybuffer";
   ws.onopen = () => { reconnectDelay = 1000; lastMsgAt = Date.now(); statusEl.textContent = "已连接"; };
@@ -162,20 +175,20 @@ async function onMsg(ev) {
     // 配置帧
     cfg = msg;
     ensureCtx(cfg.rate);
-    if (!userPaused) { try { await audioCtx.resume(); } catch (e) {} }
+    running = !userStopped;
+    if (running) { try { await audioCtx.resume(); } catch (e) {} }
     setupGraph();
-    running = !userPaused;
     updateToggleBtn();
+    brSetListening(running);
     infoEl.textContent = cfg.rate + "Hz / " + cfg.channels + "ch";
-    if (running) brSetPlaying(true);
-    if (audioCtx.state === "suspended") {
+    if (running && audioCtx.state === "suspended") {
       statusEl.textContent = "轻触屏幕任意处开始播放";
       document.addEventListener("touchstart", () => {
         try { audioCtx.resume(); } catch (e) {}
         if (running) statusEl.textContent = "正在收听电脑声音";
       }, { once: true });
     } else {
-      statusEl.textContent = "正在收听电脑声音";
+      statusEl.textContent = running ? "正在收听电脑声音" : "已停止收听";
     }
     return;
   }
@@ -193,19 +206,9 @@ async function onMsg(ev) {
 }
 
 // ===== 供网页按钮 / 通知栏调用 =====
-window.pcAudioToggle = function () {
-  if (!audioCtx) return;
-  if (running) {
-    try { audioCtx.suspend(); } catch (e) {}
-    running = false; userPaused = true;
-  } else {
-    try { audioCtx.resume(); } catch (e) {}
-    running = true; userPaused = false;
-  }
-  updateToggleBtn();
-  brSetPlaying(running);
-};
-
+window.pcAudioToggle = function () { if (!audioCtx) return; setListening(!running); };
+window.pcAudioStop = function () { if (!audioCtx) return; setListening(false); };
+window.pcAudioStart = function () { if (!audioCtx) return; setListening(true); };
 window.pcAudioPrev = function () { brPrev(); };
 window.pcAudioNext = function () { brNext(); };
 
@@ -220,7 +223,6 @@ function updateMedia(m) {
   if (m.thumbnail !== undefined) mediaState.thumbnail = m.thumbnail;
   if (m.status !== undefined)    mediaState.status = m.status;
 
-  // 曲目变化时把最新媒体信息上报给安卓，用于实时刷新通知栏
   const core = (mediaState.title || "") + "|" + (mediaState.artist || "") + "|" +
                (mediaState.album || "") + "|" + (mediaState.thumbnail || "").length;
   if (core !== lastMediaCore) {
@@ -248,29 +250,29 @@ function updateMedia(m) {
   $("mArtist").textContent = (mediaState.artist || "") + (mediaState.album ? " · " + mediaState.album : "");
 }
 
-// ===== 每秒刷新：真实播放状态（按是否有声音判断，避免「在放却显示已暂停」）=====
+// ===== 每秒刷新：真实播放状态（按是否有声音判断）=====
 setInterval(() => {
   const now = Date.now();
-  // 播放状态：最近 2 秒内收到过有声帧即视为播放中
   const playing = (now - lastAudioAt) < 2000;
   const st = $("mStatus");
   if (st) {
     if (playing) { st.textContent = "播放中"; st.classList.add("playing"); }
     else { st.textContent = mediaState.status === "stopped" ? "未播放" : "已暂停"; st.classList.remove("playing"); }
   }
+  // 把「电脑端是否在放声音」上报给安卓，用于通知栏播放/暂停图标
+  if (playing !== lastPcPlaying) { lastPcPlaying = playing; brSetPcPlaying(playing); }
   if (ws && ws.readyState === 1) {
-    statusEl.textContent = playing ? "正在收听电脑声音" : "已连接（电脑端暂无声音）";
-    // 连接超时（掉线但未触发 close）：主动重连
+    statusEl.textContent = !running ? "已停止收听（点按钮恢复）"
+                                     : (playing ? "正在收听电脑声音" : "已连接（电脑端暂无声音）");
     if (now - lastMsgAt > 8000) onSocketDown("连接超时");
   } else if (!reconnectTimer && (!ws || ws.readyState === 3)) {
     scheduleReconnect();
   }
 }, 1000);
 
-// 回到前台时恢复音频上下文 / 断线重连
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
-  try { if (audioCtx && !userPaused) audioCtx.resume(); } catch (e) {}
+  try { if (audioCtx && !userStopped) audioCtx.resume(); } catch (e) {}
   if (!ws || ws.readyState > 1) connect();
 });
 

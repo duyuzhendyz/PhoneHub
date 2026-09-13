@@ -175,6 +175,50 @@ _live_last_count_ts = 0.0
 _live_fps = 0.0
 
 
+def _set_live_placeholder(text="仅音频模式 · 无画面"):
+    """把实时画面替换成一张提示图。
+
+    用于「仅音频」模式：手机端不再发送画面，这里把上一次停止时的残留帧换掉，
+    电脑端窗口就不会一直显示早就停止的旧画面了。
+    """
+    global _live_jpeg, _live_bytes, _live_ts
+    try:
+        from PIL import ImageDraw, ImageFont
+        with _live_lock:
+            w, h = _live_w, _live_h
+        if w <= 0 or h <= 0:
+            w, h = 720, 1280
+        img = Image.new("RGB", (w, h), (16, 18, 22))
+        d = ImageDraw.Draw(img)
+        size = max(int(h * 0.05), 18)
+        font = None
+        for p in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf", "arial.ttf"):
+            try:
+                font = ImageFont.truetype(p, size)
+                break
+            except Exception:
+                font = None
+        if font is None:
+            font = ImageFont.load_default()
+        try:
+            box = d.textbbox((0, 0), text, font=font)
+            tw, th = box[2] - box[0], box[3] - box[1]
+        except Exception:
+            tw, th = 0, 0
+        d.text(((w - tw) // 2, (h - th) // 2), text, fill=(150, 155, 165), font=font)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        jpg = buf.getvalue()
+        with _live_lock:
+            _live_jpeg = jpg
+            _live_w, _live_h = w, h
+            _live_bytes = len(jpg)
+            _live_ts = time.monotonic()
+        print(f"[实时] 已切换为占位画面（{text}） {w}x{h}")
+    except Exception as e:
+        print(f"[实时] 生成占位画面失败: {e}")
+
+
 def _update_live(jpeg_bytes, size):
     """记下最新一帧，供 /stream 和 /frame.jpg 使用（零解码）"""
     global _live_jpeg, _live_w, _live_h, _live_bytes, _live_ts
@@ -749,17 +793,21 @@ def api_audio_start():
     rate = int(request.args.get("rate", 48000))
     ch = int(request.args.get("ch", 2))
     bits = int(request.args.get("bits", 16))
+    mode = str(request.args.get("mode", "0"))     # 0=音视频 1=仅音频 2=仅画面
     with _audio_lock:
         _audio_rate, _audio_ch, _audio_bits = rate, ch, bits
         _open_audio_segment_locked()
         _audio_arrivals = []
+    # 仅音频模式：手机不发画面，换成「仅音频」占位图，避免窗口一直显示上一次停止时的旧帧
+    if mode in ("1", "audio_only"):
+        _set_live_placeholder()
     # 丢弃上一轮的残留试听数据，避免新一次录音开头播到旧声音
     while not _audio_stream_q.empty():
         try:
             _audio_stream_q.get_nowait()
         except Exception:
             break
-    print(f"[录音] 开始 {rate}Hz {ch}ch {bits}bit（AudioPlaybackCapture）")
+    print(f"[录音] 开始 {rate}Hz {ch}ch {bits}bit（AudioPlaybackCapture）mode={mode}")
     return jsonify({"ok": True})
 
 

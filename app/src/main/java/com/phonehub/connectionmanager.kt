@@ -3202,12 +3202,18 @@ object ConnectionManager {
         }
         b.addAction(android.R.drawable.ic_media_previous, "上一曲",
             mediaPi(MediaNotificationReceiver.ACTION_PREV, 88891))
+        // 播放/暂停：与「远程控制」页同一个逻辑（发 media_play_pause 控制电脑端媒体）
         b.addAction(
             if (pcMediaPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
             if (pcMediaPlaying) "暂停" else "播放",
             mediaPi(MediaNotificationReceiver.ACTION_TOGGLE, 88892))
         b.addAction(android.R.drawable.ic_media_next, "下一曲",
             mediaPi(MediaNotificationReceiver.ACTION_NEXT, 88893))
+        // 停止/开启播放：控制手机端是否收听电脑声音（与页面大按钮一致），电脑端音乐不受影响
+        b.addAction(android.R.drawable.ic_media_pause, "停止播放",
+            mediaPi(MediaNotificationReceiver.ACTION_STOP_LISTEN, 88894))
+        b.addAction(android.R.drawable.ic_media_play, "开启播放",
+            mediaPi(MediaNotificationReceiver.ACTION_START_LISTEN, 88895))
         return b.build()
     }
 

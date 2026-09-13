@@ -318,6 +318,20 @@ class MainActivity : AppCompatActivity() {
         setMirrorStatus("已发送停止指令")
     }
 
+    /**
+     * 投屏过程中切换了 清晰度 / 音质 / 模式：重启投屏，
+     * 让电脑端按新的正确方式重新接收（而不是沿用旧的采集/编码参数）。
+     */
+    private fun restartMirrorIfRunning() {
+        if (!mirrorRunning) return
+        val ip = if (mirrorPendingIp.isNotBlank()) mirrorPendingIp else defaultMirrorIp()
+        val port = if (mirrorPendingPort > 0) mirrorPendingPort else 5423
+        LogUtil.scrI("[投屏] 设置变更，重启投屏 → $ip:$port")
+        setMirrorStatus("正在按新设置重启投屏…")
+        stopMirrorFlow()
+        android.os.Handler(mainLooper).postDelayed({ startMirrorFlow(ip, port) }, 1200)
+    }
+
     // 文字保存：用系统文件选择器（ACTION_CREATE_DOCUMENT）选择保存路径
     private var pendingSaveText: String = ""
     private val saveTextLauncher = registerForActivityResult(
@@ -3685,18 +3699,28 @@ class MainActivity : AppCompatActivity() {
         page.addView(web, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
     }
 
-    /** 通知栏「播放/暂停」点击 → 切换手机端播放状态（调用网页里的 pcAudioToggle） */
-    fun togglePcAudioPlayback() {
-        pcAudioWebView?.evaluateJavascript("if(window.pcAudioToggle)pcAudioToggle();") { _ -> }
+    /** 通知栏「停止播放」→ 手机端停止收听（网页 AudioContext 静音/挂起） */
+    fun stopPcAudioListening() {
+        pcAudioWebView?.evaluateJavascript("if(window.pcAudioStop)pcAudioStop();") { _ -> }
+    }
+
+    /** 通知栏「开启播放」→ 手机端恢复收听 */
+    fun startPcAudioListening() {
+        pcAudioWebView?.evaluateJavascript("if(window.pcAudioStart)pcAudioStart();") { _ -> }
     }
 
     /** 网页 ↔ 原生 桥：网页按钮调用，用于同步播放状态与控制电脑媒体键 */
     private class PcAudioBridge : Any() {
         @JavascriptInterface
         fun setPlaying(playing: Boolean) {
-            ConnectionManager.pcMediaPlaying = playing
-            // 播放期间持有唤醒/WiFi 锁，保证切后台/息屏后仍在收听
+            // 手机端是否在收听 → 播放期间持有唤醒/WiFi 锁，保证切后台/息屏后仍在收听
             ConnectionManager.setPcAudioKeepAlive(playing)
+        }
+
+        @JavascriptInterface
+        fun setPcPlaying(playing: Boolean) {
+            // 电脑端是否在放声音 → 通知栏「播放/暂停」按钮图标
+            ConnectionManager.pcMediaPlaying = playing
             ConnectionManager.updatePcMediaNotification()
         }
 
@@ -4450,7 +4474,9 @@ class MainActivity : AppCompatActivity() {
         quality.setSelection(PhoneHubMirrorService.getQualityLevel(this))
         quality.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position == PhoneHubMirrorService.getQualityLevel(this@MainActivity)) return
                 PhoneHubMirrorService.setQualityLevel(this@MainActivity, position)
+                restartMirrorIfRunning()      // 切清晰度 → 重启投屏
             }
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
@@ -4463,7 +4489,9 @@ class MainActivity : AppCompatActivity() {
         audio.setSelection(PhoneHubMirrorService.getAudioLevel(this))
         audio.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position == PhoneHubMirrorService.getAudioLevel(this@MainActivity)) return
                 PhoneHubMirrorService.setAudioLevel(this@MainActivity, position)
+                restartMirrorIfRunning()      // 切音质 → 重启投屏
             }
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
@@ -4476,7 +4504,9 @@ class MainActivity : AppCompatActivity() {
         mode.setSelection(PhoneHubMirrorService.getMirrorMode(this))
         mode.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position == PhoneHubMirrorService.getMirrorMode(this@MainActivity)) return
                 PhoneHubMirrorService.setMirrorMode(this@MainActivity, position)
+                restartMirrorIfRunning()      // 切模式（如仅音频）→ 重启投屏
             }
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}

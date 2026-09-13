@@ -366,6 +366,10 @@ class PhoneHubMirrorService : Service() {
     @Volatile
     private var isRunning = false
 
+    // 已按哪个方向建过虚拟屏（用于检测手机旋转后重建，让电脑端画面跟随横竖屏）
+    @Volatile
+    private var lastAppliedRotation = -1
+
     // ── 统计（给界面看，用来定位瓶颈） ──
     private var okCount = 0
     private var failCount = 0
@@ -505,6 +509,7 @@ class PhoneHubMirrorService : Service() {
             }
 
             acquireKeepAwake()             // 退后台/灭屏防卡顿：CPU + Wi-Fi 双锁
+            startRotationWatch()           // 横竖屏切换时自动重建虚拟屏
 
             startUploaders()
             startAudioCapture(mp)          // 内部录音：复用同一个 MediaProjection，无需二次授权
@@ -529,9 +534,19 @@ class PhoneHubMirrorService : Service() {
     private fun setupDisplay(): Boolean {
         val mp = mediaProjection ?: return false
 
-        val realW = resources.displayMetrics.widthPixels
-        val realH = resources.displayMetrics.heightPixels
-        val realDpi = resources.displayMetrics.densityDpi
+        val dm = resources.displayMetrics
+        var realW = dm.widthPixels
+        var realH = dm.heightPixels
+        val realDpi = dm.densityDpi
+
+        // 横竖屏：以物理旋转为准（服务里的 displayMetrics 可能滞后），保证采集方向跟随手机
+        val rot = currentRotation()
+        val landscape = (rot == android.view.Surface.ROTATION_90 ||
+                         rot == android.view.Surface.ROTATION_270)
+        if (landscape != (realW > realH)) {
+            val t = realW; realW = realH; realH = t
+        }
+        lastAppliedRotation = rot
 
         // 从设置中读取目标分辨率宽度
         val targetWidth = PhoneHubMirrorService.getCurrentResolutionWidth(this)
@@ -824,6 +839,36 @@ class PhoneHubMirrorService : Service() {
                 finishLoop()
             }
         }
+    }
+
+    /** 当前物理旋转（服务里拿不到 Activity 的 configChanges，直接读 Display） */
+    @Suppress("DEPRECATION")
+    private fun currentRotation(): Int = try {
+        (getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager)
+            .defaultDisplay.rotation
+    } catch (_: Throwable) { android.view.Surface.ROTATION_0 }
+
+    /** 轮询物理旋转：手机横竖屏切换时重建虚拟屏（电脑端画面/窗口随之转成横屏或竖屏） */
+    private val rotationWatch = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+            val r = currentRotation()
+            if (r != lastAppliedRotation) {
+                lastAppliedRotation = r
+                sendResult("屏幕方向变化，正在重建虚拟屏…")
+                requestRebuildDisplay()
+            }
+            mainHandler.postDelayed(this, 1000)
+        }
+    }
+
+    private fun startRotationWatch() {
+        mainHandler.removeCallbacks(rotationWatch)
+        mainHandler.postDelayed(rotationWatch, 1500)
+    }
+
+    private fun stopRotationWatch() {
+        mainHandler.removeCallbacks(rotationWatch)
     }
 
     private fun teardownDisplay() {
@@ -1234,7 +1279,7 @@ class PhoneHubMirrorService : Service() {
         var anyOk = false
         for (s in senders) {
             val ok = try {
-                val conn = URL("http://${s.ip}:${s.port}/audio_start?rate=$currentAudioSampleRate&ch=2&bits=16")
+                val conn = URL("http://${s.ip}:${s.port}/audio_start?rate=$currentAudioSampleRate&ch=2&bits=16&mode=$mirrorMode")
                     .openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.connectTimeout = 3000
@@ -1284,6 +1329,7 @@ class PhoneHubMirrorService : Service() {
 
     private fun finishLoop() {
         isRunning = false
+        stopRotationWatch()
         releaseCapture()
         stopUploaders()
         @Suppress("DEPRECATION")
@@ -1299,6 +1345,7 @@ class PhoneHubMirrorService : Service() {
     private fun stopMirror() {
         Log.i(TAG, "stopMirror: isRunning=$isRunning, ok=$okCount, fail=$failCount")
         isRunning = false
+        stopRotationWatch()
         notifyPcStop()
         releaseCapture()
         stopUploaders()

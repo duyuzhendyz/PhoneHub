@@ -651,11 +651,16 @@ class LiveWindow:
         except Exception:
             return
 
-        if self.first_frame:
+        if self.first_frame or (img.width, img.height) != self.frame_size:
+            first = self.first_frame
             self.first_frame = False
             self._fit_window_to(img.width, img.height)
-            # 首帧打一条到 stdout，方便自动化验证（pythonw 下无处输出，无影响）
-            print("[窗口] 已显示第一帧 %dx%d" % (img.width, img.height), flush=True)
+            # 打一条到 stdout，方便自动化验证（pythonw 下无处输出，无影响）
+            if first:
+                print("[窗口] 已显示第一帧 %dx%d" % (img.width, img.height), flush=True)
+            else:
+                print("[窗口] 画面尺寸变化 %dx%d → %dx%d（手机横竖屏切换）" % (
+                    self.frame_size[0], self.frame_size[1], img.width, img.height), flush=True)
 
         avail_w = max(self.screen.winfo_width(), 1)
         avail_h = max(self.screen.winfo_height(), 1)
@@ -685,11 +690,19 @@ class LiveWindow:
             self.fps_win_start = time.time()
 
     def _fit_window_to(self, fw, fh):
-        """第一次收到画面时，把窗口调成手机的比例"""
+        """按画面比例调整窗口：竖屏→窄高窗，横屏→宽窗（并贴合屏幕范围）"""
         sh = self.root.winfo_screenheight()
         sw = self.root.winfo_screenwidth()
-        target_h = min(int(sh * 0.88), 1000)
+        if fw <= 0 or fh <= 0:
+            return
+        max_h = min(int(sh * 0.88), 1000)
+        max_w = int(sw * 0.6)
+        target_h = max_h
         target_w = int(target_h * fw / float(fh)) + 2
+        if target_w > max_w:                 # 横屏：受屏幕宽度限制，按宽度反算高度
+            target_w = max_w
+            target_h = max(int(target_w * fh / float(fw)), 200)
+        target_w = max(target_w, 240)
         x = max(sw - target_w - 40, 0)
         y = max((sh - target_h - 30) // 2, 0)
         self.root.geometry("%dx%d+%d+%d" % (target_w, target_h + 24, x, y))

@@ -210,6 +210,8 @@
                 <action android:name="com.phonehub.action.PC_MEDIA_TOGGLE" />
                 <action android:name="com.phonehub.action.PC_MEDIA_PREV" />
                 <action android:name="com.phonehub.action.PC_MEDIA_NEXT" />
+                <action android:name="com.phonehub.action.PC_MEDIA_STOP_LISTEN" />
+                <action android:name="com.phonehub.action.PC_MEDIA_START_LISTEN" />
             </intent-filter>
         </receiver>
 
