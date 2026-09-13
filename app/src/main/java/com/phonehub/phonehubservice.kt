@@ -97,11 +97,12 @@ class PhoneHubService : Service() {
         }
 
         fun buildNotification(context: Context): Notification {
-            // 前台服务通知无法删除，只能做到最细：无任何文字、无点击跳转，仅保留一条空图标
+            // 前台服务通知无法删除；填充状态文案，避免空白外观
             return SharedNotificationHelper.buildNotification(
-                context, CHANNEL_ID, "",
+                context, CHANNEL_ID,
+                "保持与电脑的连接 · 投屏 / 文件 / 远程控制随时可用",
                 androidx.core.app.NotificationCompat.PRIORITY_MIN,
-                "",
+                "PhoneHub 后台运行中",
                 withContentIntent = false
             )
         }

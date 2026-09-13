@@ -3177,6 +3177,7 @@ object ConnectionManager {
             )
         }
 
+        // 干净的标准音乐通知（无大图专辑封面）：标题 + 艺术家 + 三个控制按钮
         val b = NotificationCompat.Builder(ctx, "phonehub_pc_media")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(pcMediaTitle)
@@ -3186,16 +3187,8 @@ object ConnectionManager {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_MAX)   // 强制置顶
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
-                .setShowActionsInCompactView(0, 1, 2))
-        pcMediaCover?.let {
-            try {
-                val bmp = android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)
-                if (bmp != null) b.setLargeIcon(bmp)
-            } catch (_: Exception) {}
-        }
         b.addAction(android.R.drawable.ic_media_previous, "上一曲",
             mediaPi(MediaNotificationReceiver.ACTION_PREV, 88891))
         b.addAction(
@@ -3213,10 +3206,12 @@ object ConnectionManager {
             val ctx = context ?: return
             val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val channel = NotificationChannel(
-                "phonehub_pc_media", "电脑声音播放", NotificationManager.IMPORTANCE_LOW
+                "phonehub_pc_media", "电脑声音播放", NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "播放电脑声音时显示当前曲目，可控制播放/暂停/切歌"
+                // 高重要度用于置顶/悬浮，但关闭声音与震动避免打扰
                 setSound(null, null)
+                enableVibration(false)
             }
             mgr.createNotificationChannel(channel)
             pcMediaNotifShown = true
